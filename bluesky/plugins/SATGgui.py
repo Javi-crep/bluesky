@@ -225,122 +225,183 @@ class RLTab(QWidget):
 # --- GC tab (Geometric Conflicts) ------------------------------------------
 
 class GCTab(QWidget):
-    """Geometric Conflicts: minima/ranges -> create -> run/delete."""
     def __init__(self, parent=None):
         super().__init__(parent)
         main = QVBoxLayout(self)
 
-        # 1) Separation minima (Optional)
-        gb_conf = QGroupBox("1) Separation minima — Optional")
-        fc = QFormLayout(gb_conf)
-        desc1 = QLabel("Set horizontal/vertical minima for encounter synthesis (informational).")
-        desc1.setStyleSheet("color: #666; font-style: italic;")
+        # -------- 1) Batch options (match RC order) --------
+        gb1 = QGroupBox("1) Batch options")
+        f1 = QFormLayout(gb1)
 
-        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.1, 50.0); self.hsep.setValue(5.0)
-        self.vsep = QSpinBox();       self.vsep.setRange(100, 5000); self.vsep.setValue(1000)
-        btn_conf = QPushButton("SATG_GC_CONF")
+        # Scenario name
+        self.gc_name = QLineEdit("gc_scn")
+        f1.addRow("Scenario name:", self.gc_name)
 
-        fc.addRow(desc1)
-        fc.addRow("HSEP [NM]:", self.hsep)
-        fc.addRow("VSEP [ft]:", self.vsep)
-        fc.addRow(btn_conf)
-        btn_conf.clicked.connect(lambda: _emit(f"SATG_GC_CONF {self.hsep.value()} {self.vsep.value()}"))
+        # Types (checkboxes)
+        types_box = QWidget(); hb_types = QHBoxLayout(types_box); hb_types.setContentsMargins(0,0,0,0)
+        self.gc_headon = QCheckBox("Head-on");  self.gc_headon.setChecked(True)
+        self.gc_cross  = QCheckBox("Crossing"); self.gc_cross.setChecked(False)
+        self.gc_overtk = QCheckBox("Overtake"); self.gc_overtk.setChecked(False)
+        hb_types.addWidget(self.gc_headon); hb_types.addWidget(self.gc_cross); hb_types.addWidget(self.gc_overtk); hb_types.addStretch(1)
+        f1.addRow("Types:", types_box)
 
-        # 2) Sampling ranges (Optional)
-        gb_rng = QGroupBox("2) Sampling ranges — Optional")
-        fr = QFormLayout(gb_rng)
-        desc2 = QLabel("Define CAS/FL/bearing/angle ranges used when creating encounters.")
-        desc2.setStyleSheet("color: #666; font-style: italic;")
+        # Alt mode (checkboxes)
+        alt_row = QWidget(); alt_hb = QHBoxLayout(alt_row); alt_hb.setContentsMargins(0,0,0,0)
+        self.gc_alt_level    = QCheckBox("Level");     self.gc_alt_level.setChecked(True)
+        self.gc_alt_altcross = QCheckBox("Alt-cross"); self.gc_alt_altcross.setChecked(False)
+        alt_hb.addWidget(self.gc_alt_level); alt_hb.addWidget(self.gc_alt_altcross); alt_hb.addStretch(1)
+        f1.addRow("Alt mode:", alt_row)
 
-        self.cas1 = QLineEdit("220:280"); self.cas2 = QLineEdit("220:280")
-        self.fl1  = QLineEdit("290:370"); self.fl2  = QLineEdit("290:370")
-        self.brg1 = QLineEdit("0:359");   self.ang  = QLineEdit("60:120")
-        btn_rng = QPushButton("SATG_GC_RANGE")
+        # TCPA [s]
+        self.gc_tcpa = QDoubleSpinBox(); self.gc_tcpa.setDecimals(0); self.gc_tcpa.setRange(10, 3600); self.gc_tcpa.setValue(120)
+        f1.addRow("TCPA [s]:", self.gc_tcpa)
 
-        fr.addRow(desc2)
-        fr.addRow("cas1 [kt lo:hi]:", self.cas1); fr.addRow("cas2 [kt lo:hi]:", self.cas2)
-        fr.addRow("fl1 [FL lo:hi]:", self.fl1);   fr.addRow("fl2 [FL lo:hi]:", self.fl2)
-        fr.addRow("brg1 [deg lo:hi]:", self.brg1); fr.addRow("angle [deg lo:hi]:", self.ang)
-        fr.addRow(btn_rng)
-        btn_rng.clicked.connect(self._ranges)
+        # Angle [deg] (cross only)
+        self.gc_angle = QDoubleSpinBox(); self.gc_angle.setDecimals(0); self.gc_angle.setRange(0, 180); self.gc_angle.setValue(90)
+        f1.addRow("Cross angle [deg] (cross only):", self.gc_angle)
 
-        # 3) Create encounters (Required)
-        gb_cre = QGroupBox("3) Create encounters — Required")
-        fcr = QFormLayout(gb_cre)
-        desc3 = QLabel("Append one or more encounters to a scenario definition.")
-        desc3.setStyleSheet("color: #666; font-style: italic;")
+        # Separation minima (HSEP/VSEP)
+        self.gc_hsep = QDoubleSpinBox(); self.gc_hsep.setRange(0.1, 50.0); self.gc_hsep.setDecimals(2); self.gc_hsep.setValue(5.0)
+        self.gc_vsep = QSpinBox();       self.gc_vsep.setRange(100, 5000);  self.gc_vsep.setValue(1000)
+        f1.addRow("HSEP [NM]:", self.gc_hsep)
+        f1.addRow("VSEP [ft]:", self.gc_vsep)
 
-        self.name = QLineEdit("gc_demo")
-        self.typ  = QComboBox(); self.typ.addItems(["headon", "cross", "overtake"])
-        self.altm = QComboBox(); self.altm.addItems(["level", "altcross"])
-        self.lat  = QLineEdit("52.10"); self.lon = QLineEdit("4.50")
-        self.tcpa = QLineEdit("180")
-        self.angle= QLineEdit("60:120")  # crossing/altcross only
-        self.overwrite = QCheckBox("Overwrite existing file")
-        btn_cre = QPushButton("SATG_GC_CRE")
+        # Overwrite toggle (checkbox -> 0/1 when emitting)
+        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
+        self.gc_overwrite_cb.setChecked(False)
+        f1.addRow(self.gc_overwrite_cb)
 
-        fcr.addRow(desc3)
-        fcr.addRow("scenario name:", self.name)
-        fcr.addRow("type:", self.typ)
-        fcr.addRow("altmode:", self.altm)
-        fcr.addRow("CPA lat:", self.lat)
-        fcr.addRow("CPA lon:", self.lon)
-        fcr.addRow("tcpa [s]:", self.tcpa)
-        fcr.addRow("angle [deg, crossing only]:", self.angle)
-        fcr.addRow("Overwrite (0/1):", self.overwrite)
-        fcr.addRow(btn_cre)
-        btn_cre.clicked.connect(self._cre)
+        main.addWidget(gb1)
 
-        # 4) Run/Purge (Required)
-        gb_run = QGroupBox("4) Run / Purge — Required")
-        frun = QFormLayout(gb_run)
-        desc4 = QLabel("Load scenario into BlueSky, press Play. Purge removes spawned aircraft.")
-        desc4.setStyleSheet("color: #666; font-style: italic;")
+        # enable angle only when Crossing is selected
+        def _upd_angle_enabled():
+            self.gc_angle.setEnabled(self.gc_cross.isChecked())
+        self.gc_cross.toggled.connect(lambda _: _upd_angle_enabled())
+        _upd_angle_enabled()
 
-        btn_run = QPushButton("SATG_GC_RUN")
-        btn_del = QPushButton("SATG_GC_DEL")
+        # -------- 2) CPA & ranges (match RC "region" section) --------
+        gb2 = QGroupBox("2) CPA & ranges")
+        f2 = QFormLayout(gb2)
 
-        frun.addRow(desc4)
-        frun.addRow(btn_run)
-        frun.addRow(btn_del)
+        # CPA lat/lon
+        self.gc_lat = QLineEdit("52.100000")
+        self.gc_lon = QLineEdit("4.500000")
+        f2.addRow("CPA lat [deg]:", self.gc_lat)
+        f2.addRow("CPA lon [deg]:", self.gc_lon)
 
-        btn_run.clicked.connect(lambda: _emit("SATG_GC_RUN " + self.name.text().strip()))
-        btn_del.clicked.connect(lambda: _emit("SATG_GC_DEL"))
+        # FL range
+        self.gc_fl_lo = QDoubleSpinBox(); self.gc_fl_lo.setDecimals(0); self.gc_fl_lo.setRange(0, 450); self.gc_fl_lo.setValue(290)
+        self.gc_fl_hi = QDoubleSpinBox(); self.gc_fl_hi.setDecimals(0); self.gc_fl_hi.setRange(0, 450); self.gc_fl_hi.setValue(370)
+        self.gc_fl_lo.valueChanged.connect(lambda v: self.gc_fl_hi.setMinimum(v))
+        self.gc_fl_hi.valueChanged.connect(lambda v: self.gc_fl_lo.setMaximum(v))
+        row_fl = QWidget(); hb_fl = QHBoxLayout(row_fl); hb_fl.setContentsMargins(0,0,0,0)
+        hb_fl.addWidget(self.gc_fl_lo); hb_fl.addWidget(QLabel(" to ")); hb_fl.addWidget(self.gc_fl_hi)
+        f2.addRow("FL range (lo:hi):", row_fl)
 
-        # assemble
-        main.addWidget(gb_conf)
-        main.addWidget(gb_rng)
-        main.addWidget(gb_cre)
-        main.addWidget(gb_run)
-        main.addStretch(1)
+        # CAS range
+        self.gc_cas_lo = QDoubleSpinBox(); self.gc_cas_lo.setDecimals(0); self.gc_cas_lo.setRange(100, 600); self.gc_cas_lo.setValue(220)
+        self.gc_cas_hi = QDoubleSpinBox(); self.gc_cas_hi.setDecimals(0); self.gc_cas_hi.setRange(100, 600); self.gc_cas_hi.setValue(280)
+        self.gc_cas_lo.valueChanged.connect(lambda v: self.gc_cas_hi.setMinimum(v))
+        self.gc_cas_hi.valueChanged.connect(lambda v: self.gc_cas_lo.setMaximum(v))
+        row_cas = QWidget(); hb_cas = QHBoxLayout(row_cas); hb_cas.setContentsMargins(0,0,0,0)
+        hb_cas.addWidget(self.gc_cas_lo); hb_cas.addWidget(QLabel(" to ")); hb_cas.addWidget(self.gc_cas_hi)
+        f2.addRow("CAS range [kt] (lo:hi):", row_cas)
 
-    def _ranges(self):
-        toks = ["SATG_GC_RANGE",
-                _kv("cas1", self.cas1.text().strip()),
-                _kv("cas2", self.cas2.text().strip()),
-                _kv("fl1",  self.fl1.text().strip()),
-                _kv("fl2",  self.fl2.text().strip()),
-                _kv("brg1", self.brg1.text().strip()),
-                _kv("angle",self.ang.text().strip())]
+        main.addWidget(gb2)
+
+        # -------- 3) Actions --------
+        gb3 = QGroupBox("3) Actions")
+        f3 = QFormLayout(gb3)
+
+        btn_cre  = QPushButton("CREATE SCENARIO")
+        btn_run  = QPushButton("RUN SCENARIO")
+        btn_both = QPushButton("CREATE & RUN SCENARIO")
+        row_act = QWidget(); hb_act = QHBoxLayout(row_act); hb_act.setContentsMargins(0,0,0,0)
+        hb_act.addWidget(btn_cre); hb_act.addWidget(btn_run); hb_act.addWidget(btn_both)
+        f3.addRow(row_act)
+
+        main.addWidget(gb3)
+
+        # wire actions
+        btn_cre.clicked.connect(self._gc_create)
+        btn_run.clicked.connect(self._gc_run_only)
+        btn_both.clicked.connect(self._gc_create_and_run)
+
+        
+
+    # ---------- helpers ----------
+    def _gc_types_csv(self) -> str:
+        sel = []
+        if self.gc_headon.isChecked(): sel.append("headon")
+        if self.gc_cross.isChecked():  sel.append("cross")
+        if self.gc_overtk.isChecked(): sel.append("overtake")
+        return ",".join(sel)
+
+    def _gc_ensure_types(self) -> bool:
+        if self.gc_headon.isChecked() or self.gc_cross.isChecked() or self.gc_overtk.isChecked():
+            return True
+        _emit("ECHO Please select at least one conflict type.")
+        return False
+
+    def _gc_altmode(self) -> str:
+        a = self.gc_alt_level.isChecked()
+        b = self.gc_alt_altcross.isChecked()
+        if a and b: return "mix"
+        if a: return "level"
+        if b: return "altcross"
+        return "level"
+
+    # ---------- emitters ----------
+    def _emit_gc_conf(self):
+        _emit(f"SATG_GC_CONF {self.gc_hsep.value()} {self.gc_vsep.value()}")
+
+    def _emit_gc_range(self):
+        fl_lo, fl_hi   = int(self.gc_fl_lo.value()),  int(self.gc_fl_hi.value())
+        cas_lo, cas_hi = int(self.gc_cas_lo.value()), int(self.gc_cas_hi.value())
+        toks = ["SATG_GC_RANGE", _kv("fl", f"{fl_lo}:{fl_hi}"), _kv("cas", f"{cas_lo}:{cas_hi}")]
         _emit(_join_tokens(*toks))
 
-    def _cre(self):
-        name = self.name.text().strip()
-        typ  = self.typ.currentText().strip()
-        altm = self.altm.currentText().strip()
-        lat  = self.lat.text().strip()
-        lon  = self.lon.text().strip()
-        tcpa = self.tcpa.text().strip()
-        angle= self.angle.text().strip()
-        toks = ["SATG_GC_CRE",
-                _kv("name", name),
-                _kv("type", typ),
-                _kv("altmode", altm),
-                _kv("lat", lat), _kv("lon", lon),
-                _kv("tcpa", tcpa),
-                _kv("angle", angle) if angle else "",
-                _kv("overwrite", 1 if self.overwrite.isChecked() else 0)]
+    def _emit_gc_cre(self):
+        if not self._gc_ensure_types():
+            return
+        name = self.gc_name.text().strip()
+        if not name:
+            _emit("ECHO Please provide a scenario name.")
+            return
+        types_csv = self._gc_types_csv()
+        altmode   = self._gc_altmode()
+        ow        = 1 if self.gc_overwrite_cb.isChecked() else 0
+
+        toks = [
+            "SATG_GC_CRE",
+            _kv("name",   name),
+            _kv("typ",    types_csv),
+            _kv("altmode", altmode),
+            _kv("lat",    self.gc_lat.text().strip()),
+            _kv("lon",    self.gc_lon.text().strip()),
+            _kv("tcpa",   int(self.gc_tcpa.value())),
+            _kv("overwrite", ow),
+        ]
+        if "cross" in {t.strip() for t in types_csv.split(",") if t.strip()}:
+            toks.append(_kv("angle", int(self.gc_angle.value())))
         _emit(_join_tokens(*toks))
+
+    # ---------- actions ----------
+    def _gc_create(self):
+        # Push minima and ranges first, then create (like RC)
+        self._emit_gc_conf()
+        self._emit_gc_range()
+        self._emit_gc_cre()
+
+    def _gc_run_only(self):
+        name = self.gc_name.text().strip()
+        if name:
+            _emit("SATG_GC_RUN " + name)
+
+    def _gc_create_and_run(self):
+        self._gc_create()
+        self._gc_run_only()
+
 
 # --- RC tab (Random Conflicts) ---------------------------------------------
 
@@ -371,50 +432,94 @@ class RCTab(QWidget):
         self.alt_level   = QCheckBox("Level");    self.alt_level.setChecked(True)
         self.alt_altcross= QCheckBox("Alt-cross"); # unchecked default
         alt_hb.addWidget(self.alt_level); alt_hb.addWidget(self.alt_altcross); alt_hb.addStretch(1)
-        self.tcpa = QLineEdit("60:240")     # seconds or lo:hi
-        self.angle = QLineEdit("")          # optional lo:hi for cross
         self.seed = QSpinBox(); self.seed.setRange(0, 2**31-1); self.seed.setValue(0)
         self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.1, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
         self.vsep = QSpinBox();       self.vsep.setRange(100, 5000);  self.vsep.setValue(1000)
 
-        self.actypes = QLineEdit("A320,B738")
-        self.overwrite = QCheckBox("Overwrite existing file")
+        self.actypes = QLineEdit("A320,B738,A350,B78X")
+        # Overwrite toggle (checkbox -> 0/1 when emitting)
+        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
+        self.gc_overwrite_cb.setChecked(False)
 
+        # TCPA lo/hi (seconds)
+        self.tcpa_lo = QDoubleSpinBox(); self.tcpa_lo.setDecimals(0); self.tcpa_lo.setRange(0, 3600); self.tcpa_lo.setValue(60)
+        self.tcpa_hi = QDoubleSpinBox(); self.tcpa_hi.setDecimals(0); self.tcpa_hi.setRange(0, 3600); self.tcpa_hi.setValue(240)
+        # keep lo <= hi
+        self.tcpa_lo.valueChanged.connect(lambda v: self.tcpa_hi.setMinimum(v))
+        self.tcpa_hi.valueChanged.connect(lambda v: self.tcpa_lo.setMaximum(v))
+        row_tcpa = QWidget(); hb_tcpa = QHBoxLayout(row_tcpa); hb_tcpa.setContentsMargins(0,0,0,0)
+        hb_tcpa.addWidget(self.tcpa_lo); hb_tcpa.addWidget(QLabel(" to ")); hb_tcpa.addWidget(self.tcpa_hi)
+
+        # Cross angle lo/hi (deg)
+        self.ang_lo = QDoubleSpinBox(); self.ang_lo.setDecimals(0); self.ang_lo.setRange(0, 180); self.ang_lo.setValue(60)
+        self.ang_hi = QDoubleSpinBox(); self.ang_hi.setDecimals(0); self.ang_hi.setRange(0, 180); self.ang_hi.setValue(120)
+        self.ang_lo.valueChanged.connect(lambda v: self.ang_hi.setMinimum(v))
+        self.ang_hi.valueChanged.connect(lambda v: self.ang_lo.setMaximum(v))
+        row_ang = QWidget(); hb_ang = QHBoxLayout(row_ang); hb_ang.setContentsMargins(0,0,0,0)
+        hb_ang.addWidget(self.ang_lo); hb_ang.addWidget(QLabel(" to ")); hb_ang.addWidget(self.ang_hi)
+        
         f1.addRow("Scenario name:", self.scn)
         f1.addRow("Number of conflicts (n):", self.n)
         f1.addRow("Types:", types_box)
         f1.addRow("Alt mode:", alt_row)
-        f1.addRow("TCPA [s] (x or lo:hi):", self.tcpa)
-        f1.addRow("Cross angle [deg] (lo:hi, optional):", self.angle)
+        f1.addRow("TCPA [s] (lo:hi):", row_tcpa)
+        f1.addRow("Cross angle [deg] (lo:hi):", row_ang)
         f1.addRow("Seed (0=none):", self.seed)
         f1.addRow("HSEP [NM]:", self.hsep)
         f1.addRow("VSEP [ft]:", self.vsep)
-        f1.addRow("AC types (CSV):", self.actypes)
-        f1.addRow("Overwrite (0/1):", self.overwrite)
+        f1.addRow("AC types:", self.actypes)
+        f1.addRow(self.gc_overwrite_cb)
+
+        def _upd_angle_enabled():
+            self.ang_lo.setEnabled(self.cb_cross.isChecked())
+            self.ang_hi.setEnabled(self.cb_cross.isChecked())
+
+        self.cb_cross.toggled.connect(lambda _: _upd_angle_enabled())
+        _upd_angle_enabled()
 
         # 2) Circle region
         gb2 = QGroupBox("2) Circle region")
         f2 = QFormLayout(gb2)
-        f2.addRow(QLabel("CPA uniformly sampled in a circle. All aircraft spawn at t=0; CPA time equals TCPA."))
+
+        # Make the note a widget, style the widget (not the layout), then add it
+        desc = QLabel("CPA uniformly sampled in a circle. All aircraft spawn at t=0; CPA time equals TCPA.")
+        desc.setStyleSheet("color: #666; font-style: italic;")
+        # Add as a full-width row in the form
+        f2.addRow(desc)
+
 
         self.c_lat = QLineEdit("52.10")
         self.c_lon = QLineEdit("4.50")
         self.c_rad = QDoubleSpinBox(); self.c_rad.setRange(0.1, 1000.0); self.c_rad.setDecimals(2); self.c_rad.setValue(25.0)
-        self.c_fl  = QLineEdit("290:370")
-        self.c_cas = QLineEdit("220:280")
 
+        # FL lo/hi (flight levels)
+        self.fl_lo = QDoubleSpinBox(); self.fl_lo.setDecimals(0); self.fl_lo.setRange(0, 500); self.fl_lo.setValue(290)
+        self.fl_hi = QDoubleSpinBox(); self.fl_hi.setDecimals(0); self.fl_hi.setRange(0, 500); self.fl_hi.setValue(370)
+        self.fl_lo.valueChanged.connect(lambda v: self.fl_hi.setMinimum(v))
+        self.fl_hi.valueChanged.connect(lambda v: self.fl_lo.setMaximum(v))
+        row_fl = QWidget(); hb_fl = QHBoxLayout(row_fl); hb_fl.setContentsMargins(0,0,0,0)
+        hb_fl.addWidget(self.fl_lo); hb_fl.addWidget(QLabel(" to ")); hb_fl.addWidget(self.fl_hi)
+
+        # CAS lo/hi (kt)
+        self.cas_lo = QDoubleSpinBox(); self.cas_lo.setDecimals(0); self.cas_lo.setRange(100, 600); self.cas_lo.setValue(220)
+        self.cas_hi = QDoubleSpinBox(); self.cas_hi.setDecimals(0); self.cas_hi.setRange(100, 600); self.cas_hi.setValue(280)
+        self.cas_lo.valueChanged.connect(lambda v: self.cas_hi.setMinimum(v))
+        self.cas_hi.valueChanged.connect(lambda v: self.cas_lo.setMaximum(v))
+        row_cas = QWidget(); hb_cas = QHBoxLayout(row_cas); hb_cas.setContentsMargins(0,0,0,0)
+        hb_cas.addWidget(self.cas_lo); hb_cas.addWidget(QLabel(" to ")); hb_cas.addWidget(self.cas_hi)
+        
         f2.addRow("Center lat [deg]:", self.c_lat)
         f2.addRow("Center lon [deg]:", self.c_lon)
         f2.addRow("Radius [NM]:", self.c_rad)
-        f2.addRow("FL range (lo:hi, optional):", self.c_fl)
-        f2.addRow("CAS range [kt] (lo:hi, optional):", self.c_cas)
+        f2.addRow("FL range (lo:hi):", row_fl)
+        f2.addRow("CAS range [kt] (lo:hi):", row_cas)
 
         # 3) Actions
         gb3 = QGroupBox("3) Actions")
         row = QWidget(); h = QHBoxLayout(row); h.setContentsMargins(0,0,0,0); h.setSpacing(8)
-        self.btn_cre = QPushButton("Create — SATG_RC_CIRCLE")
-        self.btn_run = QPushButton("Run scenario")
-        self.btn_both= QPushButton("Create & Run")
+        self.btn_cre = QPushButton("CREATE SCENARIO")
+        self.btn_run = QPushButton("RUN SCENARIO")
+        self.btn_both= QPushButton("CREATE & RUN SCENARIO")
         self.btn_cre.clicked.connect(self._create)
         self.btn_run.clicked.connect(self._run)
         self.btn_both.clicked.connect(self._create_and_run)
@@ -436,8 +541,11 @@ class RCTab(QWidget):
         return False
 
     def _create(self):
-        if not self._ensure_types(): return
+        # 0) Must have at least one conflict type selected
+        if not self._ensure_types():
+            return
 
+        # 1) Alt mode from checkboxes
         if self.alt_level.isChecked() and self.alt_altcross.isChecked():
             altmode_val = "mix"
         elif self.alt_level.isChecked():
@@ -445,32 +553,54 @@ class RCTab(QWidget):
         elif self.alt_altcross.isChecked():
             altmode_val = "altcross"
         else:
-            altmode_val = "level"
+            altmode_val = "level"  # fallback
 
+        # 2) Push HSEP/VSEP first so backend minima are in sync
         _emit(f"SATG_GC_CONF {self.hsep.value()} {self.vsep.value()}")
 
+        # 3) Gather inputs
+        name_val   = self.scn.text().strip()
+        types_csv  = self._types_csv()  # from head-on / crossing / overtake checkboxes
+        center_lat = self.c_lat.text().strip()
+        center_lon = self.c_lon.text().strip()
+        radius_nm  = float(self.c_rad.value())
+        seed_val   = int(self.seed.value())
+        actypes_val = self.actypes.text().strip()
+        overwrite_val = 1 if self.overwrite.isChecked() else 0
+
+        # Ranges from spin boxes -> "lo:hi"
+        tcpa_lo, tcpa_hi = int(self.tcpa_lo.value()), int(self.tcpa_hi.value())   # seconds
+        fl_lo,   fl_hi   = int(self.fl_lo.value()),   int(self.fl_hi.value())     # flight levels
+        cas_lo,  cas_hi  = int(self.cas_lo.value()),  int(self.cas_hi.value())    # knots
+
+        # 4) Build command tokens
         toks = [
             "SATG_RC_CIRCLE",
-            _kv("name", self.scn.text().strip()),
+            _kv("name", name_val),
             _kv("n", self.n.value()),
-            _kv("types", self._types_csv()),
-            _kv("center_lat", self.c_lat.text().strip()),
-            _kv("center_lon", self.c_lon.text().strip()),
-            _kv("radius_nm", self.c_rad.value()),
+            _kv("types", types_csv),
+            _kv("center_lat", center_lat),
+            _kv("center_lon", center_lon),
+            _kv("radius_nm", radius_nm),
             _kv("altmode", altmode_val),
-            _kv("tcpa", self.tcpa.text().strip()),
-            _kv("actypes", self.actypes.text().strip()),  # <-- NEW
+            _kv("tcpa", f"{tcpa_lo}:{tcpa_hi}"),
+            _kv("fl",   f"{fl_lo}:{fl_hi}"),
+            _kv("cas",  f"{cas_lo}:{cas_hi}"),
+            _kv("actypes", actypes_val),
+            _kv("overwrite", overwrite_val),
         ]
-        ang = self.angle.text().strip()
-        if ang: toks.append(_kv("angle", ang))
-        sd = self.seed.value()
-        if sd != 0: toks.append(_kv("seed", sd))
-        fl = self.c_fl.text().strip()
-        if fl: toks.append(_kv("fl", fl))
-        cas = self.c_cas.text().strip()
-        if cas: toks.append(_kv("cas", cas))
-        toks.append(_kv("overwrite", 1 if self.overwrite.isChecked() else 0))
 
+        # Angle only matters if 'cross' is selected
+        type_set = {t.strip() for t in types_csv.split(",") if t.strip()}
+        if "cross" in type_set:
+            ang_lo, ang_hi = int(self.ang_lo.value()), int(self.ang_hi.value())
+            toks.append(_kv("angle", f"{ang_lo}:{ang_hi}"))
+
+        # Seed is optional; omit if 0
+        if seed_val != 0:
+            toks.append(_kv("seed", seed_val))
+
+        # 5) Emit
         _emit(_join_tokens(*toks))
 
     def _run(self):
