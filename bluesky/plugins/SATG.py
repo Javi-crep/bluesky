@@ -178,6 +178,10 @@ class _SATGState:
         # Last geometric-conflict aircraft (for quick delete)
         self.gc_last_acids: List[str] = []
 
+        self.proc_wpt_files = []   
+        self.proc_proc_files = []  
+
+
 STATE = _SATGState()
 DEFAULT_BASE_DIR = os.path.abspath(os.path.join(os.getcwd(), "satg_data"))
 
@@ -610,6 +614,132 @@ def _write_gc_scn(out_path: str, *,
         nxt="Load: SATG_GC_RUN [SCNNAME]  |  Add more: SATG_GC_CRE name=<sameSCN> ...  |  Clean: SATG_GC_DEL"
     )
 
+# ------- Procedures helpers ----------------- #
+def _dms_to_deg(sign, d, m, s):
+    deg = float(d) + float(m)/60.0 + float(s)/3600.0
+    if sign in ("S","W"): deg = -deg
+    return deg
+
+def _parse_defwpt_line(line: str):
+    L = line.strip()
+    if not L or "DEFWPT" not in L.upper():
+        return None
+    # Numeric: >DEFWPT NAME lat lon
+    m = re.search(r">\s*DEFWPT\s+([A-Za-z0-9_+-]+)\s+([\-0-9\.]+)\s+([\-0-9\.]+)", L, re.IGNORECASE)
+    if m:
+        return m.group(1).strip(), float(m.group(2)), float(m.group(3))
+    # DMS: >DEFWPT NAME Ndd'mm'ss.ss" Edd'mm'ss.ss"
+    m2 = re.search(r">\s*DEFWPT\s+([A-Za-z0-9_+-]+)\s+N(\d+)'(\d+)'(\d+(?:\.\d+)?)\"\s+E(\d+)'(\d+)'(\d+(?:\.\d+)?)\"", L, re.IGNORECASE)
+    if m2:
+        name = m2.group(1).strip()
+        lat  = _dms_to_deg("N", m2.group(2), m2.group(3), m2.group(4))
+        lon  = _dms_to_deg("E", m2.group(5), m2.group(6), m2.group(7))
+        return name, lat, lon
+    return None
+
+def _build_fix_db(wpt_files: list[str]) -> dict:
+    db = {}
+    for p in wpt_files:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for ln in f:
+                    hit = _parse_defwpt_line(ln)
+                    if hit:
+                        name, lat, lon = hit
+                        db[name.upper()] = (lat, lon)
+        except Exception:
+            continue
+    return db
+
+def _proc_first_two_fixes(proc_path: str, fix_keys: set) -> tuple[str|None, str|None]:
+    """Heuristic: first two tokens that match known DEFWPT names."""
+    try:
+        with open(proc_path, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except Exception:
+        return None, None
+    cand = []
+    for tok in re.findall(r"[A-Za-z0-9_+-]{3,}", txt):
+        u = tok.upper()
+        if u in fix_keys:
+            if not cand or cand[-1] != u:
+                cand.append(u)
+            if len(cand) >= 2:
+                break
+    if len(cand) >= 2: return cand[0], cand[1]
+    if len(cand) == 1: return cand[0], None
+    return None, None
+
+def _bearing_deg(lat1, lon1, lat2, lon2):
+    try:
+        from bluesky.tools import geo
+        if hasattr(geo, "qdrdist"):
+            brg, _ = geo.qdrdist(lat1, lon1, lat2, lon2)
+            return float(brg) % 360.0
+    except Exception:
+        pass
+    # fallback
+    phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+    dlam = math.radians(lon2 - lon1)
+    y = math.sin(dlam) * math.cos(phi2)
+    x = math.cos(phi1)*math.sin(phi2) - math.sin(phi1)*math.cos(phi2)*math.cos(dlam)
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+def _dest_nm(lat, lon, brg_deg, dist_nm):
+    try:
+        from bluesky.tools import geo
+        if hasattr(geo, "qdrpos"):
+            lat2, lon2 = geo.qdrpos(lat, lon, brg_deg, dist_nm)
+            return float(lat2), float(lon2)
+    except Exception:
+        pass
+    # fallback
+    Rnm = 3440.065
+    d = float(dist_nm) / Rnm
+    th = math.radians(brg_deg)
+    phi1 = math.radians(lat); lam1 = math.radians(lon)
+    phi2 = math.asin(math.sin(phi1)*math.cos(d) + math.cos(phi1)*math.sin(d)*math.cos(th))
+    lam2 = lam1 + math.atan2(math.sin(th)*math.sin(d)*math.cos(phi1), math.cos(d) - math.sin(phi1)*math.sin(phi2))
+    return math.degrees(phi2), ((math.degrees(lam2)+540)%360)-180
+
+def _fmt_ts(t: float) -> str:
+    t = max(0.0, float(t))
+    h = int(t // 3600); t -= 3600*h
+    m = int(t // 60); t -= 60*m
+    s = t
+    return f"{h}:{m:02d}:{s:05.2f}>"
+
+def _scn_path(name: str) -> str:
+    name = name.strip()
+    if not name.lower().endswith(".scn"):
+        name += ".scn"
+    base = getattr(STATE, "base_dir", "")
+    return os.path.join(base, name) if base else name
+
+def _normpath(p: str) -> str:
+    """Normalize a user-supplied path. Strips quotes, expands ~, makes absolute.
+       If path is relative and a base_dir is set, resolve relative to base_dir.
+    """
+    if not p:
+        return ""
+    s = p.strip().strip('"').strip("'")
+    # If it’s already absolute, keep it; otherwise resolve against base_dir if available
+    if os.path.isabs(s):
+        return os.path.abspath(os.path.expanduser(s))
+    base = getattr(STATE, "base_dir", "")
+    root = base if base else os.getcwd()
+    return os.path.abspath(os.path.join(root, os.path.expanduser(s)))
+
+def _ic_path_for(scn_path: str, target: str) -> str:
+    """Return a clean IC path relative to the scenario file directory, no quotes."""
+    base = os.path.dirname(os.path.abspath(scn_path))
+    try:
+        rel = os.path.relpath(os.path.abspath(target), start=base)
+    except Exception:
+        rel = target
+    # BlueSky scenario files are happier with forward slashes
+    return rel.replace("\\", "/")
+
 # ---------------- Stack commands (typed for console hints) ---------------- #
 @command
 def SATG_DIR(base: str=None):
@@ -1040,5 +1170,198 @@ def SATG_RC_CIRCLE(*argv):
         STATE.gc_ranges = old
     return True, ""
 
+# -------------------- Stack commands procedures -------------------- #
+@command
+def SATG_PROC_LOAD_WPT(path: str):
+    p = _normpath(path.strip('"').strip("'"))
+    if not os.path.isfile(p): _echo_err(f"File not found: {p}"); return False, ""
+    if p not in STATE.proc_wpt_files: STATE.proc_wpt_files.append(p)
+    _echo_ok(f"Loaded waypoint file: {p}"); return True, ""
+
+@command
+def SATG_PROC_UNLOAD_WPT(path: str):
+    p = _normpath(path.strip('"').strip("'"))
+    STATE.proc_wpt_files = [x for x in STATE.proc_wpt_files if x != p]
+    _echo_ok(f"Unloaded waypoint file: {p}"); return True, ""
+
+@command
+def SATG_PROC_CLEAR_WPT():
+    STATE.proc_wpt_files.clear(); _echo_ok("Cleared waypoint files"); return True, ""
+
+@command
+def SATG_PROC_LOAD_PROC(path: str):
+    p = _normpath(path.strip('"').strip("'"))
+    if not os.path.isfile(p): _echo_err(f"File not found: {p}"); return False, ""
+    if p not in STATE.proc_proc_files: STATE.proc_proc_files.append(p)
+    _echo_ok(f"Loaded procedure file: {p}"); return True, ""
+
+@command
+def SATG_PROC_UNLOAD_PROC(path: str):
+    p = _normpath(path.strip('"').strip("'"))
+    STATE.proc_proc_files = [x for x in STATE.proc_proc_files if x != p]
+    _echo_ok(f"Unloaded procedure file: {p}"); return True, ""
+
+@command
+def SATG_PROC_CLEAR_PROC():
+    STATE.proc_proc_files.clear(); _echo_ok("Cleared procedure files"); return True, ""
+
+@command
+def SATG_PROC_MAKE(name: str,
+                   n: int,
+                   radius_nm: float,
+                   envelope_deg: float,
+                   minsep: int,
+                   seed: int = 0,
+                   overwrite: int = 0):
+    if not STATE.proc_proc_files:
+        _echo_err("No procedure files loaded (SATG_PROC_LOAD_PROC)."); return False, ""
+    out_path = _scn_path(name)
+    ow = int(overwrite)
+    exists = os.path.isfile(out_path)
+    append = (ow == 0) and exists
+
+    # Write header and IC's (fresh file only)
+    if not append:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("0:00:00.00>HOLD\n")
+            f.write("0:00:00.00>ASAS ON\n")
+            for w in STATE.proc_wpt_files:
+                f.write(f"0:00:00.00>IC {_ic_path_for(out_path, w)}\n")
+            for pr in STATE.proc_proc_files:
+                f.write(f"0:00:00.00>IC {_ic_path_for(out_path, pr)}\n")
+
+
+    # Build waypoint DB
+    fix_db = _build_fix_db(STATE.proc_wpt_files)
+    if not fix_db:
+        _echo_err("No waypoints parsed from DEFWPT files. Load waypoint .scn first."); return False, ""
+
+    rng = random.Random(int(seed)) if int(seed) != 0 else random.Random()
+    minsep = max(0, int(minsep))
+    R = max(0.01, float(radius_nm))
+    env = max(1.0, min(180.0, float(envelope_deg)))
+
+    procs = list(STATE.proc_proc_files)
+    next_t = {p: 0.0 for p in procs}
+    used = _scan_existing_acids(out_path) if append else set()
+
+    with open(out_path, "a", encoding="utf-8") as f:
+        for i in range(int(n)):
+            proc_path = rng.choice(procs)
+            proc_name = os.path.splitext(os.path.basename(proc_path))[0]  # e.g., SID-04-GORLO
+
+            # First two fixes referenced by the proc
+            f1_name, f2_name = _proc_first_two_fixes(proc_path, set(fix_db.keys()))
+            if not f1_name or f1_name not in fix_db:
+                _echo_err(f"{proc_name}: could not find first fix in waypoint DB."); return False, ""
+            latA, lonA = fix_db[f1_name]
+            if f2_name and f2_name in fix_db:
+                latB, lonB = fix_db[f2_name]
+                brg_AB = _bearing_deg(latA, lonA, latB, lonB)
+            else:
+                brg_AB = 0.0
+            brg_BA = (brg_AB + 180.0) % 360.0  # inbound to first fix
+
+            # Random point in sector around first fix, toward it
+            half = env / 2.0
+            theta = (brg_BA - half) + rng.random() * (2.0 * half)
+            r = R * math.sqrt(rng.random())  # sqrt for uniform area
+            lat0, lon0 = _dest_nm(latA, lonA, theta, r)
+            hdg0 = _bearing_deg(lat0, lon0, latA, lonA)
+
+            # Simple defaults; adjust if you want SID/APP heuristics
+            alt_ft0 = 3000
+            cas0 = 180.0
+            actype = "A320"
+
+            # Time schedule with per-procedure separation
+            t0 = next_t[proc_path]; next_t[proc_path] = t0 + minsep
+            ts = _fmt_ts(t0)
+
+            # Unique ACID
+            base = f"PR{(i+1):03d}"
+            acid = _next_unique_acid(base, used); used.add(acid)
+
+            # Write scenario lines
+            f.write(f"{ts}CRE {acid},{actype},{lat0:.6f},{lon0:.6f},{int(round(hdg0))%360:03d},{int(alt_ft0)},{float(cas0):.1f}\n")
+            f.write(f"{ts}LNAV {acid} ON\n")
+            f.write(f"{ts}VNAV {acid} ON\n")
+            # Assign the procedure by name (BlueSky interprets '<ACID> <PROCNAME>')
+            f.write(f"{ts}{acid} {proc_name}\n")
+
+    _sort_scn_file(out_path)
+    _echo_ok(f"Scenario written: {out_path}")
+    return True, ""
+
+@command
+def SATG_PROC_RUN(name: str):
+    out_path = _scn_path(name)
+    if not os.path.isfile(out_path):
+        _echo_err(f"Scenario not found: {out_path}"); return False, ""
+    stack.stack(f"IC {out_path}")
+    _echo_ok(f"Loaded scenario: {out_path}")
+    return True, ""
+
+@command
+def SATG_HELP(topic: str = ""):
+    """
+    Print SATG help in the console. Optional topic filter prints only matching lines.
+    Usage:
+      SATG_HELP
+      SATG_HELP random
+      SATG_HELP proc
+    """
+    lines = [
+        "SATG Help",
+        "=========",
+        "",
+        "Random conflicts in a circle:",
+        "  SATG_RC_CIRCLE name N types center_lat center_lon radius_nm altmode tcpa fl cas actypes overwrite [angle]",
+        "  - types: headon,cross,overtake (comma separated)",
+        "  - altmode: level | altcross | mix",
+        "  - tcpa: seconds lo:hi, all aircraft spawn at t=0 (tcpa is time to CPA)",
+        "  - fl: flight level lo:hi",
+        "  - cas: kt lo:hi",
+        "  - angle: lo:hi degrees, only for crossing",
+        "  - overwrite: 1 overwrite file, 0 append",
+        "",
+        "Geometric conflicts:",
+        "  SATG_GC_CONF HSEP VSEP",
+        "  SATG_GC_RANGE fl=lo:hi cas=lo:hi",
+        "  SATG_GC_CRE name=<...> typ=<headon,cross,overtake> altmode=<level|altcross|mix> lat=<deg> lon=<deg> tcpa=<s> [angle=<deg>] overwrite=<0|1>",
+        "  SATG_GC_RUN name",
+        "",
+        "Realistic replay:",
+        "  SATG_RL_MAKE name overwrite",
+        "  SATG_RL_RUN  name overwrite",
+        "  Notes: jitter and auto-delete are set via the GUI and applied just-in-time.",
+        "",
+        "Procedures mode:",
+        "  Load waypoint files (DEFWPT) and procedure files (%0) first:",
+        "    SATG_PROC_LOAD_WPT path_to_fix_file.scn",
+        "    SATG_PROC_LOAD_PROC path_to_proc_file.scn",
+        "  Make and run:",
+        "    SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite",
+        "    SATG_PROC_RUN  name",
+        "  Behavior: spawns near the first fix inside a sector pointing inbound to it,",
+        "            enforces per-procedure min time separation.",
+        "",
+        "General:",
+        "  - Use the GUI to set a base folder. Scenario files are written there.",
+        "  - When appending to an existing scenario, callsigns are auto-renamed to avoid duplicates.",
+        "  - Scenario files are sorted by time after writing.",
+    ]
+
+    t = topic.strip().lower()
+    if not t:
+        return True, "\n".join(lines)
+
+    # Simple filter: print only lines containing the topic
+    filtered = [ln for ln in lines if t in ln.lower()]
+    if not filtered:
+        return True, "No matching help entries."
+    return True, "\n".join(filtered)
+
+# ------------------- Plugin init -------------------- #
 def init_plugin():
     return {'plugin_name': 'SATG', 'plugin_type': 'sim'}
