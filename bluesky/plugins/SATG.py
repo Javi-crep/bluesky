@@ -21,6 +21,43 @@ import re
 from bluesky import stack
 from bluesky.stack import command
 from bluesky.tools import geo
+from bluesky.tools import misc as _misc
+import bluesky.traffic.traffic as _traf_mod
+
+
+def _satg_safe_lat2txt(lat: float) -> str:
+    """Robust lat formatter that tolerates numpy scalars."""
+    latf = float(lat)
+    d, m, s = _misc.float2degminsec(abs(latf))
+    d = int(round(d))
+    m = int(round(m))
+    s = int(round(s))
+    prefix = "S" if latf < 0 else "N"
+    return f"{prefix}{d:02d}'{m:02d}'{s}\""
+
+
+def _satg_safe_lon2txt(lon: float) -> str:
+    """Robust lon formatter that tolerates numpy scalars."""
+    lonf = float(lon)
+    d, m, s = _misc.float2degminsec(abs(lonf))
+    d = int(round(d))
+    m = int(round(m))
+    s = int(round(s))
+    prefix = "W" if lonf < 0 else "E"
+    return f"{prefix}{d:03d}'{m:02d}'{s}\""
+
+
+def _satg_safe_latlon2txt(lat: float, lon: float) -> str:
+    return f"{_satg_safe_lat2txt(lat)}  {_satg_safe_lon2txt(lon)}"
+
+
+if getattr(_misc.lat2txt, "__name__", "") != "_satg_safe_lat2txt":
+    _misc.lat2txt = _satg_safe_lat2txt
+    _misc.lon2txt = _satg_safe_lon2txt
+    _misc.latlon2txt = _satg_safe_latlon2txt
+    _traf_mod.latlon2txt = _satg_safe_latlon2txt
+
+_SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
 
 # ---------------- ISA + GS->CAS (wind=0) ---------------- #
 GAMMA = 1.4; R = 287.05287; G0 = 9.80665
@@ -180,6 +217,11 @@ class _SATGState:
 
         self.proc_wpt_files = []   
         self.proc_proc_files = []  
+        self.proc_sid_info: Dict[str, Dict[str, str]] = {}
+        self.proc_sid_lookup: Dict[str, str] = {}
+        self.proc_generic_cfg = {"flights": 20, "minsep": 90}
+        self.proc_sid_cfg = {"flights": 0, "minsep": 90, "alt_ft": 3000, "spd_kt": 210}
+        self.proc_star_cfg = {"flights": 0, "minsep": 30}
 
 
 STATE = _SATGState()
@@ -195,6 +237,45 @@ def _init_dirs(base_dir: Optional[str]=None):
     STATE.base_dir = base; STATE.data_dir = data; STATE.scn_dir = scns
 
 _init_dirs()
+
+def _register_sid_proc(path: str):
+    """Register SID metadata for the given procedure file path if applicable."""
+    path = os.path.abspath(path)
+    base = os.path.basename(path)
+    match = _SID_FILE_RE.match(base)
+    prev = STATE.proc_sid_info.get(path, {})
+    if match:
+        runway = match.group(1).upper()
+        basename_no_ext = os.path.splitext(base)[0]
+        key = basename_no_ext.upper()
+        info = {
+            "path": path,
+            "basename": basename_no_ext,
+            "runway": runway,
+            "icao": prev.get("icao", "")
+        }
+        STATE.proc_sid_info[path] = info
+        STATE.proc_sid_lookup[key] = path
+        return info
+    # Not a SID file: ensure clean-up
+    _unregister_sid_proc(path)
+    return None
+
+
+def _unregister_sid_proc(path: str):
+    """Remove SID metadata for the given procedure file path."""
+    path = os.path.abspath(path)
+    info = STATE.proc_sid_info.pop(path, None)
+    if info:
+        key = info.get("basename", "").upper()
+        if STATE.proc_sid_lookup.get(key) == path:
+            STATE.proc_sid_lookup.pop(key, None)
+    else:
+        # Ensure lookup clean even if info not stored
+        for key, val in list(STATE.proc_sid_lookup.items()):
+            if val == path:
+                STATE.proc_sid_lookup.pop(key, None)
+
 
 # ---------------- RL I/O ---------------- #
 _EXPECT_FLIGHTS = {'ECTRL ID','ADEP','ADES','AC Type'}
@@ -723,22 +804,18 @@ def _normpath(p: str) -> str:
     if not p:
         return ""
     s = p.strip().strip('"').strip("'")
-    # If it’s already absolute, keep it; otherwise resolve against base_dir if available
+    # If it's already absolute, keep it; otherwise resolve against base_dir if available
     if os.path.isabs(s):
         return os.path.abspath(os.path.expanduser(s))
     base = getattr(STATE, "base_dir", "")
     root = base if base else os.getcwd()
     return os.path.abspath(os.path.join(root, os.path.expanduser(s)))
 
-def _ic_path_for(scn_path: str, target: str) -> str:
-    """Return a clean IC path relative to the scenario file directory, no quotes."""
-    base = os.path.dirname(os.path.abspath(scn_path))
-    try:
-        rel = os.path.relpath(os.path.abspath(target), start=base)
-    except Exception:
-        rel = target
-    # BlueSky scenario files are happier with forward slashes
-    return rel.replace("\\", "/")
+def _cmd_path(target: str) -> str:
+    """Return an absolute path for BlueSky commands, quoting when spaces are present."""
+    abs_path = _normpath(target)
+    clean = abs_path.replace("\\", "/")
+    return f"\"{clean}\"" if " " in clean else clean
 
 # ---------------- Stack commands (typed for console hints) ---------------- #
 @command
@@ -1190,20 +1267,105 @@ def SATG_PROC_CLEAR_WPT():
 
 @command
 def SATG_PROC_LOAD_PROC(path: str):
-    p = _normpath(path.strip('"').strip("'"))
+    p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     if not os.path.isfile(p): _echo_err(f"File not found: {p}"); return False, ""
     if p not in STATE.proc_proc_files: STATE.proc_proc_files.append(p)
-    _echo_ok(f"Loaded procedure file: {p}"); return True, ""
+    info = _register_sid_proc(p)
+    if info:
+        _echo_ok(f"Loaded SID procedure file: {p}")
+        if not info.get("icao"):
+            _echo_lines([
+                "[SATG] Provide airport ICAO for SID:",
+                f"[SATG]   SATG_PROC_SET_ICAO {info['basename']} <ICAO>"
+            ])
+    else:
+        _echo_ok(f"Loaded procedure file: {p}")
+    return True, ""
 
 @command
 def SATG_PROC_UNLOAD_PROC(path: str):
-    p = _normpath(path.strip('"').strip("'"))
+    p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     STATE.proc_proc_files = [x for x in STATE.proc_proc_files if x != p]
+    _unregister_sid_proc(p)
     _echo_ok(f"Unloaded procedure file: {p}"); return True, ""
 
 @command
 def SATG_PROC_CLEAR_PROC():
-    STATE.proc_proc_files.clear(); _echo_ok("Cleared procedure files"); return True, ""
+    STATE.proc_proc_files.clear()
+    STATE.proc_sid_info.clear()
+    STATE.proc_sid_lookup.clear()
+    _echo_ok("Cleared procedure files"); return True, ""
+
+@command
+def SATG_PROC_SET_ICAO(proc_id: str, icao: str):
+    pid = proc_id.strip().upper()
+    if not pid:
+        _echo_err("SATG_PROC_SET_ICAO requires a procedure identifier."); return False, ""
+    if not icao:
+        _echo_err("SATG_PROC_SET_ICAO requires an ICAO code."); return False, ""
+    icao_up = icao.strip().upper()
+    if len(icao_up) not in (3, 4):
+        _echo_err("ICAO codes should be 3 or 4 letters."); return False, ""
+
+    # Try direct lookup by basename
+    path = STATE.proc_sid_lookup.get(pid)
+    if not path and pid.endswith(".SCN"):
+        path = STATE.proc_sid_lookup.get(os.path.splitext(pid)[0])
+    # Try to resolve as path
+    if not path:
+        path_candidate = os.path.abspath(_normpath(proc_id.strip('"').strip("'")))
+        path = path_candidate if path_candidate in STATE.proc_sid_info else None
+
+    if not path:
+        _echo_err(f"No SID procedure loaded matching '{proc_id}'."); return False, ""
+
+    info = STATE.proc_sid_info.get(path)
+    if not info:
+        _echo_err(f"Procedure '{proc_id}' is not recognised as a SID."); return False, ""
+
+    info["icao"] = icao_up
+    STATE.proc_sid_lookup[info["basename"].upper()] = path  # ensure mapping
+    _echo_ok(f"ICAO set for {info['basename']}: {icao_up}")
+    return True, ""
+
+
+@command
+def SATG_PROC_CFG_GENERIC(flights: int, minsep: int):
+    flights = max(0, int(flights))
+    minsep = max(0, int(minsep))
+    STATE.proc_generic_cfg["flights"] = flights
+    STATE.proc_generic_cfg["minsep"] = minsep
+    _echo_ok(f"Generic procedures: flights={flights}, minsep={minsep}s")
+    return True, ""
+
+
+@command
+def SATG_PROC_CFG_SID(flights: int, minsep: int, alt_ft: int, spd_kt: float):
+    flights = max(0, int(flights))
+    minsep = max(0, int(minsep))
+    alt_ft = max(0, int(alt_ft))
+    spd_kt = max(0, int(float(spd_kt)))
+    STATE.proc_sid_cfg.update({
+        "flights": flights,
+        "minsep": minsep,
+        "alt_ft": alt_ft,
+        "spd_kt": spd_kt
+    })
+    _echo_ok(f"SID procedures: flights={flights}, minsep={minsep}s, alt={alt_ft}ft, spd={spd_kt}kt")
+    return True, ""
+
+
+@command
+def SATG_PROC_CFG_STAR(flights: int, minsep: int):
+    flights = max(0, int(flights))
+    minsep = max(0, int(minsep))
+    STATE.proc_star_cfg["flights"] = flights
+    STATE.proc_star_cfg["minsep"] = minsep
+    if flights > 0:
+        _echo_err("STAR procedures are not yet supported in generator output."); return False, ""
+    _echo_ok("STAR procedures: flights=0 (disabled)")
+    return True, ""
+
 
 @command
 def SATG_PROC_MAKE(name: str,
@@ -1226,32 +1388,91 @@ def SATG_PROC_MAKE(name: str,
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
             for w in STATE.proc_wpt_files:
-                f.write(f"0:00:00.00>IC {_ic_path_for(out_path, w)}\n")
-            for pr in STATE.proc_proc_files:
-                f.write(f"0:00:00.00>IC {_ic_path_for(out_path, pr)}\n")
+                f.write(f"0:00:00.00>PCALL {_cmd_path(w)}\n")
 
 
-    # Build waypoint DB
-    fix_db = _build_fix_db(STATE.proc_wpt_files)
-    if not fix_db:
-        _echo_err("No waypoints parsed from DEFWPT files. Load waypoint .scn first."); return False, ""
+    procs = [os.path.abspath(p) for p in STATE.proc_proc_files]
+    sid_missing = [
+        info["basename"] for path, info in STATE.proc_sid_info.items()
+        if path in procs and not info.get("icao")
+    ]
+    if sid_missing:
+        _echo_err("SID procedures missing ICAO codes: " + ", ".join(sorted(sid_missing)) +
+                  ". Use SATG_PROC_SET_ICAO <SID-NAME> <ICAO>."); return False, ""
+
+    gen_cfg = dict(STATE.proc_generic_cfg)
+    sid_cfg = dict(STATE.proc_sid_cfg)
+    star_cfg = dict(STATE.proc_star_cfg)
+
+    star_cfg["flights"] = 0  # STAR support pending
+
+    total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
+    if total_cfg <= 0:
+        gen_cfg["flights"] = int(n)
+        gen_cfg["minsep"] = max(0, int(minsep))
+        sid_cfg["flights"] = 0
+        sid_cfg["minsep"] = max(0, int(minsep))
+        total_cfg = gen_cfg["flights"]
+
+    sid_paths = [p for p in procs if p in STATE.proc_sid_info]
+    generic_paths = [p for p in procs if p not in STATE.proc_sid_info]
+
+    if not sid_paths:
+        sid_cfg["flights"] = 0
+    if not generic_paths:
+        gen_cfg["flights"] = 0
+
+    total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
+    if total_cfg <= 0:
+        base_n = int(n)
+        if generic_paths:
+            gen_cfg["flights"] = base_n
+            gen_cfg["minsep"] = max(0, int(minsep))
+        elif sid_paths:
+            sid_cfg["flights"] = base_n
+            sid_cfg["minsep"] = max(0, int(minsep))
+        total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
+
+    if total_cfg <= 0:
+        _echo_err("No usable procedure flights configured."); return False, ""
+
+    n = total_cfg
+
+    needs_fix_db = gen_cfg["flights"] > 0
+    fix_db: Dict[str, Tuple[float, float]] = {}
+    if needs_fix_db:
+        fix_db = _build_fix_db(STATE.proc_wpt_files)
+        if not fix_db:
+            _echo_err("No waypoints parsed from DEFWPT files. Load waypoint .scn first."); return False, ""
+    fix_keys = set(fix_db.keys()) if fix_db else set()
 
     rng = random.Random(int(seed)) if int(seed) != 0 else random.Random()
-    minsep = max(0, int(minsep))
     R = max(0.01, float(radius_nm))
     env = max(1.0, min(180.0, float(envelope_deg)))
 
-    procs = list(STATE.proc_proc_files)
-    next_t = {p: 0.0 for p in procs}
+    next_generic = {p: 0.0 for p in generic_paths}
+    next_sid = {p: 0.0 for p in sid_paths}
     used = _scan_existing_acids(out_path) if append else set()
 
     with open(out_path, "a", encoding="utf-8") as f:
-        for i in range(int(n)):
-            proc_path = rng.choice(procs)
-            proc_name = os.path.splitext(os.path.basename(proc_path))[0]  # e.g., SID-04-GORLO
+        flight_idx = 0
 
-            # First two fixes referenced by the proc
-            f1_name, f2_name = _proc_first_two_fixes(proc_path, set(fix_db.keys()))
+        # Generic procedures
+        for _ in range(int(gen_cfg["flights"])):
+            proc_path = rng.choice(generic_paths)
+            proc_name = os.path.splitext(os.path.basename(proc_path))[0]
+
+            t0 = next_generic[proc_path]; next_generic[proc_path] = t0 + gen_cfg["minsep"]
+            ts = _fmt_ts(t0)
+
+            base = f"PR{(flight_idx+1):03d}"
+            flight_idx += 1
+            acid = _next_unique_acid(base, used); used.add(acid)
+
+            if not fix_db:
+                _echo_err("Waypoint database unavailable for generic procedures. Load waypoint .scn first."); return False, ""
+
+            f1_name, f2_name = _proc_first_two_fixes(proc_path, fix_keys)
             if not f1_name or f1_name not in fix_db:
                 _echo_err(f"{proc_name}: could not find first fix in waypoint DB."); return False, ""
             latA, lonA = fix_db[f1_name]
@@ -1260,34 +1481,51 @@ def SATG_PROC_MAKE(name: str,
                 brg_AB = _bearing_deg(latA, lonA, latB, lonB)
             else:
                 brg_AB = 0.0
-            brg_BA = (brg_AB + 180.0) % 360.0  # inbound to first fix
+            brg_BA = (brg_AB + 180.0) % 360.0
 
-            # Random point in sector around first fix, toward it
             half = env / 2.0
             theta = (brg_BA - half) + rng.random() * (2.0 * half)
-            r = R * math.sqrt(rng.random())  # sqrt for uniform area
+            r = R * math.sqrt(rng.random())
             lat0, lon0 = _dest_nm(latA, lonA, theta, r)
             hdg0 = _bearing_deg(lat0, lon0, latA, lonA)
 
-            # Simple defaults; adjust if you want SID/APP heuristics
             alt_ft0 = 3000
             cas0 = 180.0
             actype = "A320"
 
-            # Time schedule with per-procedure separation
-            t0 = next_t[proc_path]; next_t[proc_path] = t0 + minsep
-            ts = _fmt_ts(t0)
-
-            # Unique ACID
-            base = f"PR{(i+1):03d}"
-            acid = _next_unique_acid(base, used); used.add(acid)
-
-            # Write scenario lines
-            f.write(f"{ts}CRE {acid},{actype},{lat0:.6f},{lon0:.6f},{int(round(hdg0))%360:03d},{int(alt_ft0)},{float(cas0):.1f}\n")
+            hdg_cmd = int(round(hdg0)) % 360
+            f.write(f"{ts}CRE {acid} {actype} {lat0:.6f} {lon0:.6f} {hdg_cmd:03d} {int(alt_ft0)} {float(cas0):.1f}\n")
+            f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
-            # Assign the procedure by name (BlueSky interprets '<ACID> <PROCNAME>')
-            f.write(f"{ts}{acid} {proc_name}\n")
+
+        # SID procedures
+        for _ in range(int(sid_cfg["flights"])):
+            proc_path = rng.choice(sid_paths)
+            proc_name = os.path.splitext(os.path.basename(proc_path))[0]
+            sid_info = STATE.proc_sid_info.get(proc_path, {})
+            icao = sid_info.get("icao", "").upper()
+            if not icao:
+                _echo_err(f"{proc_name}: ICAO code not set. Use SATG_PROC_SET_ICAO {proc_name} <ICAO>."); return False, ""
+            runway = sid_info["runway"]
+            rw_tag = f"RW{runway}"
+
+            t0 = next_sid[proc_path]; next_sid[proc_path] = t0 + sid_cfg["minsep"]
+            ts = _fmt_ts(t0)
+
+            base = f"PR{(flight_idx+1):03d}"
+            flight_idx += 1
+            acid = _next_unique_acid(base, used); used.add(acid)
+
+            actype = "A320"
+            f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+            f.write(f"{ts}ADDWPT {acid} {icao}/{rw_tag}\n")
+            f.write(f"{ts}ADDWPT {acid} TAKEOFF\n")
+            f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
+            f.write(f"{ts}LNAV {acid} ON\n")
+            f.write(f"{ts}VNAV {acid} ON\n")
+            f.write(f"{ts}SPD {acid} {int(sid_cfg['spd_kt'])}\n")
+            f.write(f"{ts}ALT {acid} {int(sid_cfg['alt_ft'])}\n")
 
     _sort_scn_file(out_path)
     _echo_ok(f"Scenario written: {out_path}")
@@ -1298,7 +1536,7 @@ def SATG_PROC_RUN(name: str):
     out_path = _scn_path(name)
     if not os.path.isfile(out_path):
         _echo_err(f"Scenario not found: {out_path}"); return False, ""
-    stack.stack(f"IC {out_path}")
+    stack.stack(f"IC {_cmd_path(out_path)}")
     _echo_ok(f"Loaded scenario: {out_path}")
     return True, ""
 
@@ -1340,11 +1578,15 @@ def SATG_HELP(topic: str = ""):
         "  Load waypoint files (DEFWPT) and procedure files (%0) first:",
         "    SATG_PROC_LOAD_WPT path_to_fix_file.scn",
         "    SATG_PROC_LOAD_PROC path_to_proc_file.scn",
+        "    SATG_PROC_SET_ICAO SID-XX-NAME ICAO",
+        "    SATG_PROC_CFG_GENERIC flights minsep",
+        "    SATG_PROC_CFG_SID flights minsep alt_ft spd_kt",
         "  Make and run:",
         "    SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite",
         "    SATG_PROC_RUN  name",
-        "  Behavior: spawns near the first fix inside a sector pointing inbound to it,",
-        "            enforces per-procedure min time separation.",
+        "  Behavior: generic procedures spawn near the first fix inside a sector pointing inbound to it,",
+        "            SID-*-*.scn spawn from runway thresholds once mapped to an ICAO.",
+        "            Min separation enforces per-procedure spacing.",
         "",
         "General:",
         "  - Use the GUI to set a base folder. Scenario files are written there.",

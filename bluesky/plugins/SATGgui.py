@@ -7,9 +7,10 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
-    QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QFileDialog, QTextEdit
+    QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QInputDialog, QTextEdit
 )
 from bluesky import stack
+import os, re
 
 # --- helpers ---------------------------------------------------------------
 
@@ -31,6 +32,8 @@ def _kv(key: str, val):
 
 def _join_tokens(*tokens):
     return " ".join([t for t in tokens if t])
+
+_SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
 
 # --- top strip -------------------------------------------------------------
 
@@ -622,6 +625,7 @@ class ProcTab(QWidget):
         super().__init__(parent)
         self._wpt_files = []    # waypoint definition .scn (DEFWPT)
         self._proc_files = []   # procedure .scn (with %0 and PROCNAME)
+        self._sid_prompted = set()
         main = QVBoxLayout(self)
 
         # 1) Files
@@ -663,23 +667,50 @@ class ProcTab(QWidget):
 
         # 2) Batch options
         gb2 = QGroupBox("2) Batch options")
-        f2 = QFormLayout(gb2)
+        hb2 = QHBoxLayout(gb2); hb2.setContentsMargins(6, 6, 6, 6); hb2.setSpacing(12)
 
-        self.nflights = QSpinBox(); self.nflights.setRange(1, 100000); self.nflights.setValue(20)
-        f2.addRow("Number of flights:", self.nflights)
-
-        self.minsep = QDoubleSpinBox(); self.minsep.setDecimals(0); self.minsep.setRange(0, 3600); self.minsep.setValue(30)
-        f2.addRow("Min separation on same procedure [s]:", self.minsep)
-
-        # Spawn geometry
+        # Generic procedures column
+        generic_box = QGroupBox("Generic")
+        fg = QFormLayout(generic_box)
+        self.gen_flights = QSpinBox(); self.gen_flights.setRange(0, 100000); self.gen_flights.setValue(20)
+        fg.addRow("Flights:", self.gen_flights)
+        self.gen_minsep = QSpinBox(); self.gen_minsep.setRange(0, 3600); self.gen_minsep.setValue(90)
+        fg.addRow("Min separation [s]:", self.gen_minsep)
         self.spawn_r = QDoubleSpinBox(); self.spawn_r.setDecimals(1); self.spawn_r.setRange(0.1, 100.0); self.spawn_r.setValue(5.0)
-        f2.addRow("Spawn radius around first fix [NM]:", self.spawn_r)
-
+        fg.addRow("Spawn radius [NM]:", self.spawn_r)
         self.spawn_env = QDoubleSpinBox(); self.spawn_env.setDecimals(0); self.spawn_env.setRange(5, 180); self.spawn_env.setValue(40)
-        f2.addRow("Angular envelope around inbound bearing [deg]:", self.spawn_env)
-
+        fg.addRow("Angular envelope [deg]:", self.spawn_env)
         self.seed = QSpinBox(); self.seed.setRange(0, 2_000_000_000); self.seed.setValue(0)
-        f2.addRow("Seed (0 = random):", self.seed)
+        fg.addRow("Seed (0 = random):", self.seed)
+        hb2.addWidget(generic_box, 1)
+
+        # SID-specific column
+        sid_box = QGroupBox("SID")
+        fs = QFormLayout(sid_box)
+        sid_hint = QLabel("SID procedures spawn at runway thresholds.\nLoad SID-XX-NAME.scn files\nand assign ICAO per file when prompted.")
+        sid_hint.setWordWrap(True)
+        fs.addRow(sid_hint)
+        self.sid_flights = QSpinBox(); self.sid_flights.setRange(0, 100000); self.sid_flights.setValue(20)
+        fs.addRow("Flights:", self.sid_flights)
+        self.sid_minsep = QSpinBox(); self.sid_minsep.setRange(0, 3600); self.sid_minsep.setValue(90)
+        fs.addRow("Min separation [s]:", self.sid_minsep)
+        self.sid_alt = QSpinBox(); self.sid_alt.setRange(0, 50000); self.sid_alt.setValue(3000)
+        fs.addRow("Initial ALT [ft]:", self.sid_alt)
+        self.sid_spd = QSpinBox(); self.sid_spd.setRange(0, 600); self.sid_spd.setValue(210)
+        fs.addRow("Initial SPD [kt]:", self.sid_spd)
+        hb2.addWidget(sid_box, 1)
+
+        # STAR placeholder column
+        star_box = QGroupBox("STAR")
+        ft = QFormLayout(star_box)
+        self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(20)
+        ft.addRow("Flights:", self.star_flights)
+        self.star_minsep = QSpinBox(); self.star_minsep.setRange(0, 3600); self.star_minsep.setValue(90)
+        ft.addRow("Min separation [s]:", self.star_minsep)
+        star_hint = QLabel("STAR generation will be added in a later update.")
+        star_hint.setWordWrap(True)
+        ft.addRow(star_hint)
+        hb2.addWidget(star_box, 1)
 
         main.addWidget(gb2)
 
@@ -691,7 +722,7 @@ class ProcTab(QWidget):
         f3.addRow("Scenario name:", self.scn)
 
         self.overwrite = QCheckBox("Overwrite scenario if it exists")
-        self.overwrite.setChecked(False)
+        self.overwrite.setChecked(True)
         f3.addRow(self.overwrite)
 
         row_act = QWidget(); hb3 = QHBoxLayout(row_act); hb3.setContentsMargins(0,0,0,0)
@@ -708,6 +739,28 @@ class ProcTab(QWidget):
         btn_both.clicked.connect(self._make_and_run)
 
     # ---- file ops ----
+    def _prompt_sid_icao(self, path: str):
+        base = os.path.basename(path)
+        if not base:
+            return
+        match = _SID_FILE_RE.match(base)
+        if not match:
+            return
+        key = os.path.splitext(base)[0].upper()
+        if key in self._sid_prompted:
+            return
+        icao, ok = QInputDialog.getText(
+            self,
+            "SID ICAO",
+            f"Enter the airport ICAO code for {base}:",
+        )
+        if ok and icao.strip():
+            code = icao.strip().upper()
+            _emit(_join_tokens("SATG_PROC_SET_ICAO", os.path.splitext(base)[0], code))
+        else:
+            _emit(f"ECHO SATG_PROC_SET_ICAO {os.path.splitext(base)[0]} <ICAO>")
+        self._sid_prompted.add(key)
+
     def _add_wpt(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Choose waypoint .scn files", filter="Scenario files (*.scn);;All files (*)")
         if not files: return
@@ -740,6 +793,7 @@ class ProcTab(QWidget):
         self._proc_files.extend(new)
         for p in new:
             self.lst_proc.addItem(p)
+            self._prompt_sid_icao(p)
 
     def _rm_proc(self):
         sel = self.lst_proc.selectedItems()
@@ -747,12 +801,16 @@ class ProcTab(QWidget):
             p = it.text()
             _emit(_join_tokens("SATG_PROC_UNLOAD_PROC", _qpath(p)))
             self._proc_files = [x for x in self._proc_files if x != p]
+            # Remove from SID prompt cache so a future re-add asks again
+            base = os.path.splitext(os.path.basename(p))[0].upper()
+            self._sid_prompted.discard(base)
             self.lst_proc.takeItem(self.lst_proc.row(it))
 
     def _clr_proc(self):
         if not self._proc_files: return
         _emit("SATG_PROC_CLEAR_PROC")
         self._proc_files.clear(); self.lst_proc.clear()
+        self._sid_prompted.clear()
 
     # ---- actions ----
     def _make(self):
@@ -764,15 +822,35 @@ class ProcTab(QWidget):
             _emit("ECHO Provide a scenario name.")
             return
 
-        n   = int(self.nflights.value())
+        gen_n = int(self.gen_flights.value())
+        sid_n = int(self.sid_flights.value())
+        star_n = int(self.star_flights.value())
+        if star_n > 0:
+            _emit("ECHO STAR generation not supported yet. Set STAR flights to 0.")
+            return
+        total = gen_n + sid_n + star_n
+        if total <= 0:
+            _emit("ECHO Configure at least one flight in Generic or SID sections.")
+            return
+
         rnm = float(self.spawn_r.value())
         env = float(self.spawn_env.value())
-        msp = int(self.minsep.value())
+        gen_min = int(self.gen_minsep.value())
+        sid_min = int(self.sid_minsep.value())
+        star_min = int(self.star_minsep.value())
+        overall_min = max(gen_min, sid_min, star_min)
         s   = int(self.seed.value())
         ow  = 1 if self.overwrite.isChecked() else 0
 
+        sid_alt = int(self.sid_alt.value())
+        sid_spd = int(self.sid_spd.value())
+
+        _emit(f"SATG_PROC_CFG_GENERIC {gen_n} {gen_min}")
+        _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_min} {sid_alt} {sid_spd}")
+        _emit(f"SATG_PROC_CFG_STAR {star_n} {star_min}")
+
         # strictly positional to satisfy BlueSky argparser
-        cmd = f"SATG_PROC_MAKE {name} {n} {rnm} {env} {msp} {s} {ow}"
+        cmd = f"SATG_PROC_MAKE {name} {total} {rnm} {env} {overall_min} {s} {ow}"
         _emit(cmd)
 
     def _run_only(self):
@@ -810,8 +888,8 @@ class HelpTab(QWidget):
             "Paths and scenario files\n"
             "------------------------\n"
             "- Use the Set Base button to choose where scenarios are written.\n"
-            "- When loading other .scn files inside a scenario, SATG writes IC lines using\n"
-            "  relative paths so the scenario stays portable.\n"
+            "- When loading other .scn files inside a scenario, SATG writes PCALL lines\n"
+            "  with absolute paths so BlueSky can resolve them reliably.\n"
             "\n"
             "Random conflicts in a circle (GUI tab: Random Conflicts)\n"
             "--------------------------------------------------------\n"
@@ -866,15 +944,16 @@ class HelpTab(QWidget):
             "Files\n"
             "- Load waypoint .scn that define DEFWPT fixes (for example DEFFIX.scn).\n"
             "- Load procedure .scn that contain a procedure name with %0 placeholder (for example SID-04-GORLO.scn).\n"
-            "- The scenario will IC the waypoint files first, then the procedure files, at time 0.\n"
+            "- For SID-XX-NAME.scn files, map the airport with SATG_PROC_SET_ICAO SID-XX-NAME ICAO.\n"
+            "- Waypoint files are PCALLed once at time 0; each aircraft PCALLs its procedure right after creation.\n"
             "\n"
             "Create\n"
             "Command: SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite\n"
             "Meaning\n"
             "- N: number of flights to spawn.\n"
-            "- radius_nm: spawn radius around the first fix of the chosen procedure.\n"
-            "- envelope_deg: angular envelope around the inbound direction to the first fix.\n"
-            "  The program samples a bearing inside that envelope so the aircraft arrives at the first fix,\n"
+            "- radius_nm: spawn radius around the first fix of the chosen procedure (ignored for SID files).\n"
+            "- envelope_deg: angular envelope around the inbound direction to the first fix (ignored for SID files).\n"
+            "  For generic procedures, the program samples a bearing inside that envelope so the aircraft arrives at the first fix,\n"
             "  not past it. Distance is sampled for uniform area inside the circle.\n"
             "- minsep: minimum time separation in seconds between successive spawns on the same procedure.\n"
             "- seed: 0 means random; a positive integer will produce repeatable results.\n"
@@ -887,8 +966,9 @@ class HelpTab(QWidget):
             "------------\n"
             "- If you append to an existing scenario, the generator avoids callsign collisions by renaming.\n"
             "- Use Create & Run in the GUI to write the scenario and immediately load it in BlueSky.\n"
+            "- SID procedures spawn from runway thresholds and auto-add TAKEOFF before the procedure call.\n"
             "- If a command says an argument is lo:hi, it means two numbers separated by a colon, for example 60:240.\n"
-            "- If you see path errors on IC, check that your base folder is correct and that the included .scn files exist.\n"
+            "- If you see path errors during PCALL, verify the base folder and that the referenced .scn files exist.\n"
         )
 
         txt.setPlainText(help_text)
