@@ -3,11 +3,14 @@
 #
 # PyQt6; lazy window creation to avoid QApplication race.
 
-from PyQt6.QtCore import Qt
+from typing import Dict, List, Optional
+
+from PyQt6.QtCore import Qt, QTime
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
-    QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QInputDialog, QTextEdit
+    QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
+    QDialog, QDialogButtonBox, QTimeEdit, QScrollArea
 )
 from bluesky import stack
 import os, re
@@ -35,6 +38,270 @@ def _join_tokens(*tokens):
 
 _SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
 
+class SIDSchedDialog(QDialog):
+    SLOT_MINUTES = 15
+
+    def __init__(self, runways: List[str], existing: Dict[str, Dict[str, object]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("SID Runway Schedule")
+        self.runways = runways
+        self.data = {rw: dict(existing.get(rw, {})) for rw in runways}
+        for rw in self.runways:
+            if rw not in self.data or not self.data[rw].get("caps"):
+                self.data[rw] = {"start": 0.0, "end": 60.0, "caps": [0]}
+        self.current_runway = self.runways[0]
+        self.sliders: List[QSlider] = []
+
+        layout = QVBoxLayout(self)
+
+        self.runway_combo = QComboBox(self)
+        for rw in self.runways:
+            self.runway_combo.addItem(f"RW{rw}", rw)
+        self.runway_combo.currentIndexChanged.connect(self._on_runway_changed)
+        layout.addWidget(self.runway_combo)
+
+        time_row = QHBoxLayout()
+        self.start_edit = QTimeEdit(self)
+        self.start_edit.setDisplayFormat("HH:mm")
+        self.end_edit = QTimeEdit(self)
+        self.end_edit.setDisplayFormat("HH:mm")
+        time_row.addWidget(QLabel("Start:", self))
+        time_row.addWidget(self.start_edit)
+        time_row.addWidget(QLabel("End:", self))
+        time_row.addWidget(self.end_edit)
+        layout.addLayout(time_row)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.slot_widget = QWidget(self.scroll_area)
+        self.slot_layout = QHBoxLayout(self.slot_widget)
+        self.slot_layout.setContentsMargins(6, 6, 6, 6)
+        self.scroll_area.setWidget(self.slot_widget)
+        layout.addWidget(self.scroll_area, 1)
+
+        self.clear_btn = QPushButton("Clear schedule for this runway", self)
+        self.clear_btn.clicked.connect(self._clear_current_schedule)
+        layout.addWidget(self.clear_btn)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.start_edit.timeChanged.connect(self._on_time_changed)
+        self.end_edit.timeChanged.connect(self._on_time_changed)
+
+        self._load_runway(self.current_runway)
+
+    def _round_time(self, time: QTime) -> QTime:
+        minutes = time.hour() * 60 + time.minute()
+        rounded = (minutes // self.SLOT_MINUTES) * self.SLOT_MINUTES
+        rounded = max(0, min(rounded, 24 * 60 - self.SLOT_MINUTES))
+        return QTime(rounded // 60, rounded % 60)
+
+    def _time_to_minutes(self, time: QTime) -> float:
+        return time.hour() * 60 + time.minute()
+
+    def _minutes_to_time(self, minutes: float) -> QTime:
+        minutes = max(0, min(int(minutes), 24 * 60))
+        return QTime(minutes // 60, minutes % 60)
+
+    def _on_runway_changed(self):
+        self._save_current()
+        data = self.runway_combo.currentData()
+        if data:
+            self.current_runway = data
+            self._load_runway(self.current_runway)
+
+    def _on_time_changed(self):
+        start = self._round_time(self.start_edit.time())
+        end = self._round_time(self.end_edit.time())
+        if end <= start:
+            end = start.addSecs(self.SLOT_MINUTES * 60)
+        self.start_edit.blockSignals(True)
+        self.end_edit.blockSignals(True)
+        self.start_edit.setTime(start)
+        self.end_edit.setTime(end)
+        self.start_edit.blockSignals(False)
+        self.end_edit.blockSignals(False)
+        self._update_slot_controls()
+
+    def _clear_current_schedule(self):
+        self.start_edit.setTime(QTime(0, 0))
+        self.end_edit.setTime(QTime(1, 0))
+        self._update_slot_controls(default=True)
+        self.data[self.current_runway] = {"start": 0.0, "end": 60.0, "caps": [0]}
+
+    def _load_runway(self, runway: str):
+        info = self.data.get(runway, {"start": 0.0, "end": 60.0, "caps": [0]})
+        start_time = self._minutes_to_time(info.get("start", 0.0))
+        end_time = self._minutes_to_time(info.get("end", start_time.minute() + self.SLOT_MINUTES))
+        if end_time <= start_time:
+            end_time = start_time.addSecs(self.SLOT_MINUTES * 60)
+        self.start_edit.blockSignals(True)
+        self.end_edit.blockSignals(True)
+        self.start_edit.setTime(start_time)
+        self.end_edit.setTime(end_time)
+        self.start_edit.blockSignals(False)
+        self.end_edit.blockSignals(False)
+        self._update_slot_controls(existing_caps=info.get("caps", [0]))
+
+    def _save_current(self):
+        caps = [slider.value() for slider in self.sliders]
+        start = self._time_to_minutes(self.start_edit.time())
+        end = self._time_to_minutes(self.end_edit.time())
+        if end <= start:
+            end = start + self.SLOT_MINUTES
+        if any(caps):
+            self.data[self.current_runway] = {"start": start, "end": end, "caps": caps}
+        else:
+            # no capacity -> treat as cleared
+            self.data[self.current_runway] = {"start": start, "end": end, "caps": []}
+
+    def _update_slot_controls(self, existing_caps: Optional[List[int]] = None, default: bool = False):
+        # clear existing
+        while self.slot_layout.count():
+            item = self.slot_layout.takeAt(0)
+            if item:
+                w = item.layout()
+                if w:
+                    while w.count():
+                        child = w.takeAt(0)
+                        widget = child.widget()
+                        if widget:
+                            widget.deleteLater()
+                else:
+                    widget = item.widget()
+                    if widget:
+                        widget.deleteLater()
+        self.sliders = []
+
+        start = self._time_to_minutes(self.start_edit.time())
+        end = self._time_to_minutes(self.end_edit.time())
+        if end <= start:
+            end = start + self.SLOT_MINUTES
+        slot_count = max(1, int(round((end - start) / self.SLOT_MINUTES)))
+
+        if existing_caps is None or default:
+            existing_caps = [0] * slot_count
+        else:
+            if len(existing_caps) < slot_count:
+                existing_caps = list(existing_caps) + [0] * (slot_count - len(existing_caps))
+            elif len(existing_caps) > slot_count:
+                existing_caps = list(existing_caps[:slot_count])
+
+        for idx in range(slot_count):
+            slot_start = start + idx * self.SLOT_MINUTES
+            slot_end = slot_start + self.SLOT_MINUTES
+            time_label = QLabel(f"{int(slot_start//60):02d}:{int(slot_start%60):02d}\n-\n{int(slot_end//60):02d}:{int(slot_end%60):02d}", self.slot_widget)
+            slider = QSlider(Qt.Orientation.Vertical, self.slot_widget)
+            slider.setRange(0, 120)
+            slider.setValue(int(existing_caps[idx]))
+            spin = QSpinBox(self.slot_widget)
+            spin.setRange(0, 120)
+            spin.setValue(int(existing_caps[idx]))
+
+            def make_slider_cb(target):
+                def _cb(val):
+                    target.blockSignals(True)
+                    target.setValue(val)
+                    target.blockSignals(False)
+                return _cb
+
+            slider.valueChanged.connect(make_slider_cb(spin))
+            spin.valueChanged.connect(make_slider_cb(slider))
+
+            col = QVBoxLayout()
+            col.addWidget(time_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+            col.addWidget(slider, alignment=Qt.AlignmentFlag.AlignHCenter)
+            col.addWidget(spin, alignment=Qt.AlignmentFlag.AlignHCenter)
+            self.slot_layout.addLayout(col)
+            self.sliders.append(slider)
+
+    def accept(self):
+        self._save_current()
+        super().accept()
+
+    def reject(self):
+        super().reject()
+
+    @property
+    def result_data(self) -> Dict[str, Dict[str, object]]:
+        return {rw: dict(cfg) for rw, cfg in self.data.items()}
+
+
+class DestDialog(QDialog):
+    def __init__(self, procedures: List[tuple], existing: Dict[str, List[str]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Procedure Destinations")
+        self._procedures = procedures  # list of (path, label)
+        self._edits = {}
+
+        layout = QVBoxLayout(self)
+
+        note = QLabel("Enter comma separated ICAO codes for each procedure. Existing airports are shown below; add or remove entries as needed.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        wrap = QWidget(scroll)
+        form = QFormLayout(wrap)
+        for path, label in procedures:
+            container = QWidget(wrap)
+            row_layout = QHBoxLayout(container)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            edit = QLineEdit(container)
+            edit.setClearButtonEnabled(True)
+            existing_list = existing.get(path, [])
+            if existing_list:
+                edit.setText(", ".join(existing_list))
+            apply_btn = QPushButton("Apply", container)
+            apply_btn.setAutoDefault(False)
+            apply_btn.clicked.connect(lambda _, key=path: self._apply_single(key))
+            apply_all_btn = QPushButton("Apply to all", container)
+            apply_all_btn.setAutoDefault(False)
+            apply_all_btn.clicked.connect(lambda _, key=path: self._apply_all(key))
+            row_layout.addWidget(edit, 1)
+            row_layout.addWidget(apply_btn)
+            row_layout.addWidget(apply_all_btn)
+            form.addRow(QLabel(label, wrap), container)
+            self._edits[path] = edit
+        scroll.setWidget(wrap)
+        layout.addWidget(scroll)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _parse_codes(self, text: str) -> List[str]:
+        return [c.strip().upper() for c in re.split(r'[;,\\s]+', text) if c.strip()]
+
+    def _apply_single(self, key: str):
+        edit = self._edits.get(key)
+        if not edit:
+            return
+        codes = self._parse_codes(edit.text())
+        edit.setText(", ".join(codes))
+
+    def _apply_all(self, key: str):
+        edit = self._edits.get(key)
+        if not edit:
+            return
+        codes = self._parse_codes(edit.text())
+        text = ", ".join(codes)
+        for other in self._edits.values():
+            other.setText(text)
+
+    @property
+    def result_data(self) -> Dict[str, List[str]]:
+        data: Dict[str, List[str]] = {}
+        for path, edit in self._edits.items():
+            codes = self._parse_codes(edit.text())
+            if codes:
+                data[path] = codes
+        return data
 # --- top strip -------------------------------------------------------------
 
 class TopStrip(QWidget):
@@ -625,7 +892,13 @@ class ProcTab(QWidget):
         super().__init__(parent)
         self._wpt_files = []    # waypoint definition .scn (DEFWPT)
         self._proc_files = []   # procedure .scn (with %0 and PROCNAME)
-        self._sid_prompted = set()
+        self._sid_rate_rows = {}
+        self._sid_schedule_data: Dict[str, Dict[str, object]] = {}
+        self._origins: Dict[str, str] = {}
+        self._destinations: Dict[str, List[str]] = {}
+        self._last_dest_sent: set[str] = set()
+        self._proc_widgets: Dict[str, Dict[str, object]] = {}
+        self._last_sid_sched_sent: set = set()
         main = QVBoxLayout(self)
 
         # 1) Files
@@ -640,7 +913,7 @@ class ProcTab(QWidget):
         btn_wpt_rm  = QPushButton("Remove selected")
         btn_wpt_clr = QPushButton("Clear all")
         hbw.addWidget(btn_wpt_add); hbw.addWidget(btn_wpt_rm); hbw.addWidget(btn_wpt_clr); hbw.addStretch(1)
-        f1.addRow(QLabel("Waypoint .scn (DEFWPT):"))
+        f1.addRow(QLabel("Waypoint scenario files (.scn):"))
         f1.addRow(self.lst_wpt)
         f1.addRow(wpt_btns)
 
@@ -652,7 +925,7 @@ class ProcTab(QWidget):
         btn_proc_rm  = QPushButton("Remove selected")
         btn_proc_clr = QPushButton("Clear all")
         hbp.addWidget(btn_proc_add); hbp.addWidget(btn_proc_rm); hbp.addWidget(btn_proc_clr); hbp.addStretch(1)
-        f1.addRow(QLabel("Procedure .scn (with %0, e.g., SID-04-GORLO.scn):"))
+        f1.addRow(QLabel("Procedure scenario files (.scn):"))
         f1.addRow(self.lst_proc)
         f1.addRow(proc_btns)
 
@@ -686,24 +959,34 @@ class ProcTab(QWidget):
 
         # SID-specific column
         sid_box = QGroupBox("SID")
-        fs = QFormLayout(sid_box)
-        sid_hint = QLabel("SID procedures spawn at runway thresholds.\nLoad SID-XX-NAME.scn files\nand assign ICAO per file when prompted.")
+        fs = QFormLayout(sid_box); self._sid_form = fs
+        sid_hint = QLabel("SID procedures spawn at runway thresholds")
         sid_hint.setWordWrap(True)
         fs.addRow(sid_hint)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Scheduling mode:", sid_box))
+        self.sid_mode = QComboBox(sid_box)
+        self.sid_mode.addItems(["Hourly rate", "15-min schedule"])
+        mode_row.addWidget(self.sid_mode)
+        mode_row.addStretch(1)
+        fs.addRow(mode_row)
+
         self.sid_flights = QSpinBox(); self.sid_flights.setRange(0, 100000); self.sid_flights.setValue(20)
         fs.addRow("Flights:", self.sid_flights)
-        self.sid_minsep = QSpinBox(); self.sid_minsep.setRange(0, 3600); self.sid_minsep.setValue(90)
-        fs.addRow("Min separation [s]:", self.sid_minsep)
         self.sid_alt = QSpinBox(); self.sid_alt.setRange(0, 50000); self.sid_alt.setValue(3000)
         fs.addRow("Initial ALT [ft]:", self.sid_alt)
         self.sid_spd = QSpinBox(); self.sid_spd.setRange(0, 600); self.sid_spd.setValue(210)
         fs.addRow("Initial SPD [kt]:", self.sid_spd)
+        self.sid_sched_btn = QPushButton("Configure schedule…")
+        self.sid_sched_btn.clicked.connect(self._configure_sid_schedule)
+        fs.addRow(self.sid_sched_btn)
+        self.sid_mode.currentIndexChanged.connect(self._on_sid_mode_changed)
         hb2.addWidget(sid_box, 1)
 
         # STAR placeholder column
         star_box = QGroupBox("STAR")
         ft = QFormLayout(star_box)
-        self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(20)
+        self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(0)
         ft.addRow("Flights:", self.star_flights)
         self.star_minsep = QSpinBox(); self.star_minsep.setRange(0, 3600); self.star_minsep.setValue(90)
         ft.addRow("Min separation [s]:", self.star_minsep)
@@ -725,6 +1008,11 @@ class ProcTab(QWidget):
         self.overwrite.setChecked(True)
         f3.addRow(self.overwrite)
 
+        self.dest_enable = QCheckBox("Assign random destinations")
+        self.dest_enable.toggled.connect(self._on_dest_toggle)
+        self.dest_enable.setChecked(True)
+        f3.addRow(self.dest_enable)
+
         row_act = QWidget(); hb3 = QHBoxLayout(row_act); hb3.setContentsMargins(0,0,0,0)
         btn_cre  = QPushButton("CREATE SCENARIO FILE")
         btn_run  = QPushButton("RUN SCENARIO")
@@ -737,29 +1025,290 @@ class ProcTab(QWidget):
         btn_cre.clicked.connect(self._make)
         btn_run.clicked.connect(self._run_only)
         btn_both.clicked.connect(self._make_and_run)
+        self._update_sid_mode_state()
+        self._update_dest_state()
 
     # ---- file ops ----
-    def _prompt_sid_icao(self, path: str):
+    def _ensure_sid_runway(self, runway: str):
+        if runway in self._sid_rate_rows:
+            return
+        label = QLabel(f"RW{runway} rate [ac/h]:")
+        spin = QSpinBox(); spin.setRange(0, 120); spin.setValue(40)
+        self._sid_form.addRow(label, spin)
+        self._sid_rate_rows[runway] = (label, spin)
+
+    def _remove_sid_runway(self, runway: str):
+        row = self._sid_rate_rows.pop(runway, None)
+        if not row:
+            return
+        label, spin = row
+        self._sid_form.removeRow(spin)
+        label.deleteLater()
+        spin.deleteLater()
+
+    def _clear_sid_runway_rows(self):
+        for runway in list(self._sid_rate_rows.keys()):
+            self._remove_sid_runway(runway)
+
+    def _is_sid_file(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
         base = os.path.basename(path)
-        if not base:
+        return bool(_SID_FILE_RE.match(base)) if base else False
+
+    def _current_sid_runways(self) -> set:
+        runways = set()
+        for path in self._proc_files:
+            m = _SID_FILE_RE.match(os.path.basename(path))
+            if m:
+                runways.add(m.group(1).upper())
+        return runways
+
+    def _refresh_sid_runway_rows(self):
+        active = self._current_sid_runways()
+        for rw in list(self._sid_rate_rows.keys()):
+            if rw not in active:
+                self._remove_sid_runway(rw)
+        for rw in list(self._sid_schedule_data.keys()):
+            if rw not in active:
+                self._sid_schedule_data.pop(rw, None)
+        for rw in active:
+            self._ensure_sid_runway(rw)
+        self._update_sid_mode_state()
+
+    def _on_sid_mode_changed(self, idx):
+        self._update_sid_mode_state()
+
+    def _update_sid_mode_state(self):
+        use_schedule = self.sid_mode.currentIndex() == 1 if hasattr(self, "sid_mode") else False
+        has_runways = bool(self._current_sid_runways()) if hasattr(self, "_current_sid_runways") else False
+        if hasattr(self, "sid_sched_btn"):
+            self.sid_sched_btn.setEnabled(use_schedule and has_runways)
+        if hasattr(self, "sid_flights"):
+            self.sid_flights.blockSignals(True)
+            if use_schedule:
+                total = sum(sum(cfg.get("caps", [])) for cfg in self._sid_schedule_data.values())
+                self.sid_flights.setValue(total)
+            self.sid_flights.setEnabled(not use_schedule)
+            self.sid_flights.blockSignals(False)
+        for label, spin in self._sid_rate_rows.values():
+            spin.setEnabled(not use_schedule)
+
+    def _update_dest_state(self):
+        has_procs = bool(self._proc_files)
+        if hasattr(self, "dest_enable") and not has_procs:
+            self.dest_enable.blockSignals(True)
+            self.dest_enable.setChecked(False)
+            self.dest_enable.blockSignals(False)
+
+    def _configure_sid_schedule(self):
+        runways = sorted(self._current_sid_runways())
+        if not runways:
+            _emit("ECHO Load SID procedures before configuring schedules.")
             return
-        match = _SID_FILE_RE.match(base)
-        if not match:
+        dialog = SIDSchedDialog(runways, self._sid_schedule_data, self)
+        if dialog.exec():
+            result = dialog.result_data
+            new_data: Dict[str, Dict[str, object]] = {}
+            for rw, cfg in result.items():
+                caps = [int(c) for c in cfg.get("caps", [])]
+                if sum(caps) > 0:
+                    new_data[rw] = {
+                        "start": float(cfg.get("start", 0.0)),
+                        "end": float(cfg.get("end", 0.0)),
+                        "caps": caps,
+                    }
+            self._sid_schedule_data = new_data
+            self._refresh_sid_runway_rows()
+            self._update_sid_mode_state()
+
+    def _on_dest_toggle(self, checked: bool):
+        self._update_dest_state()
+
+    def _configure_destinations(self):
+        if not self._proc_files:
+            _emit("ECHO Load procedures before configuring destinations.")
             return
-        key = os.path.splitext(base)[0].upper()
-        if key in self._sid_prompted:
+        procs = [(p, os.path.splitext(os.path.basename(p))[0]) for p in self._proc_files]
+        dialog = DestDialog(procs, self._destinations, self)
+        if dialog.exec():
+            result = dialog.result_data
+            cleaned: Dict[str, List[str]] = {}
+            for path_key, codes in result.items():
+                if path_key in self._proc_files:
+                    cleaned[path_key] = [c.upper() for c in codes]
+            self._destinations = cleaned
+            self._sync_destination_edits()
+            self._update_dest_state()
+
+    def _parse_destinations(self, text: str) -> List[str]:
+        return [c.strip().upper() for c in re.split(r'[;,\\s]+', text) if c.strip()]
+
+    def _normalize_origin_code(self, text: str) -> Optional[str]:
+        code = text.strip().upper()
+        if not code:
+            return ""
+        if re.fullmatch(r"[A-Z]{3,4}", code):
+            return code
+        return None
+
+    def _update_origin_entry(self, path: str, text: str):
+        widgets = self._proc_widgets.get(path)
+        origin_edit = widgets.get("origin") if widgets else None
+        if not self._is_sid_file(path):
+            if origin_edit:
+                origin_edit.blockSignals(True)
+                origin_edit.clear()
+                origin_edit.blockSignals(False)
             return
-        icao, ok = QInputDialog.getText(
-            self,
-            "SID ICAO",
-            f"Enter the airport ICAO code for {base}:",
-        )
-        if ok and icao.strip():
-            code = icao.strip().upper()
-            _emit(_join_tokens("SATG_PROC_SET_ICAO", os.path.splitext(base)[0], code))
+        code = self._normalize_origin_code(text)
+        label = os.path.basename(path)
+        if code is None:
+            _emit(f"ECHO Origin ICAO must be 3 or 4 letters for {label}.")
+            if origin_edit:
+                origin_edit.blockSignals(True)
+                origin_edit.setText(self._origins.get(path, ""))
+                origin_edit.blockSignals(False)
+            return
+        if not code:
+            _emit(f"ECHO Set an origin ICAO for {label}.")
+            if origin_edit:
+                origin_edit.blockSignals(True)
+                origin_edit.setText(self._origins.get(path, ""))
+                origin_edit.blockSignals(False)
+            return
+        if origin_edit and origin_edit.text() != code:
+            origin_edit.blockSignals(True)
+            origin_edit.setText(code)
+            origin_edit.blockSignals(False)
+        self._origins[path] = code
+
+    def _update_destination_entry(self, path: str, text: str):
+        codes = self._parse_destinations(text)
+        if codes:
+            self._destinations[path] = codes
         else:
-            _emit(f"ECHO SATG_PROC_SET_ICAO {os.path.splitext(base)[0]} <ICAO>")
-        self._sid_prompted.add(key)
+            self._destinations.pop(path, None)
+        widgets = self._proc_widgets.get(path)
+        if widgets:
+            edit = widgets.get("dest")
+            if edit:
+                edit.blockSignals(True)
+                edit.setText(", ".join(self._destinations.get(path, [])))
+                edit.blockSignals(False)
+        self._update_dest_state()
+
+    def _apply_dest_to_all(self, path: str):
+        widgets = self._proc_widgets.get(path, {})
+        dest_edit = widgets.get("dest")
+        if not dest_edit:
+            return
+        codes = self._parse_destinations(dest_edit.text())
+        if codes:
+            self._destinations[path] = list(codes)
+        else:
+            self._destinations.pop(path, None)
+        for other in self._proc_files:
+            if codes:
+                self._destinations[other] = list(codes)
+            else:
+                self._destinations.pop(other, None)
+        self._sync_destination_edits()
+        self._update_dest_state()
+
+    def _sync_destination_edits(self):
+        for path, widgets in self._proc_widgets.items():
+            edit = widgets.get("dest")
+            if not edit:
+                continue
+            edit.blockSignals(True)
+            edit.setText(", ".join(self._destinations.get(path, [])))
+            edit.blockSignals(False)
+
+    def _sync_origin_edits(self):
+        for path, widgets in self._proc_widgets.items():
+            if not widgets.get("is_sid", False):
+                continue
+            origin_edit = widgets.get("origin")
+            if not origin_edit:
+                continue
+            origin_edit.blockSignals(True)
+            origin_edit.setText(self._origins.get(path, ""))
+            origin_edit.blockSignals(False)
+
+    def _apply_origin_to_all(self, path: str):
+        widgets = self._proc_widgets.get(path, {})
+        origin_edit = widgets.get("origin")
+        text = origin_edit.text() if origin_edit else self._origins.get(path, "")
+        code = self._normalize_origin_code(text or "")
+        label = os.path.basename(path)
+        if not self._is_sid_file(path):
+            return
+        if code is None:
+            _emit(f"ECHO Origin ICAO must be 3 or 4 letters for {label}.")
+            if origin_edit:
+                origin_edit.blockSignals(True)
+                origin_edit.setText(self._origins.get(path, ""))
+                origin_edit.blockSignals(False)
+            return
+        if not code:
+            _emit(f"ECHO Set an origin ICAO for {label} before copying to all.")
+            if origin_edit:
+                origin_edit.blockSignals(True)
+                origin_edit.setText(self._origins.get(path, ""))
+                origin_edit.blockSignals(False)
+            return
+        self._origins[path] = code
+        for other in self._proc_files:
+            if not self._is_sid_file(other):
+                continue
+            self._origins[other] = code
+        self._sync_origin_edits()
+
+    def _ensure_origin_ready(self) -> bool:
+        invalid: List[str] = []
+        missing: List[str] = []
+        focus_widget = None
+        for path in self._proc_files:
+            if not self._is_sid_file(path):
+                continue
+            widgets = self._proc_widgets.get(path, {})
+            origin_edit = widgets.get("origin")
+            raw = origin_edit.text() if origin_edit else self._origins.get(path, "")
+            code = self._normalize_origin_code(raw)
+            label = os.path.basename(path)
+            if code is None:
+                invalid.append(label)
+                if origin_edit:
+                    origin_edit.blockSignals(True)
+                    origin_edit.setText(self._origins.get(path, ""))
+                    origin_edit.blockSignals(False)
+                    if focus_widget is None:
+                        focus_widget = origin_edit
+                continue
+            if not code:
+                missing.append(label)
+                if focus_widget is None and origin_edit:
+                    focus_widget = origin_edit
+                continue
+            if origin_edit and origin_edit.text() != code:
+                origin_edit.blockSignals(True)
+                origin_edit.setText(code)
+                origin_edit.blockSignals(False)
+            self._origins[path] = code
+            base = os.path.splitext(os.path.basename(path))[0]
+            _emit(_join_tokens("SATG_PROC_SET_ICAO", base, code))
+        if invalid:
+            _emit("ECHO Origin ICAO must be 3 or 4 letters for: " + ", ".join(invalid))
+            if focus_widget:
+                focus_widget.setFocus()
+            return False
+        if missing:
+            _emit("ECHO Set an origin ICAO for: " + ", ".join(missing))
+            if focus_widget:
+                focus_widget.setFocus()
+            return False
+        return True
 
     def _add_wpt(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Choose waypoint .scn files", filter="Scenario files (*.scn);;All files (*)")
@@ -792,53 +1341,137 @@ class ProcTab(QWidget):
         new = [p for p in files if p not in self._proc_files]
         self._proc_files.extend(new)
         for p in new:
-            self.lst_proc.addItem(p)
-            self._prompt_sid_icao(p)
+            item = QListWidgetItem(self.lst_proc)
+            item.setData(Qt.ItemDataRole.UserRole, p)
+            container = QWidget(self.lst_proc)
+            row_layout = QHBoxLayout(container)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            is_sid = self._is_sid_file(p)
+
+            origin_edit = QLineEdit(container)
+            origin_edit.setPlaceholderText("Origin ICAO" if is_sid else "Origin (SID only)")
+            origin_edit.setMaxLength(4)
+            origin_edit.setEnabled(is_sid)
+            origin_edit.setMaximumWidth(90)
+            if is_sid and self._origins.get(p):
+                origin_edit.setText(self._origins[p])
+            origin_edit.editingFinished.connect(lambda path=p, ref=origin_edit: self._update_origin_entry(path, ref.text()))
+            origin_all_btn = QPushButton("Apply to all", container)
+            origin_all_btn.setAutoDefault(False)
+            origin_all_btn.setEnabled(is_sid)
+            origin_all_btn.setVisible(is_sid)
+            origin_all_btn.clicked.connect(lambda _, path=p: self._apply_origin_to_all(path))
+
+            label = QLabel(p, container)
+            label.setStyleSheet("color: #555;")
+
+            dest_edit = QLineEdit(container)
+            dest_edit.setPlaceholderText("Destinations (comma separated)")
+            existing = self._destinations.get(p, [])
+            if existing:
+                dest_edit.setText(", ".join(existing))
+            dest_edit.editingFinished.connect(lambda path=p, ref=dest_edit: self._update_destination_entry(path, ref.text()))
+            dest_all_btn = QPushButton("Apply to all", container)
+            dest_all_btn.setAutoDefault(False)
+            dest_all_btn.clicked.connect(lambda _, path=p: self._apply_dest_to_all(path))
+
+            row_layout.addWidget(origin_edit)
+            row_layout.addWidget(origin_all_btn)
+            row_layout.addWidget(label, 2)
+            row_layout.addWidget(dest_edit, 1)
+            row_layout.addWidget(dest_all_btn)
+            row_layout.addStretch(1)
+            item.setSizeHint(container.sizeHint())
+            self.lst_proc.setItemWidget(item, container)
+            self._proc_widgets[p] = {
+                "item": item,
+                "origin": origin_edit,
+                "origin_all": origin_all_btn if is_sid else None,
+                "dest": dest_edit,
+                "is_sid": is_sid,
+            }
+        self._refresh_sid_runway_rows()
+        self._sync_destination_edits()
+        self._sync_origin_edits()
+        self._update_dest_state()
 
     def _rm_proc(self):
         sel = self.lst_proc.selectedItems()
-        for it in sel:
-            p = it.text()
+        for item in sel:
+            p = item.data(Qt.ItemDataRole.UserRole)
+            if not p:
+                continue
             _emit(_join_tokens("SATG_PROC_UNLOAD_PROC", _qpath(p)))
             self._proc_files = [x for x in self._proc_files if x != p]
-            # Remove from SID prompt cache so a future re-add asks again
-            base = os.path.splitext(os.path.basename(p))[0].upper()
-            self._sid_prompted.discard(base)
-            self.lst_proc.takeItem(self.lst_proc.row(it))
+            self._destinations.pop(p, None)
+            self._origins.pop(p, None)
+            self._proc_widgets.pop(p, None)
+            row = self.lst_proc.row(item)
+            self.lst_proc.takeItem(row)
+        self._refresh_sid_runway_rows()
+        self._sync_destination_edits()
+        self._sync_origin_edits()
+        self._update_dest_state()
 
     def _clr_proc(self):
         if not self._proc_files: return
         _emit("SATG_PROC_CLEAR_PROC")
         self._proc_files.clear(); self.lst_proc.clear()
-        self._sid_prompted.clear()
+        self._clear_sid_runway_rows()
+        self._sid_schedule_data.clear()
+        self._last_sid_sched_sent.clear()
+        self._destinations.clear()
+        self._last_dest_sent.clear()
+        self._origins.clear()
+        self._proc_widgets.clear()
+        self._update_dest_state()
 
     # ---- actions ----
     def _make(self):
         if not self._proc_files:
             _emit("ECHO Add at least one procedure file.")
-            return
+            return False
         name = self.scn.text().strip()
         if not name:
             _emit("ECHO Provide a scenario name.")
-            return
+            return False
 
         gen_n = int(self.gen_flights.value())
         sid_n = int(self.sid_flights.value())
         star_n = int(self.star_flights.value())
         if star_n > 0:
             _emit("ECHO STAR generation not supported yet. Set STAR flights to 0.")
-            return
+            return False
+
+        if not self._ensure_origin_ready():
+            return False
+
+        use_schedule = self.sid_mode.currentIndex() == 1
+        sid_sched_total = 0
+        scheduled_runways = set()
+        if use_schedule:
+            for rw, cfg in self._sid_schedule_data.items():
+                caps = cfg.get("caps", [])
+                total_caps = sum(int(c) for c in caps)
+                if total_caps > 0:
+                    sid_sched_total += total_caps
+                    scheduled_runways.add(rw)
+            if sid_sched_total > 0:
+                sid_n = sid_sched_total
+            self.sid_flights.blockSignals(True)
+            self.sid_flights.setValue(sid_sched_total)
+            self.sid_flights.blockSignals(False)
+
         total = gen_n + sid_n + star_n
         if total <= 0:
             _emit("ECHO Configure at least one flight in Generic or SID sections.")
-            return
+            return False
 
         rnm = float(self.spawn_r.value())
         env = float(self.spawn_env.value())
         gen_min = int(self.gen_minsep.value())
-        sid_min = int(self.sid_minsep.value())
         star_min = int(self.star_minsep.value())
-        overall_min = max(gen_min, sid_min, star_min)
+        overall_min = max(gen_min, star_min)
         s   = int(self.seed.value())
         ow  = 1 if self.overwrite.isChecked() else 0
 
@@ -846,14 +1479,77 @@ class ProcTab(QWidget):
         sid_spd = int(self.sid_spd.value())
 
         _emit(f"SATG_PROC_CFG_GENERIC {gen_n} {gen_min}")
-        _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_min} {sid_alt} {sid_spd}")
+        _emit(f"SATG_PROC_CFG_GENERIC {gen_n} {gen_min}")
+        _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_alt} {sid_spd}")
+        _emit(f"SATG_PROC_USE_DEST {1 if self.dest_enable.isChecked() else 0}")
+        active_runways = self._current_sid_runways()
+        current_sched_sent = set()
+        current_sched_sent = set()
+        if use_schedule:
+            if sid_sched_total == 0:
+                _emit("ECHO No SID schedule configured; add slots or switch to hourly rate mode.")
+                return False
+            for rw in sorted(scheduled_runways):
+                cfg = self._sid_schedule_data.get(rw, {})
+                caps = cfg.get("caps", [])
+                if not caps:
+                    continue
+                start = int(round(cfg.get("start", 0.0)))
+                end = int(round(cfg.get("end", start + 15)))
+                if end <= start:
+                    end = start + 15 * len(caps)
+                caps_str = " ".join(str(int(c)) for c in caps)
+                if caps_str:
+                    _emit(f"SATG_PROC_CFG_SIDSCHED RW{rw} {start} {end} {caps_str}")
+                    current_sched_sent.add(rw)
+        else:
+            if self._last_sid_sched_sent:
+                for rw in sorted(self._last_sid_sched_sent):
+                    _emit(f"SATG_PROC_CLEAR_SIDSCHED RW{rw}")
+                self._last_sid_sched_sent.clear()
+
+        if use_schedule:
+            to_clear = self._last_sid_sched_sent - current_sched_sent
+            for rw in sorted(to_clear):
+                _emit(f"SATG_PROC_CLEAR_SIDSCHED RW{rw}")
+            self._last_sid_sched_sent = current_sched_sent
+
+        if self.dest_enable.isChecked():
+            current_dest_sent = set()
+            for proc_path, dests in self._destinations.items():
+                if proc_path not in self._proc_files:
+                    continue
+                if not dests:
+                    continue
+                label = os.path.splitext(os.path.basename(proc_path))[0]
+                _emit("SATG_PROC_SET_DEST " + label + " " + " ".join(dests))
+                current_dest_sent.add(label)
+            to_clear_dest = self._last_dest_sent - current_dest_sent
+            for label in sorted(to_clear_dest):
+                _emit(f"SATG_PROC_SET_DEST {label}")
+            self._last_dest_sent = current_dest_sent
+        else:
+            if self._last_dest_sent:
+                for label in sorted(self._last_dest_sent):
+                    _emit(f"SATG_PROC_SET_DEST {label}")
+                self._last_dest_sent.clear()
+        for rw in active_runways:
+            row = self._sid_rate_rows.get(rw)
+            if not row:
+                continue
+            _, spin = row
+            rate = int(spin.value())
+            _emit(f"SATG_PROC_CFG_SIDRATE RW{rw} {rate}")
         _emit(f"SATG_PROC_CFG_STAR {star_n} {star_min}")
 
         # strictly positional to satisfy BlueSky argparser
         cmd = f"SATG_PROC_MAKE {name} {total} {rnm} {env} {overall_min} {s} {ow}"
         _emit(cmd)
+        return True
 
     def _run_only(self):
+        if not self._ensure_origin_ready():
+            return
         name = self.scn.text().strip()
         if not name:
             _emit("ECHO Provide a scenario name.")
@@ -861,8 +1557,8 @@ class ProcTab(QWidget):
         _emit("SATG_PROC_RUN " + name)
 
     def _make_and_run(self):
-        self._make()
-        self._run_only()
+        if self._make():
+            self._run_only()
 
 # --- Help tab -------------------------------------------------------------
 class HelpTab(QWidget):

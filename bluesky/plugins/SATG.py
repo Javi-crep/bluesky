@@ -58,6 +58,7 @@ if getattr(_misc.lat2txt, "__name__", "") != "_satg_safe_lat2txt":
     _traf_mod.latlon2txt = _satg_safe_latlon2txt
 
 _SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
+DEFAULT_SID_RATE = 40.0  # aircraft per hour
 
 # ---------------- ISA + GS->CAS (wind=0) ---------------- #
 GAMMA = 1.4; R = 287.05287; G0 = 9.80665
@@ -219,9 +220,14 @@ class _SATGState:
         self.proc_proc_files = []  
         self.proc_sid_info: Dict[str, Dict[str, str]] = {}
         self.proc_sid_lookup: Dict[str, str] = {}
+        self.proc_sid_schedules: Dict[str, Dict[str, object]] = {}
         self.proc_generic_cfg = {"flights": 20, "minsep": 90}
-        self.proc_sid_cfg = {"flights": 0, "minsep": 90, "alt_ft": 3000, "spd_kt": 210}
+        self.proc_sid_cfg = {"flights": 0, "alt_ft": 3000, "spd_kt": 210}
         self.proc_star_cfg = {"flights": 0, "minsep": 30}
+        self.proc_sid_rates: Dict[str, float] = {}
+        self.proc_sid_usage: Dict[str, set] = {}
+        self.proc_destinations_enabled: bool = False
+        self.proc_destinations: Dict[str, List[str]] = {}
 
 
 STATE = _SATGState()
@@ -256,6 +262,9 @@ def _register_sid_proc(path: str):
         }
         STATE.proc_sid_info[path] = info
         STATE.proc_sid_lookup[key] = path
+        usage = STATE.proc_sid_usage.setdefault(runway, set())
+        usage.add(path)
+        STATE.proc_sid_rates.setdefault(runway, DEFAULT_SID_RATE)
         return info
     # Not a SID file: ensure clean-up
     _unregister_sid_proc(path)
@@ -270,6 +279,15 @@ def _unregister_sid_proc(path: str):
         key = info.get("basename", "").upper()
         if STATE.proc_sid_lookup.get(key) == path:
             STATE.proc_sid_lookup.pop(key, None)
+        runway = info.get("runway")
+        if runway:
+            usage = STATE.proc_sid_usage.get(runway)
+            if usage and path in usage:
+                usage.remove(path)
+            if usage and len(usage) == 0:
+                STATE.proc_sid_usage.pop(runway, None)
+                STATE.proc_sid_rates.pop(runway, None)
+                STATE.proc_sid_schedules.pop(runway, None)
     else:
         # Ensure lookup clean even if info not stored
         for key, val in list(STATE.proc_sid_lookup.items()):
@@ -1287,6 +1305,7 @@ def SATG_PROC_UNLOAD_PROC(path: str):
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     STATE.proc_proc_files = [x for x in STATE.proc_proc_files if x != p]
     _unregister_sid_proc(p)
+    STATE.proc_destinations.pop(p, None)
     _echo_ok(f"Unloaded procedure file: {p}"); return True, ""
 
 @command
@@ -1294,6 +1313,11 @@ def SATG_PROC_CLEAR_PROC():
     STATE.proc_proc_files.clear()
     STATE.proc_sid_info.clear()
     STATE.proc_sid_lookup.clear()
+    STATE.proc_sid_rates.clear()
+    STATE.proc_sid_usage.clear()
+    STATE.proc_sid_schedules.clear()
+    STATE.proc_destinations.clear()
+    STATE.proc_destinations_enabled = False
     _echo_ok("Cleared procedure files"); return True, ""
 
 @command
@@ -1340,18 +1364,16 @@ def SATG_PROC_CFG_GENERIC(flights: int, minsep: int):
 
 
 @command
-def SATG_PROC_CFG_SID(flights: int, minsep: int, alt_ft: int, spd_kt: float):
+def SATG_PROC_CFG_SID(flights: int, alt_ft: int, spd_kt: float):
     flights = max(0, int(flights))
-    minsep = max(0, int(minsep))
     alt_ft = max(0, int(alt_ft))
     spd_kt = max(0, int(float(spd_kt)))
     STATE.proc_sid_cfg.update({
         "flights": flights,
-        "minsep": minsep,
         "alt_ft": alt_ft,
         "spd_kt": spd_kt
     })
-    _echo_ok(f"SID procedures: flights={flights}, minsep={minsep}s, alt={alt_ft}ft, spd={spd_kt}kt")
+    _echo_ok(f"SID procedures: flights={flights}, alt={alt_ft}ft, spd={spd_kt}kt")
     return True, ""
 
 
@@ -1364,6 +1386,107 @@ def SATG_PROC_CFG_STAR(flights: int, minsep: int):
     if flights > 0:
         _echo_err("STAR procedures are not yet supported in generator output."); return False, ""
     _echo_ok("STAR procedures: flights=0 (disabled)")
+    return True, ""
+
+@command
+def SATG_PROC_CFG_SIDRATE(runway: str, rate: float):
+    rw = runway.strip().upper()
+    if rw.startswith("RW"):
+        rw = rw[2:]
+    if not rw:
+        _echo_err("SATG_PROC_CFG_SIDRATE requires a runway identifier (e.g., RW18L)."); return False, ""
+    rate = max(0.0, float(rate))
+    STATE.proc_sid_rates[rw] = rate
+    _echo_ok(f"SID runway RW{rw}: rate set to {rate:.1f} ac/h")
+    return True, ""
+
+
+@command
+def SATG_PROC_CFG_SIDSCHED(runway: str, start_min: float, end_min: float, *caps):
+    rw = runway.strip().upper()
+    if rw.startswith("RW"):
+        rw = rw[2:]
+    if not rw:
+        _echo_err("SATG_PROC_CFG_SIDSCHED requires a runway identifier (e.g., RW18L)."); return False, ""
+
+    if not caps:
+        STATE.proc_sid_schedules.pop(rw, None)
+        _echo_ok(f"SID runway RW{rw}: schedule cleared")
+        return True, ""
+
+    start = max(0.0, float(start_min))
+    end = max(0.0, float(end_min))
+    caps_int = [max(0, int(round(_to_float(c, 0)))) for c in caps]
+
+    slot_minutes = 15.0
+    if end <= start:
+        end = start + slot_minutes * len(caps_int)
+    expected_slots = max(1, int(round((end - start) / slot_minutes)))
+    if expected_slots != len(caps_int):
+        end = start + slot_minutes * len(caps_int)
+
+    STATE.proc_sid_schedules[rw] = {
+        "start": start,
+        "end": end,
+        "caps": caps_int,
+        "slot": slot_minutes,
+    }
+    total = sum(caps_int)
+    _echo_ok(f"SID runway RW{rw}: schedule set ({total} departures planned)")
+    return True, ""
+
+
+@command
+def SATG_PROC_CLEAR_SIDSCHED(runway: str = ""):
+    rw = runway.strip().upper()
+    if not rw:
+        STATE.proc_sid_schedules.clear()
+        _echo_ok("Cleared all SID schedules")
+        return True, ""
+    if rw.startswith("RW"):
+        rw = rw[2:]
+    STATE.proc_sid_schedules.pop(rw, None)
+    _echo_ok(f"SID runway RW{rw}: schedule cleared")
+    return True, ""
+
+
+def _resolve_proc_path(proc_id: str) -> Optional[str]:
+    pid = proc_id.strip().strip('"').strip("'")
+    if not pid:
+        return None
+    pid_upper = pid.upper()
+    norm = _normpath(pid)
+    if norm in STATE.proc_proc_files:
+        return norm
+    if os.path.isabs(pid) and pid in STATE.proc_proc_files:
+        return pid
+    base = os.path.splitext(pid_upper)[0]
+    for path in STATE.proc_proc_files:
+        if os.path.splitext(os.path.basename(path))[0].upper() == base:
+            return path
+    return None
+
+
+@command
+def SATG_PROC_USE_DEST(flag: int):
+    STATE.proc_destinations_enabled = bool(int(flag))
+    state_txt = "ON" if STATE.proc_destinations_enabled else "OFF"
+    _echo_ok(f"SATG procedure destinations {state_txt}")
+    return True, ""
+
+
+@command
+def SATG_PROC_SET_DEST(proc_id: str, *airports: str):
+    path = _resolve_proc_path(proc_id)
+    if not path:
+        _echo_err(f"SATG_PROC_SET_DEST: unknown procedure '{proc_id}'"); return False, ""
+    dests = [a.strip().upper() for a in airports if a.strip()]
+    if dests:
+        STATE.proc_destinations[path] = dests
+        _echo_ok(f"Destinations set for {os.path.basename(path)}: {', '.join(dests)}")
+    else:
+        STATE.proc_destinations.pop(path, None)
+        _echo_ok(f"Destinations cleared for {os.path.basename(path)}")
     return True, ""
 
 
@@ -1411,7 +1534,6 @@ def SATG_PROC_MAKE(name: str,
         gen_cfg["flights"] = int(n)
         gen_cfg["minsep"] = max(0, int(minsep))
         sid_cfg["flights"] = 0
-        sid_cfg["minsep"] = max(0, int(minsep))
         total_cfg = gen_cfg["flights"]
 
     sid_paths = [p for p in procs if p in STATE.proc_sid_info]
@@ -1430,7 +1552,6 @@ def SATG_PROC_MAKE(name: str,
             gen_cfg["minsep"] = max(0, int(minsep))
         elif sid_paths:
             sid_cfg["flights"] = base_n
-            sid_cfg["minsep"] = max(0, int(minsep))
         total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
 
     if total_cfg <= 0:
@@ -1451,8 +1572,27 @@ def SATG_PROC_MAKE(name: str,
     env = max(1.0, min(180.0, float(envelope_deg)))
 
     next_generic = {p: 0.0 for p in generic_paths}
-    next_sid = {p: 0.0 for p in sid_paths}
+    sid_by_runway: Dict[str, List[str]] = {}
+    for path in sid_paths:
+        info = STATE.proc_sid_info.get(path)
+        if not info:
+            continue
+        rw = info.get("runway", "RW")
+        sid_by_runway.setdefault(rw, []).append(path)
+    next_sid = {rw: 0.0 for rw in sid_by_runway}
     used = _scan_existing_acids(out_path) if append else set()
+
+    def _weighted_choice(rng_obj: random.Random, items: List[str], weights: List[float]) -> str:
+        total = sum(weights)
+        if total <= 0.0:
+            return rng_obj.choice(items)
+        r = rng_obj.random() * total
+        upto = 0.0
+        for item, w in zip(items, weights):
+            upto += w
+            if r <= upto:
+                return item
+        return items[-1]
 
     with open(out_path, "a", encoding="utf-8") as f:
         flight_idx = 0
@@ -1498,20 +1638,57 @@ def SATG_PROC_MAKE(name: str,
             f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
+            if STATE.proc_destinations_enabled:
+                dests = STATE.proc_destinations.get(proc_path)
+                if dests:
+                    dest_choice = rng.choice(dests)
+                    f.write(f"{ts}DEST {acid} {dest_choice}\n")
 
         # SID procedures
-        for _ in range(int(sid_cfg["flights"])):
-            proc_path = rng.choice(sid_paths)
+        sid_total_requested = max(0, int(sid_cfg["flights"]))
+        sid_remaining = sid_total_requested
+        scheduled_events: List[Tuple[float, str, str]] = []
+        schedule_runways: set = set()
+
+        for runway, proc_candidates in sid_by_runway.items():
+            schedule = STATE.proc_sid_schedules.get(runway)
+            if not schedule:
+                continue
+            caps = list(schedule.get("caps", []))
+            if not caps:
+                continue
+            slot_minutes = float(schedule.get("slot", 15.0)) or 15.0
+            start_minutes = float(schedule.get("start", 0.0))
+            slot_seconds = slot_minutes * 60.0
+            schedule_runways.add(runway)
+            for idx, cap in enumerate(caps):
+                cap = int(cap)
+                if cap <= 0:
+                    continue
+                slot_start_sec = (start_minutes + idx * slot_minutes) * 60.0
+                if cap == 1:
+                    times = [slot_start_sec]
+                else:
+                    step = slot_seconds / cap
+                    times = [slot_start_sec + j * step for j in range(cap)]
+                for t_sec in times:
+                    proc_path = rng.choice(proc_candidates)
+                    scheduled_events.append((t_sec, runway, proc_path))
+
+        scheduled_events.sort(key=lambda x: x[0])
+        if sid_total_requested > 0 and len(scheduled_events) > sid_total_requested:
+            scheduled_events = scheduled_events[:sid_total_requested]
+        sid_remaining = max(0, sid_total_requested - len(scheduled_events))
+
+        for t_sec, runway, proc_path in scheduled_events:
             proc_name = os.path.splitext(os.path.basename(proc_path))[0]
             sid_info = STATE.proc_sid_info.get(proc_path, {})
             icao = sid_info.get("icao", "").upper()
             if not icao:
                 _echo_err(f"{proc_name}: ICAO code not set. Use SATG_PROC_SET_ICAO {proc_name} <ICAO>."); return False, ""
-            runway = sid_info["runway"]
             rw_tag = f"RW{runway}"
-
-            t0 = next_sid[proc_path]; next_sid[proc_path] = t0 + sid_cfg["minsep"]
-            ts = _fmt_ts(t0)
+            ts = _fmt_ts(t_sec)
+            next_sid[runway] = max(next_sid.get(runway, 0.0), t_sec)
 
             base = f"PR{(flight_idx+1):03d}"
             flight_idx += 1
@@ -1526,6 +1703,58 @@ def SATG_PROC_MAKE(name: str,
             f.write(f"{ts}VNAV {acid} ON\n")
             f.write(f"{ts}SPD {acid} {int(sid_cfg['spd_kt'])}\n")
             f.write(f"{ts}ALT {acid} {int(sid_cfg['alt_ft'])}\n")
+            if STATE.proc_destinations_enabled:
+                dests = STATE.proc_destinations.get(proc_path)
+                if dests:
+                    dest_choice = rng.choice(dests)
+                    f.write(f"{ts}DEST {acid} {dest_choice}\n")
+
+        if sid_remaining > 0:
+            rate_runways = [rw for rw in sid_by_runway if rw not in schedule_runways]
+            if not rate_runways:
+                rate_runways = list(sid_by_runway.keys())
+            if rate_runways:
+                weights = [max(STATE.proc_sid_rates.get(rw, DEFAULT_SID_RATE), 0.0) for rw in rate_runways]
+                for _ in range(sid_remaining):
+                    runway = _weighted_choice(rng, rate_runways, weights)
+                    proc_candidates = sid_by_runway.get(runway)
+                    if not proc_candidates:
+                        continue
+                    proc_path = rng.choice(proc_candidates)
+                    proc_name = os.path.splitext(os.path.basename(proc_path))[0]
+                    sid_info = STATE.proc_sid_info.get(proc_path, {})
+                    icao = sid_info.get("icao", "").upper()
+                    if not icao:
+                        _echo_err(f"{proc_name}: ICAO code not set. Use SATG_PROC_SET_ICAO {proc_name} <ICAO>."); return False, ""
+                    rw_tag = f"RW{runway}"
+
+                    rate = STATE.proc_sid_rates.get(runway, DEFAULT_SID_RATE)
+                    if rate <= 0.0:
+                        rate = DEFAULT_SID_RATE
+                    interval = 3600.0 / rate
+
+                    t0 = next_sid[runway]
+                    next_sid[runway] = t0 + interval
+                    ts = _fmt_ts(t0)
+
+                    base = f"PR{(flight_idx+1):03d}"
+                    flight_idx += 1
+                    acid = _next_unique_acid(base, used); used.add(acid)
+
+                    actype = "A320"
+                    f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+                    f.write(f"{ts}ADDWPT {acid} {icao}/{rw_tag}\n")
+                    f.write(f"{ts}ADDWPT {acid} TAKEOFF\n")
+                    f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
+                    f.write(f"{ts}LNAV {acid} ON\n")
+                    f.write(f"{ts}VNAV {acid} ON\n")
+                    f.write(f"{ts}SPD {acid} {int(sid_cfg['spd_kt'])}\n")
+                    f.write(f"{ts}ALT {acid} {int(sid_cfg['alt_ft'])}\n")
+                    if STATE.proc_destinations_enabled:
+                        dests = STATE.proc_destinations.get(proc_path)
+                        if dests:
+                            dest_choice = rng.choice(dests)
+                            f.write(f"{ts}DEST {acid} {dest_choice}\n")
 
     _sort_scn_file(out_path)
     _echo_ok(f"Scenario written: {out_path}")
@@ -1580,18 +1809,23 @@ def SATG_HELP(topic: str = ""):
         "    SATG_PROC_LOAD_PROC path_to_proc_file.scn",
         "    SATG_PROC_SET_ICAO SID-XX-NAME ICAO",
         "    SATG_PROC_CFG_GENERIC flights minsep",
-        "    SATG_PROC_CFG_SID flights minsep alt_ft spd_kt",
-        "  Make and run:",
+        "    SATG_PROC_CFG_SID flights alt_ft spd_kt",
+        "    SATG_PROC_CFG_SIDRATE runway rate_per_hour",
+        "    SATG_PROC_USE_DEST 0|1",
+        "    SATG_PROC_SET_DEST proc_name ICAO1 ICAO2 ...",
+        "    SATG_PROC_CFG_SIDSCHED runway start_min end_min cap1 cap2 ...",
+        "    SATG_PROC_CLEAR_SIDSCHED [runway]",
         "    SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite",
         "    SATG_PROC_RUN  name",
         "  Behavior: generic procedures spawn near the first fix inside a sector pointing inbound to it,",
-        "            SID-*-*.scn spawn from runway thresholds once mapped to an ICAO.",
-        "            Min separation enforces per-procedure spacing.",
+        "            SID-*-*.scn spawn from runway thresholds once mapped to an ICAO and follow configured runway rates or schedules.",
+        "            Min separation applies to generic procedures only.",
         "",
         "General:",
         "  - Use the GUI to set a base folder. Scenario files are written there.",
         "  - When appending to an existing scenario, callsigns are auto-renamed to avoid duplicates.",
         "  - Scenario files are sorted by time after writing.",
+        "  - If destination assignment is ON, DEST commands are sent with random airports from configured lists.",
     ]
 
     t = topic.strip().lower()
