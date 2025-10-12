@@ -126,6 +126,175 @@ class SIDSchedDialog(QDialog):
         self.end_edit.blockSignals(False)
         self._update_slot_controls()
 
+
+class StarSchedDialog(QDialog):
+    SLOT_MINUTES = 15
+
+    def __init__(self, procs: List[tuple[str, str]], existing: Dict[str, Dict[str, object]], parent=None):
+        """procs: list of (path, label)."""
+        super().__init__(parent)
+        self.setWindowTitle("STAR Procedure Schedule")
+        self.procs = [p for p, _ in procs]
+        self.labels = {p: lbl for p, lbl in procs}
+        self.data = {p: dict(existing.get(p, {})) for p in self.procs}
+        for p in self.procs:
+            if p not in self.data or not self.data[p].get("caps"):
+                self.data[p] = {"start": 0.0, "end": 60.0, "caps": [0]}
+        self.current_proc = self.procs[0]
+        self.sliders: List[QSlider] = []
+
+        layout = QVBoxLayout(self)
+
+        self.proc_combo = QComboBox(self)
+        for path in self.procs:
+            self.proc_combo.addItem(self.labels.get(path, os.path.basename(path)), path)
+        self.proc_combo.currentIndexChanged.connect(self._on_proc_changed)
+        layout.addWidget(self.proc_combo)
+
+        time_row = QHBoxLayout()
+        self.start_edit = QTimeEdit(self)
+        self.start_edit.setDisplayFormat("HH:mm")
+        self.end_edit = QTimeEdit(self)
+        self.end_edit.setDisplayFormat("HH:mm")
+        time_row.addWidget(QLabel("Start:", self))
+        time_row.addWidget(self.start_edit)
+        time_row.addWidget(QLabel("End:", self))
+        time_row.addWidget(self.end_edit)
+        layout.addLayout(time_row)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.slot_widget = QWidget(self.scroll_area)
+        self.slot_layout = QHBoxLayout(self.slot_widget)
+        self.slot_layout.setContentsMargins(6, 6, 6, 6)
+        self.scroll_area.setWidget(self.slot_widget)
+        layout.addWidget(self.scroll_area, 1)
+
+        self.clear_btn = QPushButton("Clear schedule for this STAR", self)
+        self.clear_btn.clicked.connect(self._clear_current_schedule)
+        layout.addWidget(self.clear_btn)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.start_edit.timeChanged.connect(self._on_time_changed)
+        self.end_edit.timeChanged.connect(self._on_time_changed)
+
+        self._load_proc(self.current_proc)
+
+    def _round_time(self, time: QTime) -> QTime:
+        minutes = time.hour() * 60 + time.minute()
+        rounded = (minutes // self.SLOT_MINUTES) * self.SLOT_MINUTES
+        rounded = max(0, min(rounded, 24 * 60 - self.SLOT_MINUTES))
+        return QTime(rounded // 60, rounded % 60)
+
+    def _time_to_minutes(self, time: QTime) -> float:
+        return time.hour() * 60 + time.minute()
+
+    def _minutes_to_time(self, minutes: float) -> QTime:
+        minutes = max(0, min(int(minutes), 24 * 60))
+        return QTime(minutes // 60, minutes % 60)
+
+    def _on_proc_changed(self):
+        self._save_current()
+        data = self.proc_combo.currentData()
+        if data:
+            self.current_proc = data
+            self._load_proc(self.current_proc)
+
+    def _on_time_changed(self):
+        start = self._round_time(self.start_edit.time())
+        end = self._round_time(self.end_edit.time())
+        if end <= start:
+            end = start.addSecs(self.SLOT_MINUTES * 60)
+        self.start_edit.blockSignals(True)
+        self.end_edit.blockSignals(True)
+        self.start_edit.setTime(start)
+        self.end_edit.setTime(end)
+        self.start_edit.blockSignals(False)
+        self.end_edit.blockSignals(False)
+        self._update_slot_controls()
+
+    def _clear_current_schedule(self):
+        self.data[self.current_proc] = {"start": 0.0, "end": 60.0, "caps": [0]}
+        self._load_proc(self.current_proc)
+
+    def _save_current(self):
+        caps = [slider.value() for slider in self.sliders]
+        self.data[self.current_proc] = {
+            "start": self._time_to_minutes(self.start_edit.time()),
+            "end": self._time_to_minutes(self.end_edit.time()),
+            "caps": caps,
+            "slot": float(self.SLOT_MINUTES),
+        }
+
+    def _load_proc(self, proc_path: str):
+        info = self.data.get(proc_path, {"start": 0.0, "end": 60.0, "caps": [0]})
+        start_time = self._minutes_to_time(info.get("start", 0.0))
+        end_time = self._minutes_to_time(info.get("end", max(info.get("start", 0.0) + self.SLOT_MINUTES, self.SLOT_MINUTES)))
+        if end_time <= start_time:
+            end_time = start_time.addSecs(self.SLOT_MINUTES * 60)
+
+        self.start_edit.blockSignals(True)
+        self.end_edit.blockSignals(True)
+        self.start_edit.setTime(start_time)
+        self.end_edit.setTime(end_time)
+        self.start_edit.blockSignals(False)
+        self.end_edit.blockSignals(False)
+
+        self._build_slot_controls(info.get("caps", [0]))
+
+    def _build_slot_controls(self, caps: List[int]):
+        while self.sliders:
+            slider = self.sliders.pop()
+            slider.deleteLater()
+        for i in reversed(range(self.slot_layout.count())):
+            widget = self.slot_layout.itemAt(i).widget()
+            if widget:
+                widget.deleteLater()
+
+        for idx, cap in enumerate(caps):
+            container = QWidget(self.slot_widget)
+            vlay = QVBoxLayout(container)
+            vlay.setContentsMargins(4, 4, 4, 4)
+            slider = QSlider(Qt.Orientation.Vertical, container)
+            slider.setRange(0, 20)
+            slider.setValue(int(cap))
+            slider.valueChanged.connect(self._on_slider_changed)
+            lbl = QLabel(str(int(cap)), container)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            slider.label = lbl  # type: ignore
+            vlay.addWidget(slider, 1)
+            vlay.addWidget(lbl)
+            self.slot_layout.addWidget(container)
+            self.sliders.append(slider)
+
+        self._update_slot_controls()
+
+    def _update_slot_controls(self):
+        start_minutes = self._time_to_minutes(self.start_edit.time())
+        end_minutes = self._time_to_minutes(self.end_edit.time())
+        duration = max(end_minutes - start_minutes, self.SLOT_MINUTES)
+        slots = int(round(duration / self.SLOT_MINUTES))
+        current = len(self.sliders)
+        if slots != current:
+            caps = [self.sliders[i].value() if i < current else 0 for i in range(slots)]
+            self._build_slot_controls(caps)
+        for slider in self.sliders:
+            slider.label.setText(str(slider.value()))  # type: ignore
+
+    def _on_slider_changed(self, value: int):
+        slider = self.sender()
+        if isinstance(slider, QSlider):
+            slider.label.setText(str(value))  # type: ignore
+
+    @property
+    def result_data(self) -> Dict[str, Dict[str, object]]:
+        self._save_current()
+        return self.data
+
     def _clear_current_schedule(self):
         self.start_edit.setTime(QTime(0, 0))
         self.end_edit.setTime(QTime(1, 0))
@@ -894,11 +1063,14 @@ class ProcTab(QWidget):
         self._proc_files = []   # procedure .scn (with %0 and PROCNAME)
         self._sid_rate_rows = {}
         self._sid_schedule_data: Dict[str, Dict[str, object]] = {}
+        self._star_rate_rows = {}
+        self._star_schedule_data: Dict[str, Dict[str, object]] = {}
         self._origins: Dict[str, str] = {}
         self._destinations: Dict[str, List[str]] = {}
         self._last_dest_sent: set[str] = set()
         self._proc_widgets: Dict[str, Dict[str, object]] = {}
         self._last_sid_sched_sent: set = set()
+        self._last_star_sched_sent: set = set()
         main = QVBoxLayout(self)
 
         # 1) Files
@@ -983,16 +1155,29 @@ class ProcTab(QWidget):
         self.sid_mode.currentIndexChanged.connect(self._on_sid_mode_changed)
         hb2.addWidget(sid_box, 1)
 
-        # STAR placeholder column
+        # STAR column
         star_box = QGroupBox("STAR")
-        ft = QFormLayout(star_box)
-        self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(0)
-        ft.addRow("Flights:", self.star_flights)
-        self.star_minsep = QSpinBox(); self.star_minsep.setRange(0, 3600); self.star_minsep.setValue(90)
-        ft.addRow("Min separation [s]:", self.star_minsep)
-        star_hint = QLabel("STAR generation will be added in a later update.")
+        ft = QFormLayout(star_box); self._star_form = ft
+        star_hint = QLabel("STAR procedures spawn at their first waypoint.\nLoad STAR-*.scn files.")
         star_hint.setWordWrap(True)
         ft.addRow(star_hint)
+        mode_row_star = QHBoxLayout()
+        mode_row_star.addWidget(QLabel("Scheduling mode:", star_box))
+        self.star_mode = QComboBox(star_box)
+        self.star_mode.addItems(["Hourly rate", "15-min schedule"])
+        mode_row_star.addWidget(self.star_mode)
+        mode_row_star.addStretch(1)
+        ft.addRow(mode_row_star)
+        self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(20)
+        ft.addRow("Flights:", self.star_flights)
+        self.star_alt_fl = QSpinBox(); self.star_alt_fl.setRange(0, 600); self.star_alt_fl.setSingleStep(10); self.star_alt_fl.setValue(360)
+        ft.addRow("Initial ALT [FL]:", self.star_alt_fl)
+        self.star_mach = QDoubleSpinBox(); self.star_mach.setDecimals(2); self.star_mach.setRange(0.40, 0.92); self.star_mach.setSingleStep(0.01); self.star_mach.setValue(0.79)
+        ft.addRow("Initial Mach:", self.star_mach)
+        self.star_sched_btn = QPushButton("Configure schedule…")
+        self.star_sched_btn.clicked.connect(self._configure_star_schedule)
+        ft.addRow(self.star_sched_btn)
+        self.star_mode.currentIndexChanged.connect(self._on_star_mode_changed)
         hb2.addWidget(star_box, 1)
 
         main.addWidget(gb2)
@@ -1026,6 +1211,7 @@ class ProcTab(QWidget):
         btn_run.clicked.connect(self._run_only)
         btn_both.clicked.connect(self._make_and_run)
         self._update_sid_mode_state()
+        self._update_star_mode_state()
         self._update_dest_state()
 
     # ---- file ops ----
@@ -1055,6 +1241,12 @@ class ProcTab(QWidget):
             return False
         base = os.path.basename(path)
         return bool(_SID_FILE_RE.match(base)) if base else False
+
+    def _is_star_file(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
+        base = os.path.basename(path)
+        return bool(re.match(r'^STAR-[-A-Za-z0-9_]+\.scn$', base or "", re.IGNORECASE))
 
     def _current_sid_runways(self) -> set:
         runways = set()
@@ -1094,12 +1286,100 @@ class ProcTab(QWidget):
         for label, spin in self._sid_rate_rows.values():
             spin.setEnabled(not use_schedule)
 
+    def _current_star_procs(self) -> List[str]:
+        return [path for path, data in self._proc_widgets.items() if data.get("is_star")]
+
+    def _ensure_star_rate_row(self, path: str):
+        if path in self._star_rate_rows:
+            return
+        label_txt = os.path.splitext(os.path.basename(path))[0]
+        label = QLabel(f"{label_txt} rate [ac/h]:")
+        spin = QSpinBox()
+        spin.setRange(0, 120)
+        spin.setValue(20)
+        self._star_form.addRow(label, spin)
+        self._star_rate_rows[path] = (label, spin)
+
+    def _remove_star_rate_row(self, path: str):
+        row = self._star_rate_rows.pop(path, None)
+        if not row:
+            return
+        label, spin = row
+        self._star_form.removeRow(spin)
+        label.deleteLater()
+        spin.deleteLater()
+
+    def _clear_star_rate_rows(self):
+        for path in list(self._star_rate_rows.keys()):
+            self._remove_star_rate_row(path)
+
+    def _refresh_star_rate_rows(self):
+        active = set(self._current_star_procs())
+        for path in list(self._star_rate_rows.keys()):
+            if path not in active:
+                self._remove_star_rate_row(path)
+        for path in list(self._star_schedule_data.keys()):
+            if path not in active:
+                self._star_schedule_data.pop(path, None)
+        for path in active:
+            self._ensure_star_rate_row(path)
+        self._update_star_mode_state()
+
+    def _on_star_mode_changed(self, idx):
+        self._update_star_mode_state()
+
+    def _update_star_mode_state(self):
+        use_schedule = self.star_mode.currentIndex() == 1 if hasattr(self, "star_mode") else False
+        has_procs = bool(self._current_star_procs())
+        if hasattr(self, "star_sched_btn"):
+            self.star_sched_btn.setEnabled(use_schedule and has_procs)
+        if hasattr(self, "star_flights"):
+            self.star_flights.blockSignals(True)
+            if use_schedule and has_procs:
+                total_caps = 0
+                for path in self._current_star_procs():
+                    cfg = self._star_schedule_data.get(path)
+                    if not cfg:
+                        continue
+                    caps = [int(c) for c in cfg.get("caps", [])]
+                    total_caps += sum(caps)
+                if total_caps > 0:
+                    self.star_flights.setValue(total_caps)
+                self.star_flights.setEnabled(False)
+            else:
+                self.star_flights.setEnabled(True)
+            self.star_flights.blockSignals(False)
+        for _, spin in self._star_rate_rows.values():
+            spin.setEnabled(not use_schedule)
+
+    def _configure_star_schedule(self):
+        procs = [(path, os.path.splitext(os.path.basename(path))[0]) for path in self._current_star_procs()]
+        if not procs:
+            _emit("ECHO Load STAR procedures before configuring schedules.")
+            return
+        dialog = StarSchedDialog(procs, self._star_schedule_data, self)
+        if dialog.exec():
+            result = dialog.result_data
+            cleaned: Dict[str, Dict[str, object]] = {}
+            for path, cfg in result.items():
+                caps = [int(c) for c in cfg.get("caps", [])]
+                if sum(caps) > 0:
+                    cleaned[path] = {
+                        "start": float(cfg.get("start", 0.0)),
+                        "end": float(cfg.get("end", 0.0)),
+                        "caps": caps,
+                        "slot": float(cfg.get("slot", StarSchedDialog.SLOT_MINUTES)),
+                    }
+            self._star_schedule_data = cleaned
+            self._update_star_mode_state()
+
     def _update_dest_state(self):
         has_procs = bool(self._proc_files)
         if hasattr(self, "dest_enable") and not has_procs:
             self.dest_enable.blockSignals(True)
             self.dest_enable.setChecked(False)
             self.dest_enable.blockSignals(False)
+        self._update_star_mode_state()
 
     def _configure_sid_schedule(self):
         runways = sorted(self._current_sid_runways())
@@ -1347,23 +1627,29 @@ class ProcTab(QWidget):
             row_layout = QHBoxLayout(container)
             row_layout.setContentsMargins(0, 0, 0, 0)
             is_sid = self._is_sid_file(p)
+            is_star = self._is_star_file(p)
 
-            origin_edit = QLineEdit(container)
-            origin_edit.setPlaceholderText("Origin ICAO" if is_sid else "Origin (SID only)")
-            origin_edit.setMaxLength(4)
-            origin_edit.setEnabled(is_sid)
-            origin_edit.setMaximumWidth(90)
-            if is_sid and self._origins.get(p):
-                origin_edit.setText(self._origins[p])
-            origin_edit.editingFinished.connect(lambda path=p, ref=origin_edit: self._update_origin_entry(path, ref.text()))
-            origin_all_btn = QPushButton("Apply to all", container)
-            origin_all_btn.setAutoDefault(False)
-            origin_all_btn.setEnabled(is_sid)
-            origin_all_btn.setVisible(is_sid)
-            origin_all_btn.clicked.connect(lambda _, path=p: self._apply_origin_to_all(path))
+            origin_edit: Optional[QLineEdit] = None
+            origin_all_btn: Optional[QPushButton] = None
+            if is_sid:
+                origin_edit = QLineEdit(container)
+                origin_edit.setPlaceholderText("Origin ICAO")
+                origin_edit.setMaxLength(4)
+                origin_edit.setMaximumWidth(90)
+                if self._origins.get(p):
+                    origin_edit.setText(self._origins[p])
+                origin_edit.editingFinished.connect(lambda path=p, ref=origin_edit: self._update_origin_entry(path, ref.text()))
+
+                origin_all_btn = QPushButton("Origin -> all", container)
+                origin_all_btn.setAutoDefault(False)
+                origin_all_btn.clicked.connect(lambda _, path=p: self._apply_origin_to_all(path))
+
+                row_layout.addWidget(origin_edit)
+                row_layout.addWidget(origin_all_btn)
 
             label = QLabel(p, container)
             label.setStyleSheet("color: #555;")
+            row_layout.addWidget(label, 2)
 
             dest_edit = QLineEdit(container)
             dest_edit.setPlaceholderText("Destinations (comma separated)")
@@ -1371,13 +1657,11 @@ class ProcTab(QWidget):
             if existing:
                 dest_edit.setText(", ".join(existing))
             dest_edit.editingFinished.connect(lambda path=p, ref=dest_edit: self._update_destination_entry(path, ref.text()))
-            dest_all_btn = QPushButton("Apply to all", container)
+
+            dest_all_btn = QPushButton("Dest -> all", container)
             dest_all_btn.setAutoDefault(False)
             dest_all_btn.clicked.connect(lambda _, path=p: self._apply_dest_to_all(path))
 
-            row_layout.addWidget(origin_edit)
-            row_layout.addWidget(origin_all_btn)
-            row_layout.addWidget(label, 2)
             row_layout.addWidget(dest_edit, 1)
             row_layout.addWidget(dest_all_btn)
             row_layout.addStretch(1)
@@ -1386,11 +1670,14 @@ class ProcTab(QWidget):
             self._proc_widgets[p] = {
                 "item": item,
                 "origin": origin_edit,
-                "origin_all": origin_all_btn if is_sid else None,
+                "origin_all": origin_all_btn,
                 "dest": dest_edit,
+                "dest_all": dest_all_btn,
                 "is_sid": is_sid,
+                "is_star": is_star,
             }
         self._refresh_sid_runway_rows()
+        self._refresh_star_rate_rows()
         self._sync_destination_edits()
         self._sync_origin_edits()
         self._update_dest_state()
@@ -1405,10 +1692,12 @@ class ProcTab(QWidget):
             self._proc_files = [x for x in self._proc_files if x != p]
             self._destinations.pop(p, None)
             self._origins.pop(p, None)
+            self._star_schedule_data.pop(p, None)
             self._proc_widgets.pop(p, None)
             row = self.lst_proc.row(item)
             self.lst_proc.takeItem(row)
         self._refresh_sid_runway_rows()
+        self._refresh_star_rate_rows()
         self._sync_destination_edits()
         self._sync_origin_edits()
         self._update_dest_state()
@@ -1420,11 +1709,15 @@ class ProcTab(QWidget):
         self._clear_sid_runway_rows()
         self._sid_schedule_data.clear()
         self._last_sid_sched_sent.clear()
+        self._clear_star_rate_rows()
+        self._star_schedule_data.clear()
+        self._last_star_sched_sent.clear()
         self._destinations.clear()
         self._last_dest_sent.clear()
         self._origins.clear()
         self._proc_widgets.clear()
         self._update_dest_state()
+        self._update_star_mode_state()
 
     # ---- actions ----
     def _make(self):
@@ -1439,9 +1732,34 @@ class ProcTab(QWidget):
         gen_n = int(self.gen_flights.value())
         sid_n = int(self.sid_flights.value())
         star_n = int(self.star_flights.value())
-        if star_n > 0:
-            _emit("ECHO STAR generation not supported yet. Set STAR flights to 0.")
-            return False
+        star_mode_schedule = self.star_mode.currentIndex() == 1
+        star_alt_fl = int(self.star_alt_fl.value())
+        star_mach = float(self.star_mach.value())
+        star_minsep = 90
+
+        star_procs = self._current_star_procs()
+        if star_mode_schedule:
+            if not star_procs:
+                _emit("ECHO Load STAR-*.scn procedure files before configuring STAR flights.")
+                return False
+            total_caps = 0
+            for path in star_procs:
+                cfg = self._star_schedule_data.get(path)
+                if not cfg:
+                    continue
+                caps = [int(c) for c in cfg.get("caps", [])]
+                total_caps += sum(caps)
+            if total_caps <= 0:
+                _emit("ECHO Configure STAR schedule slots before running.")
+                return False
+            star_n = total_caps
+            self.star_flights.blockSignals(True)
+            self.star_flights.setValue(star_n)
+            self.star_flights.blockSignals(False)
+        else:
+            if star_n > 0 and not star_procs:
+                _emit("ECHO Load STAR-*.scn procedure files before configuring STAR flights.")
+                return False
 
         if not self._ensure_origin_ready():
             return False
@@ -1449,7 +1767,7 @@ class ProcTab(QWidget):
         use_schedule = self.sid_mode.currentIndex() == 1
         sid_sched_total = 0
         scheduled_runways = set()
-        if use_schedule:
+        if use_schedule and sid_n > 0:
             for rw, cfg in self._sid_schedule_data.items():
                 caps = cfg.get("caps", [])
                 total_caps = sum(int(c) for c in caps)
@@ -1464,14 +1782,13 @@ class ProcTab(QWidget):
 
         total = gen_n + sid_n + star_n
         if total <= 0:
-            _emit("ECHO Configure at least one flight in Generic or SID sections.")
+            _emit("ECHO Configure at least one flight in Generic, SID, or STAR sections.")
             return False
 
         rnm = float(self.spawn_r.value())
         env = float(self.spawn_env.value())
         gen_min = int(self.gen_minsep.value())
-        star_min = int(self.star_minsep.value())
-        overall_min = max(gen_min, star_min)
+        overall_min = max(gen_min, star_minsep)
         s   = int(self.seed.value())
         ow  = 1 if self.overwrite.isChecked() else 0
 
@@ -1479,13 +1796,12 @@ class ProcTab(QWidget):
         sid_spd = int(self.sid_spd.value())
 
         _emit(f"SATG_PROC_CFG_GENERIC {gen_n} {gen_min}")
-        _emit(f"SATG_PROC_CFG_GENERIC {gen_n} {gen_min}")
         _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_alt} {sid_spd}")
         _emit(f"SATG_PROC_USE_DEST {1 if self.dest_enable.isChecked() else 0}")
         active_runways = self._current_sid_runways()
         current_sched_sent = set()
         current_sched_sent = set()
-        if use_schedule:
+        if use_schedule and sid_n > 0:
             if sid_sched_total == 0:
                 _emit("ECHO No SID schedule configured; add slots or switch to hourly rate mode.")
                 return False
@@ -1540,7 +1856,46 @@ class ProcTab(QWidget):
             _, spin = row
             rate = int(spin.value())
             _emit(f"SATG_PROC_CFG_SIDRATE RW{rw} {rate}")
-        _emit(f"SATG_PROC_CFG_STAR {star_n} {star_min}")
+
+        for path in star_procs:
+            row = self._star_rate_rows.get(path)
+            if not row:
+                continue
+            _, spin = row
+            rate = int(spin.value())
+            label = os.path.splitext(os.path.basename(path))[0]
+            _emit(f"SATG_PROC_CFG_STARRATE {label} {rate}")
+
+        current_star_sched_sent = set()
+        if star_mode_schedule:
+            for path in star_procs:
+                cfg = self._star_schedule_data.get(path)
+                if not cfg:
+                    continue
+                caps = [int(c) for c in cfg.get("caps", [])]
+                if sum(caps) <= 0:
+                    continue
+                start = int(round(float(cfg.get("start", 0.0))))
+                end = int(round(float(cfg.get("end", start + 15))))
+                if end <= start:
+                    end = start + 15 * len(caps)
+                caps_str = " ".join(str(int(c)) for c in caps)
+                if not caps_str:
+                    continue
+                label = os.path.splitext(os.path.basename(path))[0]
+                _emit(f"SATG_PROC_CFG_STARSCHED {label} {start} {end} {caps_str}")
+                current_star_sched_sent.add(label)
+            to_clear_star = self._last_star_sched_sent - current_star_sched_sent
+            for label in sorted(to_clear_star):
+                _emit(f"SATG_PROC_CLEAR_STARSCHED {label}")
+            self._last_star_sched_sent = current_star_sched_sent
+        else:
+            if self._last_star_sched_sent:
+                for label in sorted(self._last_star_sched_sent):
+                    _emit(f"SATG_PROC_CLEAR_STARSCHED {label}")
+                self._last_star_sched_sent.clear()
+
+        _emit(f"SATG_PROC_CFG_STAR {star_n} {star_minsep} {star_alt_fl} {star_mach:.2f} {1 if star_mode_schedule else 0}")
 
         # strictly positional to satisfy BlueSky argparser
         cmd = f"SATG_PROC_MAKE {name} {total} {rnm} {env} {overall_min} {s} {ow}"

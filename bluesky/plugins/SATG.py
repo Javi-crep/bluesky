@@ -19,6 +19,10 @@ from typing import Dict, List, Optional, Tuple
 import re
 
 from bluesky import stack
+try:
+    import bluesky as bs
+except Exception:
+    bs = None
 from bluesky.stack import command
 from bluesky.tools import geo
 from bluesky.tools import misc as _misc
@@ -58,7 +62,9 @@ if getattr(_misc.lat2txt, "__name__", "") != "_satg_safe_lat2txt":
     _traf_mod.latlon2txt = _satg_safe_latlon2txt
 
 _SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
+_STAR_FILE_RE = re.compile(r'^STAR-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
 DEFAULT_SID_RATE = 40.0  # aircraft per hour
+DEFAULT_STAR_RATE = 20.0  # aircraft per hour
 
 # ---------------- ISA + GS->CAS (wind=0) ---------------- #
 GAMMA = 1.4; R = 287.05287; G0 = 9.80665
@@ -221,11 +227,14 @@ class _SATGState:
         self.proc_sid_info: Dict[str, Dict[str, str]] = {}
         self.proc_sid_lookup: Dict[str, str] = {}
         self.proc_sid_schedules: Dict[str, Dict[str, object]] = {}
+        self.proc_star_info: Dict[str, Dict[str, str]] = {}
         self.proc_generic_cfg = {"flights": 20, "minsep": 90}
         self.proc_sid_cfg = {"flights": 0, "alt_ft": 3000, "spd_kt": 210}
-        self.proc_star_cfg = {"flights": 0, "minsep": 30}
+        self.proc_star_cfg = {"flights": 20, "minsep": 90, "alt_ft": 36000, "mach": 0.79, "use_schedule": False}
         self.proc_sid_rates: Dict[str, float] = {}
+        self.proc_star_rates: Dict[str, float] = {}
         self.proc_sid_usage: Dict[str, set] = {}
+        self.proc_star_schedules: Dict[str, Dict[str, object]] = {}
         self.proc_destinations_enabled: bool = False
         self.proc_destinations: Dict[str, List[str]] = {}
 
@@ -293,6 +302,40 @@ def _unregister_sid_proc(path: str):
         for key, val in list(STATE.proc_sid_lookup.items()):
             if val == path:
                 STATE.proc_sid_lookup.pop(key, None)
+
+def _register_star_proc(path: str):
+    """Register STAR metadata for the given procedure file path if applicable."""
+    path = os.path.abspath(path)
+    base = os.path.basename(path)
+    match = _STAR_FILE_RE.match(base)
+    if match:
+        basename_no_ext = os.path.splitext(base)[0]
+        info = STATE.proc_star_info.get(path, {})
+        fix, _ = _proc_first_two_fixes(path, set())
+        fix_up = fix.upper() if fix else ""
+        info.update({
+            "path": path,
+            "basename": basename_no_ext,
+            "fix": fix_up,
+        })
+        STATE.proc_star_info[path] = info
+        if fix_up:
+            STATE.proc_star_rates.setdefault(fix_up, DEFAULT_STAR_RATE)
+            STATE.proc_star_schedules.setdefault(fix_up, {})
+        return info
+    _unregister_star_proc(path)
+    return None
+
+def _unregister_star_proc(path: str):
+    """Remove STAR metadata for the given procedure file path."""
+    path = os.path.abspath(path)
+    info = STATE.proc_star_info.pop(path, None)
+    fix = info.get("fix") if info else ""
+    if fix:
+        still_used = any(other.get("fix") == fix for other in STATE.proc_star_info.values())
+        if not still_used:
+            STATE.proc_star_rates.pop(fix, None)
+            STATE.proc_star_schedules.pop(fix, None)
 
 
 # ---------------- RL I/O ---------------- #
@@ -758,16 +801,57 @@ def _proc_first_two_fixes(proc_path: str, fix_keys: set) -> tuple[str|None, str|
     except Exception:
         return None, None
     cand = []
-    for tok in re.findall(r"[A-Za-z0-9_+-]{3,}", txt):
-        u = tok.upper()
-        if u in fix_keys:
-            if not cand or cand[-1] != u:
-                cand.append(u)
-            if len(cand) >= 2:
-                break
+    for match in re.finditer(r"ADDWPT\s+([A-Za-z0-9_+-]+)", txt, re.IGNORECASE):
+        name = match.group(1).upper()
+        if not cand or cand[-1] != name:
+            cand.append(name)
+        if len(cand) >= 2:
+            break
     if len(cand) >= 2: return cand[0], cand[1]
     if len(cand) == 1: return cand[0], None
     return None, None
+
+def _resolve_fix_coord(name: Optional[str],
+                       fix_db: Optional[Dict[str, Tuple[float, float]]],
+                       ref_lat: Optional[float] = None,
+                       ref_lon: Optional[float] = None) -> Optional[Tuple[float, float]]:
+    if not name:
+        return None
+    key = str(name).strip().upper()
+    if not key:
+        return None
+    if fix_db is not None and key in fix_db:
+        return fix_db[key]
+    navdb = getattr(bs, "navdb", None) if bs else None
+    if navdb:
+        try:
+            wpid_list = getattr(navdb, "wpid", None)
+            if wpid_list is not None and len(wpid_list) == 0 and hasattr(navdb, "reset"):
+                navdb.reset()
+        except Exception:
+            pass
+        try:
+            idx = navdb.getwpidx(key, ref_lat, ref_lon)
+            if idx >= 0:
+                lat = float(navdb.wplat[idx])
+                lon = float(navdb.wplon[idx])
+                if fix_db is not None:
+                    fix_db[key] = (lat, lon)
+                return lat, lon
+        except Exception:
+            pass
+        if len(key) == 4 and hasattr(navdb, "getaptidx"):
+            try:
+                idx = navdb.getaptidx(key)
+                if idx >= 0:
+                    lat = float(navdb.aptlat[idx])
+                    lon = float(navdb.aptlon[idx])
+                    if fix_db is not None:
+                        fix_db[key] = (lat, lon)
+                    return lat, lon
+            except Exception:
+                pass
+    return None
 
 def _bearing_deg(lat1, lon1, lat2, lon2):
     try:
@@ -1288,16 +1372,20 @@ def SATG_PROC_LOAD_PROC(path: str):
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     if not os.path.isfile(p): _echo_err(f"File not found: {p}"); return False, ""
     if p not in STATE.proc_proc_files: STATE.proc_proc_files.append(p)
-    info = _register_sid_proc(p)
-    if info:
+    sid_info = _register_sid_proc(p)
+    if sid_info:
         _echo_ok(f"Loaded SID procedure file: {p}")
-        if not info.get("icao"):
+        if not sid_info.get("icao"):
             _echo_lines([
                 "[SATG] Provide airport ICAO for SID:",
-                f"[SATG]   SATG_PROC_SET_ICAO {info['basename']} <ICAO>"
+                f"[SATG]   SATG_PROC_SET_ICAO {sid_info['basename']} <ICAO>"
             ])
     else:
-        _echo_ok(f"Loaded procedure file: {p}")
+        star_info = _register_star_proc(p)
+        if star_info:
+            _echo_ok(f"Loaded STAR procedure file: {p}")
+        else:
+            _echo_ok(f"Loaded procedure file: {p}")
     return True, ""
 
 @command
@@ -1305,6 +1393,7 @@ def SATG_PROC_UNLOAD_PROC(path: str):
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     STATE.proc_proc_files = [x for x in STATE.proc_proc_files if x != p]
     _unregister_sid_proc(p)
+    _unregister_star_proc(p)
     STATE.proc_destinations.pop(p, None)
     _echo_ok(f"Unloaded procedure file: {p}"); return True, ""
 
@@ -1316,6 +1405,9 @@ def SATG_PROC_CLEAR_PROC():
     STATE.proc_sid_rates.clear()
     STATE.proc_sid_usage.clear()
     STATE.proc_sid_schedules.clear()
+    STATE.proc_star_info.clear()
+    STATE.proc_star_rates.clear()
+    STATE.proc_star_schedules.clear()
     STATE.proc_destinations.clear()
     STATE.proc_destinations_enabled = False
     _echo_ok("Cleared procedure files"); return True, ""
@@ -1378,15 +1470,76 @@ def SATG_PROC_CFG_SID(flights: int, alt_ft: int, spd_kt: float):
 
 
 @command
-def SATG_PROC_CFG_STAR(flights: int, minsep: int):
+def SATG_PROC_CFG_STAR(flights: int, minsep: int, alt_fl: int = 360, mach: float = 0.79, mode: int = 0):
     flights = max(0, int(flights))
     minsep = max(0, int(minsep))
-    STATE.proc_star_cfg["flights"] = flights
-    STATE.proc_star_cfg["minsep"] = minsep
-    if flights > 0:
-        _echo_err("STAR procedures are not yet supported in generator output."); return False, ""
-    _echo_ok("STAR procedures: flights=0 (disabled)")
+    alt_fl_val = max(0, int(_to_int(alt_fl, 360)))
+    alt_ft = alt_fl_val * 100
+    mach_val = max(0.0, float(mach))
+    use_schedule = bool(int(mode))
+    STATE.proc_star_cfg.update({
+        "flights": flights,
+        "minsep": minsep,
+        "alt_ft": alt_ft,
+        "mach": mach_val,
+        "use_schedule": use_schedule,
+    })
+    mode_txt = "schedule" if use_schedule else "rate"
+    _echo_ok(f"STAR procedures: flights={flights}, mode={mode_txt}, minsep={minsep}s, alt=FL{alt_fl_val}, mach={mach_val:.2f}")
     return True, ""
+
+@command
+def SATG_PROC_CFG_STARRATE(proc_id: str, rate: float):
+    path = _resolve_proc_path(proc_id)
+    if not path:
+        _echo_err(f"SATG_PROC_CFG_STARRATE: unknown procedure '{proc_id}'"); return False, ""
+    rate_val = max(0.0, float(rate))
+    STATE.proc_star_rates[path] = rate_val
+    label = os.path.basename(path)
+    _echo_ok(f"STAR rate set for {label}: {rate_val:.1f} ac/h")
+    return True, ""
+
+
+@command
+def SATG_PROC_CFG_STARSCHED(proc_id: str, start_min: float, end_min: float, *caps):
+    path = _resolve_proc_path(proc_id)
+    if not path:
+        _echo_err(f"SATG_PROC_CFG_STARSCHED: unknown procedure '{proc_id}'"); return False, ""
+    caps_int = [max(0, int(round(_to_float(c, 0)))) for c in caps]
+    if not caps_int or sum(caps_int) <= 0:
+        STATE.proc_star_schedules.pop(path, None)
+        label = os.path.basename(path)
+        _echo_ok(f"STAR schedule cleared for {label}")
+        return True, ""
+    slot_minutes = 15.0
+    start = max(0.0, float(start_min))
+    end = max(0.0, float(end_min))
+    if end <= start:
+        end = start + slot_minutes * len(caps_int)
+    expected_slots = max(1, int(round((end - start) / slot_minutes)))
+    if expected_slots != len(caps_int):
+        end = start + slot_minutes * len(caps_int)
+    STATE.proc_star_schedules[path] = {"start": start, "end": end, "caps": caps_int, "slot": slot_minutes}
+    label = os.path.basename(path)
+    total_caps = sum(caps_int)
+    _echo_ok(f"STAR schedule set for {label}: total={total_caps} flights, window {start:.0f}-{end:.0f} min")
+    return True, ""
+
+
+@command
+def SATG_PROC_CLEAR_STARSCHED(proc_id: str = ''):
+    if proc_id:
+        path = _resolve_proc_path(proc_id)
+        if not path:
+            _echo_err(f"SATG_PROC_CLEAR_STARSCHED: unknown procedure '{proc_id}'"); return False, ""
+        STATE.proc_star_schedules.pop(path, None)
+        label = os.path.basename(path)
+        _echo_ok(f"Cleared STAR schedule for {label}")
+        return True, ""
+    STATE.proc_star_schedules.clear()
+    _echo_ok('Cleared all STAR schedules')
+    return True, ""
+
 
 @command
 def SATG_PROC_CFG_SIDRATE(runway: str, rate: float):
@@ -1467,6 +1620,19 @@ def _resolve_proc_path(proc_id: str) -> Optional[str]:
     return None
 
 
+def _normalize_star_fix(proc_id: str) -> str:
+    proc_id = str(proc_id).strip()
+    if not proc_id:
+        return ""
+    path = _resolve_proc_path(proc_id)
+    if path:
+        fix, _ = _proc_first_two_fixes(path, set())
+        if fix:
+            return fix.upper()
+        return os.path.splitext(os.path.basename(path))[0].upper()
+    return proc_id.strip().upper()
+
+
 @command
 def SATG_PROC_USE_DEST(flag: int):
     STATE.proc_destinations_enabled = bool(int(flag))
@@ -1527,8 +1693,6 @@ def SATG_PROC_MAKE(name: str,
     sid_cfg = dict(STATE.proc_sid_cfg)
     star_cfg = dict(STATE.proc_star_cfg)
 
-    star_cfg["flights"] = 0  # STAR support pending
-
     total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
     if total_cfg <= 0:
         gen_cfg["flights"] = int(n)
@@ -1537,12 +1701,15 @@ def SATG_PROC_MAKE(name: str,
         total_cfg = gen_cfg["flights"]
 
     sid_paths = [p for p in procs if p in STATE.proc_sid_info]
-    generic_paths = [p for p in procs if p not in STATE.proc_sid_info]
+    star_paths = [p for p in procs if p in STATE.proc_star_info]
+    generic_paths = [p for p in procs if p not in STATE.proc_sid_info and p not in STATE.proc_star_info]
 
     if not sid_paths:
         sid_cfg["flights"] = 0
     if not generic_paths:
         gen_cfg["flights"] = 0
+    if not star_paths:
+        star_cfg["flights"] = 0
 
     total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
     if total_cfg <= 0:
@@ -1552,6 +1719,8 @@ def SATG_PROC_MAKE(name: str,
             gen_cfg["minsep"] = max(0, int(minsep))
         elif sid_paths:
             sid_cfg["flights"] = base_n
+        elif star_paths:
+            star_cfg["flights"] = base_n
         total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
 
     if total_cfg <= 0:
@@ -1559,13 +1728,14 @@ def SATG_PROC_MAKE(name: str,
 
     n = total_cfg
 
-    needs_fix_db = gen_cfg["flights"] > 0
+    needs_fix_db = (gen_cfg["flights"] > 0) or (star_cfg["flights"] > 0)
     fix_db: Dict[str, Tuple[float, float]] = {}
+    navdb_available = bool(bs and getattr(bs, "navdb", None))
     if needs_fix_db:
         fix_db = _build_fix_db(STATE.proc_wpt_files)
-        if not fix_db:
-            _echo_err("No waypoints parsed from DEFWPT files. Load waypoint .scn first."); return False, ""
-    fix_keys = set(fix_db.keys()) if fix_db else set()
+        if not fix_db and not navdb_available:
+            _echo_err("No waypoints parsed from DEFWPT files and no global nav database available. Load waypoint .scn first."); return False, ""
+    fix_keys = set(fix_db.keys())
 
     rng = random.Random(int(seed)) if int(seed) != 0 else random.Random()
     R = max(0.01, float(radius_nm))
@@ -1581,6 +1751,9 @@ def SATG_PROC_MAKE(name: str,
         sid_by_runway.setdefault(rw, []).append(path)
     next_sid = {rw: 0.0 for rw in sid_by_runway}
     used = _scan_existing_acids(out_path) if append else set()
+    star_minsep = max(0.0, float(star_cfg.get("minsep", 0)))
+    star_alt_ft = max(0, int(star_cfg.get("alt_ft", 0)))
+    star_spd = max(0.0, float(star_cfg.get("spd_kt", 0)))
 
     def _weighted_choice(rng_obj: random.Random, items: List[str], weights: List[float]) -> str:
         total = sum(weights)
@@ -1605,19 +1778,22 @@ def SATG_PROC_MAKE(name: str,
             t0 = next_generic[proc_path]; next_generic[proc_path] = t0 + gen_cfg["minsep"]
             ts = _fmt_ts(t0)
 
-            base = f"PR{(flight_idx+1):03d}"
-            flight_idx += 1
+            base = f"PR{len(used)+1:03d}"
             acid = _next_unique_acid(base, used); used.add(acid)
-
-            if not fix_db:
-                _echo_err("Waypoint database unavailable for generic procedures. Load waypoint .scn first."); return False, ""
+            flight_idx = len(used)
 
             f1_name, f2_name = _proc_first_two_fixes(proc_path, fix_keys)
-            if not f1_name or f1_name not in fix_db:
-                _echo_err(f"{proc_name}: could not find first fix in waypoint DB."); return False, ""
-            latA, lonA = fix_db[f1_name]
-            if f2_name and f2_name in fix_db:
-                latB, lonB = fix_db[f2_name]
+            coord1 = _resolve_fix_coord(f1_name, fix_db)
+            if not coord1:
+                _echo_err(f"{proc_name}: could not resolve first fix position."); return False, ""
+            latA, lonA = coord1
+            if f1_name:
+                fix_keys.add(f1_name.upper())
+            coord2 = _resolve_fix_coord(f2_name, fix_db, latA, lonA) if f2_name else None
+            if coord2:
+                latB, lonB = coord2
+                if f2_name:
+                    fix_keys.add(f2_name.upper())
                 brg_AB = _bearing_deg(latA, lonA, latB, lonB)
             else:
                 brg_AB = 0.0
@@ -1690,9 +1866,9 @@ def SATG_PROC_MAKE(name: str,
             ts = _fmt_ts(t_sec)
             next_sid[runway] = max(next_sid.get(runway, 0.0), t_sec)
 
-            base = f"PR{(flight_idx+1):03d}"
-            flight_idx += 1
+            base = f"PR{len(used)+1:03d}"
             acid = _next_unique_acid(base, used); used.add(acid)
+            flight_idx = len(used)
 
             actype = "A320"
             f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
@@ -1737,9 +1913,9 @@ def SATG_PROC_MAKE(name: str,
                     next_sid[runway] = t0 + interval
                     ts = _fmt_ts(t0)
 
-                    base = f"PR{(flight_idx+1):03d}"
-                    flight_idx += 1
+                    base = f"PR{len(used)+1:03d}"
                     acid = _next_unique_acid(base, used); used.add(acid)
+                    flight_idx = len(used)
 
                     actype = "A320"
                     f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
@@ -1755,6 +1931,106 @@ def SATG_PROC_MAKE(name: str,
                         if dests:
                             dest_choice = rng.choice(dests)
                             f.write(f"{ts}DEST {acid} {dest_choice}\n")
+
+        # STAR procedures
+        star_total_requested = max(0, int(star_cfg.get("flights", 0)))
+        use_star_schedule = bool(star_cfg.get("use_schedule"))
+        star_rate_map = {path: max(0.0, float(STATE.proc_star_rates.get(path, DEFAULT_STAR_RATE))) for path in star_paths}
+        star_schedule_data = STATE.proc_star_schedules if use_star_schedule else {}
+        fallback_star_minsep = max(1.0, float(star_cfg.get("minsep", 90)))
+        star_alt_ft = int(star_cfg.get("alt_ft", 36000))
+        star_mach_val = float(star_cfg.get("mach", 0.79))
+
+        def _write_star_entry(t_sec: float, proc_path: str) -> bool:
+            nonlocal flight_idx
+            proc_name = os.path.splitext(os.path.basename(proc_path))[0]
+            f1_name, f2_name = _proc_first_two_fixes(proc_path, fix_keys)
+            if not f1_name:
+                _echo_err(f"{proc_name}: procedure missing initial waypoint."); return False
+            fix_keys.add(f1_name.upper())
+            coord1 = _resolve_fix_coord(f1_name, fix_db)
+            lat0 = lon0 = None
+            if coord1:
+                lat0, lon0 = coord1
+            coord2 = _resolve_fix_coord(f2_name, fix_db, lat0, lon0) if (f2_name and lat0 is not None and lon0 is not None) else None
+            if coord2:
+                lat1, lon1 = coord2
+                fix_keys.add(f2_name.upper())
+                hdg0 = _bearing_deg(lat0, lon0, lat1, lon1)
+            else:
+                hdg0 = 0.0
+            ts = _fmt_ts(t_sec)
+            base = f"PR{len(used)+1:03d}"
+            acid = _next_unique_acid(base, used); used.add(acid)
+            flight_idx = len(used)
+            actype = "A320"
+            hdg_cmd = int(round(hdg0)) % 360
+            spawn_token = f1_name.upper()
+            f.write(f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {star_alt_ft} {star_mach_val:.2f}\n")
+            f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
+            f.write(f"{ts}LNAV {acid} ON\n")
+            f.write(f"{ts}VNAV {acid} ON\n")
+            if STATE.proc_destinations_enabled:
+                dests = STATE.proc_destinations.get(proc_path)
+                if dests:
+                    dest_choice = rng.choice(dests)
+                    f.write(f"{ts}DEST {acid} {dest_choice}\n")
+            return True
+
+        if star_paths:
+            scheduled_star_events: List[Tuple[float, str]] = []
+            if use_star_schedule:
+                for proc_path, sched in star_schedule_data.items():
+                    if proc_path not in star_paths:
+                        continue
+                    caps = list(sched.get("caps", []))
+                    if not caps:
+                        continue
+                    slot_minutes = float(sched.get("slot", 15.0)) or 15.0
+                    start_minutes = float(sched.get("start", 0.0))
+                    slot_seconds = slot_minutes * 60.0
+                    for idx, cap in enumerate(caps):
+                        cap = int(cap)
+                        if cap <= 0:
+                            continue
+                        slot_start_sec = (start_minutes + idx * slot_minutes) * 60.0
+                        if cap == 1:
+                            times = [slot_start_sec]
+                        else:
+                            step = slot_seconds / cap
+                            times = [slot_start_sec + j * step for j in range(cap)]
+                        for t_sec in times:
+                            scheduled_star_events.append((t_sec, proc_path))
+                scheduled_star_events.sort(key=lambda x: x[0])
+                if star_total_requested <= 0:
+                    star_total_requested = len(scheduled_star_events)
+                if star_total_requested > 0 and len(scheduled_star_events) > star_total_requested:
+                    scheduled_star_events = scheduled_star_events[:star_total_requested]
+            star_remaining = max(0, star_total_requested - len(scheduled_star_events))
+            next_star_time: Dict[str, float] = {path: 0.0 for path in star_paths}
+            for t_sec, proc_path in scheduled_star_events:
+                if not _write_star_entry(t_sec, proc_path):
+                    return False, ""
+                rate = star_rate_map.get(proc_path, DEFAULT_STAR_RATE)
+                interval = 3600.0 / rate if rate > 0.0 else fallback_star_minsep
+                next_star_time[proc_path] = max(next_star_time.get(proc_path, 0.0), t_sec + interval)
+
+            if star_remaining > 0:
+                choices = list(star_paths)
+                if choices:
+                    weights = [max(star_rate_map.get(path, DEFAULT_STAR_RATE), 0.0) for path in choices]
+                    total_weight = sum(weights)
+                    for _ in range(star_remaining):
+                        if total_weight <= 0.0:
+                            proc_path = rng.choice(choices)
+                        else:
+                            proc_path = _weighted_choice(rng, choices, weights)
+                        rate = star_rate_map.get(proc_path, DEFAULT_STAR_RATE)
+                        interval = 3600.0 / rate if rate > 0.0 else fallback_star_minsep
+                        t0 = next_star_time.get(proc_path, 0.0)
+                        next_star_time[proc_path] = t0 + interval
+                        if not _write_star_entry(t0, proc_path):
+                            return False, ""
 
     _sort_scn_file(out_path)
     _echo_ok(f"Scenario written: {out_path}")
@@ -1811,6 +2087,10 @@ def SATG_HELP(topic: str = ""):
         "    SATG_PROC_CFG_GENERIC flights minsep",
         "    SATG_PROC_CFG_SID flights alt_ft spd_kt",
         "    SATG_PROC_CFG_SIDRATE runway rate_per_hour",
+        "    SATG_PROC_CFG_STAR flights minsep alt_fl spd_kt mode",
+        "    SATG_PROC_CFG_STARRATE proc_name rate_per_hour",
+        "    SATG_PROC_CFG_STARSCHED proc_name start_min end_min cap1 cap2 ...",
+        "    SATG_PROC_CLEAR_STARSCHED [proc_name]",
         "    SATG_PROC_USE_DEST 0|1",
         "    SATG_PROC_SET_DEST proc_name ICAO1 ICAO2 ...",
         "    SATG_PROC_CFG_SIDSCHED runway start_min end_min cap1 cap2 ...",
