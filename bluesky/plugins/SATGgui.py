@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
     QDialog, QDialogButtonBox, QTimeEdit, QScrollArea
 )
+from PyQt6 import sip
 from bluesky import stack
 import os, re
 
@@ -37,6 +38,7 @@ def _join_tokens(*tokens):
     return " ".join([t for t in tokens if t])
 
 _SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
+DEFAULT_STAR_RATE = 20
 
 class SIDSchedDialog(QDialog):
     SLOT_MINUTES = 15
@@ -1065,6 +1067,9 @@ class ProcTab(QWidget):
         self._sid_schedule_data: Dict[str, Dict[str, object]] = {}
         self._star_rate_rows = {}
         self._star_schedule_data: Dict[str, Dict[str, object]] = {}
+        self._star_rate_values: Dict[str, Dict[str, int]] = {"initial": {}, "final": {}}
+        self._star_rate_groups: Dict[str, List[str]] = {}
+        self._star_basis_index: int = 0
         self._origins: Dict[str, str] = {}
         self._destinations: Dict[str, List[str]] = {}
         self._last_dest_sent: set[str] = set()
@@ -1166,18 +1171,54 @@ class ProcTab(QWidget):
         self.star_mode = QComboBox(star_box)
         self.star_mode.addItems(["Hourly rate", "15-min schedule"])
         mode_row_star.addWidget(self.star_mode)
+        mode_row_star.addSpacing(12)
+        mode_row_star.addWidget(QLabel("Rate basis:", star_box))
+        self.star_rate_basis = QComboBox(star_box)
+        self.star_rate_basis.addItems(["Initial waypoint", "Final waypoint"])
+        mode_row_star.addWidget(self.star_rate_basis)
         mode_row_star.addStretch(1)
         ft.addRow(mode_row_star)
         self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(20)
         ft.addRow("Flights:", self.star_flights)
-        self.star_alt_fl = QSpinBox(); self.star_alt_fl.setRange(0, 600); self.star_alt_fl.setSingleStep(10); self.star_alt_fl.setValue(360)
-        ft.addRow("Initial ALT [FL]:", self.star_alt_fl)
-        self.star_mach = QDoubleSpinBox(); self.star_mach.setDecimals(2); self.star_mach.setRange(0.40, 0.92); self.star_mach.setSingleStep(0.01); self.star_mach.setValue(0.79)
-        ft.addRow("Initial Mach:", self.star_mach)
+        alt_row = QWidget(star_box)
+        alt_layout = QHBoxLayout(alt_row); alt_layout.setContentsMargins(0, 0, 0, 0)
+        alt_layout.addWidget(QLabel("Initial ALT [FL]:", star_box))
+        self.star_alt_fl = QSpinBox()
+        self.star_alt_fl.setRange(0, 600)
+        self.star_alt_fl.setSingleStep(10)
+        self.star_alt_fl.setValue(360)
+        alt_layout.addWidget(self.star_alt_fl)
+        alt_layout.addSpacing(12)
+        alt_layout.addWidget(QLabel("Final ALT [FL]:", star_box))
+        self.star_final_alt_fl = QSpinBox()
+        self.star_final_alt_fl.setRange(0, 600)
+        self.star_final_alt_fl.setSingleStep(10)
+        self.star_final_alt_fl.setValue(100)
+        alt_layout.addWidget(self.star_final_alt_fl)
+        alt_layout.addStretch(1)
+        ft.addRow(alt_row)
+        spd_row = QWidget(star_box)
+        spd_layout = QHBoxLayout(spd_row); spd_layout.setContentsMargins(0, 0, 0, 0)
+        spd_layout.addWidget(QLabel("Initial Mach:", star_box))
+        self.star_mach = QDoubleSpinBox()
+        self.star_mach.setDecimals(2)
+        self.star_mach.setRange(0.40, 0.92)
+        self.star_mach.setSingleStep(0.01)
+        self.star_mach.setValue(0.79)
+        spd_layout.addWidget(self.star_mach)
+        spd_layout.addSpacing(12)
+        spd_layout.addWidget(QLabel("Final SPD [kt]:", star_box))
+        self.star_final_spd = QSpinBox()
+        self.star_final_spd.setRange(0, 600)
+        self.star_final_spd.setValue(240)
+        spd_layout.addWidget(self.star_final_spd)
+        spd_layout.addStretch(1)
+        ft.addRow(spd_row)
         self.star_sched_btn = QPushButton("Configure schedule…")
         self.star_sched_btn.clicked.connect(self._configure_star_schedule)
         ft.addRow(self.star_sched_btn)
         self.star_mode.currentIndexChanged.connect(self._on_star_mode_changed)
+        self.star_rate_basis.currentIndexChanged.connect(self._on_star_basis_changed)
         hb2.addWidget(star_box, 1)
 
         main.addWidget(gb2)
@@ -1229,8 +1270,10 @@ class ProcTab(QWidget):
             return
         label, spin = row
         self._sid_form.removeRow(spin)
-        label.deleteLater()
-        spin.deleteLater()
+        if label is not None and not sip.isdeleted(label):
+            label.deleteLater()
+        if spin is not None and not sip.isdeleted(spin):
+            spin.deleteLater()
 
     def _clear_sid_runway_rows(self):
         for runway in list(self._sid_rate_rows.keys()):
@@ -1247,6 +1290,21 @@ class ProcTab(QWidget):
             return False
         base = os.path.basename(path)
         return bool(re.match(r'^STAR-[-A-Za-z0-9_]+\.scn$', base or "", re.IGNORECASE))
+
+    def _proc_fix_sequence(self, path: str) -> List[str]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception:
+            return []
+        seq: List[str] = []
+        for match in re.finditer(r"ADDWPT\s+([A-Za-z0-9_+\-/]+)", text, re.IGNORECASE):
+            name = match.group(1).strip().upper()
+            if not name:
+                continue
+            if not seq or seq[-1] != name:
+                seq.append(name)
+        return seq
 
     def _current_sid_runways(self) -> set:
         runways = set()
@@ -1289,40 +1347,80 @@ class ProcTab(QWidget):
     def _current_star_procs(self) -> List[str]:
         return [path for path, data in self._proc_widgets.items() if data.get("is_star")]
 
-    def _ensure_star_rate_row(self, path: str):
-        if path in self._star_rate_rows:
+    def _basis_name(self, idx: int) -> str:
+        return "final" if idx == 1 else "initial"
+
+    def _current_star_basis(self) -> str:
+        return self._basis_name(self._star_basis_index)
+
+    def _capture_star_rates(self, basis: str):
+        store = self._star_rate_values.setdefault(basis, {})
+        for key, (_, spin) in self._star_rate_rows.items():
+            store[key] = int(spin.value())
+
+    def _build_star_groups(self, basis: str) -> Dict[str, List[str]]:
+        groups: Dict[str, List[str]] = {}
+        for path in self._current_star_procs():
+            widgets = self._proc_widgets.get(path, {})
+            key_raw = widgets.get("initial_fix") if basis == "initial" else widgets.get("final_fix")
+            if not key_raw:
+                key_raw = os.path.splitext(os.path.basename(path))[0]
+            key = str(key_raw).upper()
+            groups.setdefault(key, []).append(path)
+        return groups
+
+    def _ensure_star_rate_row(self, key: str, basis: str):
+        store = self._star_rate_values.setdefault(basis, {})
+        value = int(store.get(key, DEFAULT_STAR_RATE))
+        if key in self._star_rate_rows:
+            label, spin = self._star_rate_rows[key]
+            label.setText(f"{key} rate [ac/h]:")
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
             return
-        label_txt = os.path.splitext(os.path.basename(path))[0]
-        label = QLabel(f"{label_txt} rate [ac/h]:")
+        label = QLabel(f"{key} rate [ac/h]:")
         spin = QSpinBox()
         spin.setRange(0, 120)
-        spin.setValue(20)
+        spin.setValue(value)
+        spin.valueChanged.connect(lambda val, b=basis, g=key: self._on_star_rate_changed(b, g, val))
         self._star_form.addRow(label, spin)
-        self._star_rate_rows[path] = (label, spin)
+        self._star_rate_rows[key] = (label, spin)
 
-    def _remove_star_rate_row(self, path: str):
-        row = self._star_rate_rows.pop(path, None)
+    def _on_star_rate_changed(self, basis: str, key: str, val: int):
+        self._star_rate_values.setdefault(basis, {})[key] = int(val)
+
+    def _remove_star_rate_row(self, key: str):
+        row = self._star_rate_rows.pop(key, None)
         if not row:
             return
         label, spin = row
+        basis = self._current_star_basis()
+        self._star_rate_values.setdefault(basis, {})[key] = int(spin.value())
         self._star_form.removeRow(spin)
-        label.deleteLater()
-        spin.deleteLater()
+        if label is not None and not sip.isdeleted(label):
+            label.deleteLater()
+        if spin is not None and not sip.isdeleted(spin):
+            spin.deleteLater()
 
     def _clear_star_rate_rows(self):
-        for path in list(self._star_rate_rows.keys()):
-            self._remove_star_rate_row(path)
+        for key in list(self._star_rate_rows.keys()):
+            self._remove_star_rate_row(key)
 
     def _refresh_star_rate_rows(self):
-        active = set(self._current_star_procs())
-        for path in list(self._star_rate_rows.keys()):
-            if path not in active:
-                self._remove_star_rate_row(path)
+        basis = self._current_star_basis()
+        self._capture_star_rates(basis)
+        groups = self._build_star_groups(basis)
+        self._star_rate_groups = groups
+        for key in list(self._star_rate_rows.keys()):
+            if key not in groups:
+                self._remove_star_rate_row(key)
+        for key in groups.keys():
+            self._ensure_star_rate_row(key, basis)
+        active_paths = set(self._current_star_procs())
         for path in list(self._star_schedule_data.keys()):
-            if path not in active:
+            if path not in active_paths:
                 self._star_schedule_data.pop(path, None)
-        for path in active:
-            self._ensure_star_rate_row(path)
         self._update_star_mode_state()
 
     def _on_star_mode_changed(self, idx):
@@ -1333,6 +1431,8 @@ class ProcTab(QWidget):
         has_procs = bool(self._current_star_procs())
         if hasattr(self, "star_sched_btn"):
             self.star_sched_btn.setEnabled(use_schedule and has_procs)
+        if hasattr(self, "star_rate_basis"):
+            self.star_rate_basis.setEnabled(not use_schedule)
         if hasattr(self, "star_flights"):
             self.star_flights.blockSignals(True)
             if use_schedule and has_procs:
@@ -1351,6 +1451,12 @@ class ProcTab(QWidget):
             self.star_flights.blockSignals(False)
         for _, spin in self._star_rate_rows.values():
             spin.setEnabled(not use_schedule)
+
+    def _on_star_basis_changed(self, idx: int):
+        prev_basis = self._basis_name(self._star_basis_index)
+        self._capture_star_rates(prev_basis)
+        self._star_basis_index = idx
+        self._refresh_star_rate_rows()
 
     def _configure_star_schedule(self):
         procs = [(path, os.path.splitext(os.path.basename(path))[0]) for path in self._current_star_procs()]
@@ -1676,6 +1782,12 @@ class ProcTab(QWidget):
                 "is_sid": is_sid,
                 "is_star": is_star,
             }
+            if is_star:
+                fixes = self._proc_fix_sequence(p)
+                initial_fix = fixes[0] if fixes else ""
+                final_fix = fixes[-1] if fixes else ""
+                self._proc_widgets[p]["initial_fix"] = initial_fix
+                self._proc_widgets[p]["final_fix"] = final_fix
         self._refresh_sid_runway_rows()
         self._refresh_star_rate_rows()
         self._sync_destination_edits()
@@ -1712,6 +1824,10 @@ class ProcTab(QWidget):
         self._clear_star_rate_rows()
         self._star_schedule_data.clear()
         self._last_star_sched_sent.clear()
+        self._star_rate_values = {"initial": {}, "final": {}}
+        self._star_rate_groups = {}
+        if hasattr(self, "star_rate_basis"):
+            self._star_basis_index = self.star_rate_basis.currentIndex()
         self._destinations.clear()
         self._last_dest_sent.clear()
         self._origins.clear()
@@ -1735,6 +1851,9 @@ class ProcTab(QWidget):
         star_mode_schedule = self.star_mode.currentIndex() == 1
         star_alt_fl = int(self.star_alt_fl.value())
         star_mach = float(self.star_mach.value())
+        star_rate_basis_idx = self.star_rate_basis.currentIndex()
+        star_final_alt_fl = int(self.star_final_alt_fl.value())
+        star_final_spd = int(self.star_final_spd.value())
         star_minsep = 90
 
         star_procs = self._current_star_procs()
@@ -1857,14 +1976,24 @@ class ProcTab(QWidget):
             rate = int(spin.value())
             _emit(f"SATG_PROC_CFG_SIDRATE RW{rw} {rate}")
 
-        for path in star_procs:
-            row = self._star_rate_rows.get(path)
+        basis_name = self._basis_name(star_rate_basis_idx)
+        self._capture_star_rates(basis_name)
+        self._star_basis_index = star_rate_basis_idx
+
+        _emit(
+            f"SATG_PROC_CFG_STAR {star_n} {star_minsep} {star_alt_fl} {star_mach:.2f} "
+            f"{1 if star_mode_schedule else 0} {star_rate_basis_idx} {star_final_alt_fl} {star_final_spd}"
+        )
+
+        rate_store = self._star_rate_values.setdefault(basis_name, {})
+        for key in sorted(self._star_rate_rows.keys()):
+            row = self._star_rate_rows.get(key)
             if not row:
                 continue
             _, spin = row
             rate = int(spin.value())
-            label = os.path.splitext(os.path.basename(path))[0]
-            _emit(f"SATG_PROC_CFG_STARRATE {label} {rate}")
+            rate_store[key] = rate
+            _emit(f"SATG_PROC_CFG_STARRATE {key} {rate}")
 
         current_star_sched_sent = set()
         if star_mode_schedule:
@@ -1894,8 +2023,6 @@ class ProcTab(QWidget):
                 for label in sorted(self._last_star_sched_sent):
                     _emit(f"SATG_PROC_CLEAR_STARSCHED {label}")
                 self._last_star_sched_sent.clear()
-
-        _emit(f"SATG_PROC_CFG_STAR {star_n} {star_minsep} {star_alt_fl} {star_mach:.2f} {1 if star_mode_schedule else 0}")
 
         # strictly positional to satisfy BlueSky argparser
         cmd = f"SATG_PROC_MAKE {name} {total} {rnm} {env} {overall_min} {s} {ow}"
