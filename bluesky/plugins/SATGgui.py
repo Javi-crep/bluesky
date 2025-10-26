@@ -517,7 +517,19 @@ class RLTab(QWidget):
 
         # 1) Load (Required)
         gb_load = QGroupBox("1) Load data - Required")
-        fl = QFormLayout(gb_load)
+        gb_load_layout = QVBoxLayout(gb_load)
+        
+        # Create a scroll area for load section
+        load_scroll = QScrollArea()
+        load_scroll.setWidgetResizable(True)
+        load_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        load_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        load_scroll.setMaximumHeight(200)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        load_form_widget = QWidget()
+        fl = QFormLayout(load_form_widget)
+        fl.setContentsMargins(5, 5, 5, 5)
         desc1 = QLabel("Load aircraft tracks from selected path")
         desc1.setStyleSheet("color: #666; font-style: italic;")
         self.opt_auto = QCheckBox("Use AUTO folder (./satg_data/data)")
@@ -536,9 +548,28 @@ class RLTab(QWidget):
 
         btn_load.clicked.connect(self._load)
 
+        # Set the form widget as the scroll area's widget
+        load_scroll.setWidget(load_form_widget)
+        
+        # Add the scroll area to the group box
+        gb_load_layout.addWidget(load_scroll)
+        main.addWidget(gb_load)
+
         # 2) Jitter (Optional)
         gb_j = QGroupBox("2) Jitter - Optional")
-        fj = QFormLayout(gb_j)
+        gb_j_layout = QVBoxLayout(gb_j)
+        
+        # Create a scroll area for jitter section
+        jitter_scroll = QScrollArea()
+        jitter_scroll.setWidgetResizable(True)
+        jitter_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        jitter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        jitter_scroll.setMaximumHeight(350)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        jitter_form_widget = QWidget()
+        fj = QFormLayout(jitter_form_widget)
+        fj.setContentsMargins(5, 5, 5, 5)
         desc2 = QLabel("Apply noise to time/position/FL")
         desc2.setStyleSheet("color: #666; font-style: italic;")
 
@@ -573,6 +604,13 @@ class RLTab(QWidget):
         hb_pct.addWidget(self.j_pct, 1); hb_pct.addWidget(self.j_pct_label)
         fj.addRow("Jitter % of flights:", row_pct)
 
+        # Set the form widget as the scroll area's widget
+        jitter_scroll.setWidget(jitter_form_widget)
+        
+        # Add the scroll area to the group box
+        gb_j_layout.addWidget(jitter_scroll)
+        main.addWidget(gb_j)
+
         # 3) Run (Required)
         gb_run = QGroupBox("3) Run - Required")
         fr = QFormLayout(gb_run)
@@ -598,8 +636,6 @@ class RLTab(QWidget):
         btn_run.clicked.connect(self._run)
 
         # assemble
-        main.addWidget(gb_load)
-        main.addWidget(gb_j)
         main.addWidget(gb_run)
         main.addStretch(1)
 
@@ -706,8 +742,19 @@ class GCAbsolutePage(QWidget):
         main.setSpacing(10)
 
         gb1 = QGroupBox("1) CPA options")
-        f1 = QFormLayout(gb1)
-        f1.setContentsMargins(8, 8, 8, 8)
+        gb1_layout = QVBoxLayout(gb1)
+        
+        # Create a scroll area for CPA options
+        cpa_scroll = QScrollArea()
+        cpa_scroll.setWidgetResizable(True)
+        cpa_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        cpa_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cpa_scroll.setMaximumHeight(350)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        cpa_form_widget = QWidget()
+        f1 = QFormLayout(cpa_form_widget)
+        f1.setContentsMargins(5, 5, 5, 5)
         f1.setSpacing(8)
 
         # CPA reference row
@@ -784,11 +831,27 @@ class GCAbsolutePage(QWidget):
         self.gc_actypes = QLineEdit("A320,B738,A350,B78X")
         f1.addRow("AC types:", self.gc_actypes)
 
+        # Set the form widget as the scroll area's widget
+        cpa_scroll.setWidget(cpa_form_widget)
+        
+        # Add the scroll area to the group box
+        gb1_layout.addWidget(cpa_scroll)
         main.addWidget(gb1)
 
         gb2 = QGroupBox("2) Flight profile")
-        f2 = QFormLayout(gb2)
-        f2.setContentsMargins(8, 8, 8, 8)
+        gb2_layout = QVBoxLayout(gb2)
+        
+        # Create a scroll area for flight profile
+        profile_scroll = QScrollArea()
+        profile_scroll.setWidgetResizable(True)
+        profile_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        profile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        profile_scroll.setMaximumHeight(200)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        profile_form_widget = QWidget()
+        f2 = QFormLayout(profile_form_widget)
+        f2.setContentsMargins(5, 5, 5, 5)
         f2.setSpacing(8)
 
         self.gc_fl_value = QLineEdit("310")
@@ -809,6 +872,11 @@ class GCAbsolutePage(QWidget):
             self._make_value_range_row(self.gc_cas_value, self.gc_cas_range, "upper [kt] (optional)"),
         )
 
+        # Set the form widget as the scroll area's widget
+        profile_scroll.setWidget(profile_form_widget)
+        
+        # Add the scroll area to the group box
+        gb2_layout.addWidget(profile_scroll)
         main.addWidget(gb2)
 
         gb3 = QGroupBox("3) Actions")
@@ -1077,7 +1145,20 @@ class GCRelativePage(QWidget):
         main.setSpacing(10)
 
         target_box = QGroupBox("2) Target aircraft")
-        target_form = QFormLayout(target_box)
+        target_box_layout = QVBoxLayout(target_box)
+        
+        # Create a scroll area for the target fields
+        target_scroll = QScrollArea()
+        target_scroll.setWidgetResizable(True)
+        target_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        target_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        target_scroll.setMaximumHeight(300)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        target_form_widget = QWidget()
+        target_form = QFormLayout(target_form_widget)
+        target_form.setContentsMargins(5, 5, 5, 5)
+        
         combo_row = QWidget()
         combo_layout = QHBoxLayout(combo_row)
         combo_layout.setContentsMargins(0, 0, 0, 0)
@@ -1145,10 +1226,29 @@ class GCRelativePage(QWidget):
             "CAS [kt]:",
             self._make_numeric_row(self.target_spd_value, self.target_spd_range, "upper [kt] (optional)"),
         )
+        
+        # Set the form widget as the scroll area's widget
+        target_scroll.setWidget(target_form_widget)
+        
+        # Add the scroll area to the group box
+        target_box_layout.addWidget(target_scroll)
         main.addWidget(target_box)
 
         intr_box = QGroupBox("3) Intruder setup")
-        intr_form = QFormLayout(intr_box)
+        intr_box_layout = QVBoxLayout(intr_box)
+        
+        # Create a scroll area for the intruder fields
+        intr_scroll = QScrollArea()
+        intr_scroll.setWidgetResizable(True)
+        intr_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        intr_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        intr_scroll.setMaximumHeight(280)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        intr_form_widget = QWidget()
+        intr_form = QFormLayout(intr_form_widget)
+        intr_form.setContentsMargins(5, 5, 5, 5)
+        
         self.intr_acid = QLineEdit("")
         self.intr_acid.setPlaceholderText("optional – auto if left blank")
         self.intr_acid.setClearButtonEnabled(True)
@@ -1215,6 +1315,12 @@ class GCRelativePage(QWidget):
         spd_layout.addWidget(self.intr_spd_value)
         spd_layout.addWidget(self.intr_spd_range, 1)
         intr_form.addRow("CAS/Mach (optional):", spd_row)
+        
+        # Set the form widget as the scroll area's widget
+        intr_scroll.setWidget(intr_form_widget)
+        
+        # Add the scroll area to the group box
+        intr_box_layout.addWidget(intr_scroll)
         main.addWidget(intr_box)
 
         scen_box = QGroupBox("4) Scenario output (write mode)")
@@ -1736,7 +1842,19 @@ class RCTab(QWidget):
 
         # 1) Batch options
         gb1 = QGroupBox("1) Batch options")
-        f1 = QFormLayout(gb1)
+        gb1_layout = QVBoxLayout(gb1)
+        
+        # Create a scroll area for batch options
+        batch_scroll = QScrollArea()
+        batch_scroll.setWidgetResizable(True)
+        batch_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        batch_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        batch_scroll.setMaximumHeight(400)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        batch_form_widget = QWidget()
+        f1 = QFormLayout(batch_form_widget)
+        f1.setContentsMargins(5, 5, 5, 5)
 
         self.scn = QLineEdit("rc_circle")
         self.n = QSpinBox(); self.n.setRange(1, 100000); self.n.setValue(20)
@@ -1797,9 +1915,28 @@ class RCTab(QWidget):
         self.cb_cross.toggled.connect(lambda _: _upd_angle_enabled())
         _upd_angle_enabled()
 
+        # Set the form widget as the scroll area's widget
+        batch_scroll.setWidget(batch_form_widget)
+        
+        # Add the scroll area to the group box
+        gb1_layout.addWidget(batch_scroll)
+        main.addWidget(gb1)
+
         # 2) Circle region
         gb2 = QGroupBox("2) Circle region")
-        f2 = QFormLayout(gb2)
+        gb2_layout = QVBoxLayout(gb2)
+        
+        # Create a scroll area for circle region
+        circle_scroll = QScrollArea()
+        circle_scroll.setWidgetResizable(True)
+        circle_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        circle_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        circle_scroll.setMaximumHeight(250)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        circle_form_widget = QWidget()
+        f2 = QFormLayout(circle_form_widget)
+        f2.setContentsMargins(5, 5, 5, 5)
 
         # Make the note a widget, style the widget (not the layout), then add it
         desc = QLabel("CPA uniformly sampled in a circle. All aircraft spawn at t=0; CPA time equals TCPA.")
@@ -1834,6 +1971,13 @@ class RCTab(QWidget):
         f2.addRow("FL range (lo:hi):", row_fl)
         f2.addRow("CAS range [kt] (lo:hi):", row_cas)
 
+        # Set the form widget as the scroll area's widget
+        circle_scroll.setWidget(circle_form_widget)
+        
+        # Add the scroll area to the group box
+        gb2_layout.addWidget(circle_scroll)
+        main.addWidget(gb2)
+
         # 3) Actions
         gb3 = QGroupBox("3) Actions")
         row = QWidget(); h = QHBoxLayout(row); h.setContentsMargins(0,0,0,0); h.setSpacing(8)
@@ -1846,7 +1990,7 @@ class RCTab(QWidget):
         h.addWidget(self.btn_cre); h.addWidget(self.btn_run); h.addWidget(self.btn_both); h.addStretch(1)
         lay3 = QVBoxLayout(gb3); lay3.addWidget(row)
 
-        main.addWidget(gb1); main.addWidget(gb2); main.addWidget(gb3); main.addStretch(1)
+        main.addWidget(gb3); main.addStretch(1)
 
     def _types_csv(self) -> str:
         t = []
@@ -1959,7 +2103,19 @@ class ProcTab(QWidget):
 
         # 1) Files
         gb1 = QGroupBox("1) Files")
-        f1 = QFormLayout(gb1)
+        gb1_layout = QVBoxLayout(gb1)
+        
+        # Create a scroll area for files section
+        files_scroll = QScrollArea()
+        files_scroll.setWidgetResizable(True)
+        files_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        files_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        files_scroll.setMaximumHeight(300)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        files_form_widget = QWidget()
+        f1 = QFormLayout(files_form_widget)
+        f1.setContentsMargins(5, 5, 5, 5)
 
         # Waypoint files
         self.lst_wpt = QListWidget()
@@ -1985,6 +2141,11 @@ class ProcTab(QWidget):
         f1.addRow(self.lst_proc)
         f1.addRow(proc_btns)
 
+        # Set the form widget as the scroll area's widget
+        files_scroll.setWidget(files_form_widget)
+        
+        # Add the scroll area to the group box
+        gb1_layout.addWidget(files_scroll)
         main.addWidget(gb1)
 
         btn_wpt_add.clicked.connect(self._add_wpt)
@@ -1996,7 +2157,20 @@ class ProcTab(QWidget):
 
         # 2) Batch options
         gb2 = QGroupBox("2) Batch options")
-        hb2 = QHBoxLayout(gb2); hb2.setContentsMargins(6, 6, 6, 6); hb2.setSpacing(12)
+        gb2_main_layout = QVBoxLayout(gb2)
+        
+        # Create a scroll area for batch options
+        batch_options_scroll = QScrollArea()
+        batch_options_scroll.setWidgetResizable(True)
+        batch_options_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        batch_options_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        batch_options_scroll.setMaximumHeight(400)  # Limit height to trigger scrolling
+        
+        # Create the widget that will hold the horizontal layout
+        batch_options_widget = QWidget()
+        hb2 = QHBoxLayout(batch_options_widget)
+        hb2.setContentsMargins(6, 6, 6, 6)
+        hb2.setSpacing(12)
 
         # Generic procedures column
         generic_box = QGroupBox("Generic")
@@ -2100,11 +2274,28 @@ class ProcTab(QWidget):
         self.star_rate_basis.currentIndexChanged.connect(self._on_star_basis_changed)
         hb2.addWidget(star_box, 1)
 
+        # Set the batch options widget as the scroll area's widget
+        batch_options_scroll.setWidget(batch_options_widget)
+        
+        # Add the scroll area to the group box
+        gb2_main_layout.addWidget(batch_options_scroll)
         main.addWidget(gb2)
 
         # 3) Scenario and actions
         gb3 = QGroupBox("3) Scenario and actions")
-        f3 = QFormLayout(gb3)
+        gb3_layout = QVBoxLayout(gb3)
+        
+        # Create a scroll area for scenario and actions
+        scenario_scroll = QScrollArea()
+        scenario_scroll.setWidgetResizable(True)
+        scenario_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scenario_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scenario_scroll.setMaximumHeight(300)  # Limit height to trigger scrolling
+        
+        # Create the form widget that will go inside the scroll area
+        scenario_form_widget = QWidget()
+        f3 = QFormLayout(scenario_form_widget)
+        f3.setContentsMargins(5, 5, 5, 5)
 
         self.scn = QLineEdit("proc_scn")
         f3.addRow("Scenario name:", self.scn)
@@ -2125,6 +2316,11 @@ class ProcTab(QWidget):
         hb3.addWidget(btn_cre); hb3.addWidget(btn_run); hb3.addWidget(btn_both)
         f3.addRow(row_act)
 
+        # Set the form widget as the scroll area's widget
+        scenario_scroll.setWidget(scenario_form_widget)
+        
+        # Add the scroll area to the group box
+        gb3_layout.addWidget(scenario_scroll)
         main.addWidget(gb3)
 
         btn_cre.clicked.connect(self._make)
