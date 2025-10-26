@@ -1,18 +1,7 @@
 """
 SATG: Scenario generator (Realistic Replay + Geometric Conflicts)
 
-- RL mode (SATG_RL_*): read pre-filtered CSV (by headers), convert GS->CAS (ISA, wind=0),
-  build scenarios where each aircraft is fully routed at t0, LNAV/VNAV ON.
-- GC mode (SATG_GC_*): synthesize 2-aircraft encounters (head-on / crossing / overtake),
-  CPA at given lat/lon and time-to-CPA; initial CAS/FL/heading sampled from ranges.
-  * SATG_GC_CRE appends conflicts to the same .scn if it already exists.
-    Only the first creation writes the file header (HOLD + ASAS ON).
-
-Folders (idempotent):
-  ./satg_data/data/       <-- put CSVs here (RL AUTO)
-  ./satg_data/scenarios/  <-- .scn outputs
 """
-
 import os, math, csv, re, random
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
@@ -26,6 +15,7 @@ except Exception:
 from bluesky.stack import command
 from bluesky.tools import geo
 from bluesky.tools import misc as _misc
+from bluesky.tools.aero import ft, kts, casormach2tas, tas2cas, nm
 import bluesky.traffic.traffic as _traf_mod
 
 
@@ -221,6 +211,11 @@ class _SATGState:
         }
         # Last geometric-conflict aircraft (for quick delete)
         self.gc_last_acids: List[str] = []
+        # Relative conflict default sequence counter
+        self.gc_rel_seq: int = 1
+        self.gc_ac_types: List[str] = ["A320", "B738", "A350", "B78X"]
+        # Cache nav lookups for CPA waypoint resolution
+        self.gc_fix_cache: Dict[str, Tuple[float, float]] = {}
 
         self.proc_wpt_files = []   
         self.proc_proc_files = []  
@@ -704,6 +699,44 @@ def _parse_range(text: Optional[str], cur: Tuple[float, float]) -> Tuple[float, 
     except:
         return cur
 
+
+def _parse_value_range(raw: Optional[str], *, context: str, label: str,
+                       allow_negative: bool=False, required: bool=True) -> Optional[Tuple[float, float, bool]]:
+    txt = (raw or "").strip()
+    if not txt:
+        if required:
+            _echo_err(f"{context}: {label} is required")
+        return None
+    if ":" in txt:
+        left, right = txt.split(":", 1)
+        try:
+            lo = float(left.strip()); hi = float(right.strip())
+        except Exception:
+            _echo_err(f"{context}: {label} range must be numeric")
+            return None
+        if not allow_negative and (lo < 0.0 or hi < 0.0):
+            _echo_err(f"{context}: {label} must be >= 0")
+            return None
+        if lo > hi:
+            lo, hi = hi, lo
+        return float(lo), float(hi), True
+    try:
+        val = float(txt)
+    except Exception:
+        _echo_err(f"{context}: {label} must be numeric")
+        return None
+    if not allow_negative and val < 0.0:
+        _echo_err(f"{context}: {label} must be >= 0")
+        return None
+    return float(val), float(val), False
+
+
+def _format_numeric(val: float, *, as_int: bool=False) -> str:
+    if as_int:
+        return str(int(round(val)))
+    txt = f"{float(val):.6f}".rstrip("0").rstrip(".")
+    return txt if txt and txt != "-0" else "0"
+
 def _rand_in(rng: random.Random, lo: float, hi: float) -> float:
     return lo if lo == hi else rng.uniform(lo, hi)
 
@@ -715,6 +748,33 @@ def _gc_sample(seed: Optional[int]):
     brg1 = _rand_in(rng, *r["brg1"]) % 360.0
     angle= _rand_in(rng, *r["angle"])
     return rng, cas1, cas2, fl1, fl2, brg1, angle
+
+
+def _gc_velocity_components(cas_kt: float, heading_deg: float) -> Tuple[float, float]:
+    """Return north/east ground-speed components (NM/s) for CAS/heading.
+
+    Follows the same velocity decomposition used by creconfs: speed projected onto
+    the local-tangent plane, assuming wind=0 for scenario backtracking.
+    """
+    spd_nmps = float(cas_kt) / 3600.0  # knots -> NM/s
+    rad = math.radians(heading_deg)
+    vn = spd_nmps * math.cos(rad)
+    ve = spd_nmps * math.sin(rad)
+    return vn, ve
+
+
+def _gc_offset_from_cpa(lat_cpa: float, lon_cpa: float,
+                        dn_nm: float, de_nm: float) -> Tuple[float, float]:
+    """Translate an offset (north/east in NM) from CPA into lat/lon.
+
+    Mirrors the vector backtracking used in creconfs: we work in the local tangent
+    plane, then project the resulting distance/bearing back onto the sphere.
+    """
+    dist_nm = math.hypot(dn_nm, de_nm)
+    if dist_nm <= 1e-9:
+        return lat_cpa, lon_cpa
+    bearing = (math.degrees(math.atan2(de_nm, dn_nm)) + 360.0) % 360.0
+    return _dest_nm(lat_cpa, lon_cpa, bearing, dist_nm)
 
 def _scan_max_sc_index(path: str) -> int:
     """Return the highest SC<number> found in an existing .scn (0 if none)."""
@@ -736,55 +796,111 @@ def _scan_max_sc_index(path: str) -> int:
 # ---------------- GC scenario writer (append-aware) ---------------- #
 def _write_gc_scn(out_path: str, *,
                   append: bool,
-                  name: str, cpa_lat: float, cpa_lon: float, tcpa: float,
-                  typ: str, altmode: str, fl_cpa: Optional[int],
-                  acid1: str, acid2: str, ac1: str, ac2: str,
-                  seed: Optional[int], angle_in: Optional[float]):
+                  name: str,
+                  cpa_lat: float,
+                  cpa_lon: float,
+                  tcpa_value: Optional[float],
+                  tcpa_range: Optional[Tuple[float, float]],
+                  fl_cpa: Optional[int],
+                  acid1: str,
+                  acid2: str,
+                  ac1: str,
+                  ac2: str,
+                  ac_types: Optional[List[str]] = None,
+                  seed: Optional[int] = None,
+                  angle_in: Optional[float] = None,
+                  angle_range: Optional[Tuple[float, float]] = None,
+                  alt_offset_value: Optional[float] = None,
+                  alt_offset_range: Optional[Tuple[float, float]] = None):
     
     # Sample speeds/levels/initial bearing and default crossing angle
     rng, cas1, cas2, fl1, fl2, brg1, angle = _gc_sample(seed)
 
-    # If user specified crossing angle and type=cross, override the sampled angle
-    if angle_in is not None and typ == "cross":
+    choices = [str(t).strip().upper() for t in (ac_types if ac_types else STATE.gc_ac_types) if str(t).strip()]
+    if choices:
+        ac1 = rng.choice(choices)
+        ac2 = rng.choice(choices)
+
+    # Determine encounter parameters possibly overridden by user ranges/values.
+    if angle_range is not None:
+        angle = _rand_in(rng, float(angle_range[0]), float(angle_range[1]))
+    elif angle_in is not None:
         angle = float(angle_in)
 
-    # Ensure overtake has v2 > v1
-    if typ == "overtake" and cas2 <= cas1:
-        cas1, cas2 = sorted([cas1, cas2])
-        cas2 += max(5.0, 0.05*cas2)  # bump
-
-    # Headings
-    if typ == "headon":
-        brg2 = (brg1 + 180.0) % 360.0
-    elif typ == "cross":
-        brg2 = (brg1 + angle) % 360.0
-    elif typ == "overtake":
-        brg2 = brg1
+    if tcpa_range is not None:
+        tcpa = _rand_in(rng, float(tcpa_range[0]), float(tcpa_range[1]))
     else:
-        typ = "headon"; brg2 = (brg1 + 180.0) % 360.0
+        fallback_tcpa = tcpa_value if tcpa_value is not None else 120.0
+        tcpa = float(fallback_tcpa)
 
-    # Distances (NM) from start to CPA using CAS as GS approx
-    d1_nm = (cas1 / 3600.0) * float(tcpa)
-    d2_nm = (cas2 / 3600.0) * float(tcpa)
+    # Clamp angle (0=head-on, 180=overtake, intermediate=crossing)
+    angle = max(0.0, min(180.0, float(angle)))
+    delta_hdg = 180.0 - angle
+    brg2 = (brg1 + delta_hdg) % 360.0
 
-    # Start positions: back-project from CPA along opposite course
-    lat1, lon1 = _dest_nm(cpa_lat, cpa_lon, (brg1 + 180.0), d1_nm)
-    lat2, lon2 = _dest_nm(cpa_lat, cpa_lon, (brg2 + 180.0), d2_nm)
+    # Identify encounter style for reporting / tuning
+    if abs(delta_hdg) < 1e-3:
+        encounter = "overtake"
+    elif abs(abs(delta_hdg) - 180.0) < 1e-3:
+        encounter = "headon"
+    else:
+        encounter = "cross"
 
-    # Altitudes
-    if altmode.lower() == "level":
-        flc = int(fl_cpa) if fl_cpa is not None else int(round((fl1 + fl2)/2))
-        fl1_start = flc; fl2_start = flc
-        fl_cpa1 = flc; fl_cpa2 = flc
-    else:  # altcross
-        flc = int(fl_cpa) if fl_cpa is not None else int(round((fl1 + fl2)/2))
-        if fl1 == flc: fl1 += 10
-        if fl2 == flc: fl2 -= 10
-        if not ((fl1 > flc and fl2 < flc) or (fl2 > flc and fl1 < flc)):
-            if fl1 <= flc: fl1 = flc + 10
-            if fl2 >= flc: fl2 = flc - 10
-        fl1_start, fl2_start = fl1, fl2
-        fl_cpa1 = flc; fl_cpa2 = flc
+    # Ensure overtakes have v2 > v1 for meaningful closure
+    if encounter == "overtake" and cas2 <= cas1:
+        cas1, cas2 = sorted([cas1, cas2])
+        cas2 += max(5.0, 0.05 * cas2)
+
+    # Use creconfs-style velocity backtracking to derive spawn points
+    tcpa_s = float(tcpa)
+    vn1, ve1 = _gc_velocity_components(cas1, brg1)
+    vn2, ve2 = _gc_velocity_components(cas2, brg2)
+
+    # Compute CPA separation: AC1 at requested CPA, AC2 offset to satisfy HSEP
+    hsep_nm = max(0.0, float(STATE.gc_hsep_nm))
+    sep_n = 0.0
+    sep_e = 0.0
+    if hsep_nm > 1e-6:
+        vrel_n = vn2 - vn1
+        vrel_e = ve2 - ve1
+        rel_mag = math.hypot(vrel_n, vrel_e)
+        if rel_mag < 1e-6:
+            # Degenerate relative velocity (nearly same track/speed): rotate aircraft 1 heading by 90 deg
+            rad = math.radians((brg1 + 90.0) % 360.0)
+            sep_n = math.cos(rad) * hsep_nm
+            sep_e = math.sin(rad) * hsep_nm
+        else:
+            # r · v_rel = 0 at CPA for minimum distance -> rotate v_rel by 90 deg
+            sep_n = (-vrel_e / rel_mag) * hsep_nm
+            sep_e = ( vrel_n / rel_mag) * hsep_nm
+
+    cpa1_lat = cpa_lat
+    cpa1_lon = cpa_lon
+    cpa2_lat, cpa2_lon = _gc_offset_from_cpa(cpa_lat, cpa_lon, sep_n, sep_e)
+
+    # Offsets from each aircraft's CPA expressed in north/east nautical miles
+    off1_n = -vn1 * tcpa_s
+    off1_e = -ve1 * tcpa_s
+    off2_n = -vn2 * tcpa_s
+    off2_e = -ve2 * tcpa_s
+    lat1, lon1 = _gc_offset_from_cpa(cpa1_lat, cpa1_lon, off1_n, off1_e)
+    lat2, lon2 = _gc_offset_from_cpa(cpa2_lat, cpa2_lon, off2_n, off2_e)
+
+    # Altitudes: VSEP defines CPA separation; optional offset applies to initial difference
+    base_alt_ft = (int(fl_cpa) * 100.0) if fl_cpa is not None else float(int(round((fl1 + fl2) / 2)) * 100)
+    vsep_ft = float(STATE.gc_vsep_ft)
+    if alt_offset_range is not None:
+        offset_ft = _rand_in(rng, float(alt_offset_range[0]), float(alt_offset_range[1]))
+    else:
+        offset_ft = float(alt_offset_value) if alt_offset_value is not None else 0.0
+    alt1_cpa_ft = base_alt_ft
+    alt2_cpa_ft = base_alt_ft + vsep_ft
+    alt1_spawn_ft = alt1_cpa_ft
+    alt2_spawn_ft = alt2_cpa_ft + offset_ft
+    fl_cpa1 = int(round(alt1_cpa_ft / 100.0))
+    fl_cpa2 = int(round(alt2_cpa_ft / 100.0))
+    fl1_start = int(round(alt1_spawn_ft / 100.0))
+    fl2_start = int(round(alt2_spawn_ft / 100.0))
 
     hdg1 = int(round(brg1)) % 360
     hdg2 = int(round(brg2)) % 360
@@ -801,13 +917,13 @@ def _write_gc_scn(out_path: str, *,
             f.write("0:00:00.00>ASAS ON\n")
 
         # AC1
-        f.write(f"{stamp0}CRE {acid1},{ac1},{lat1:.6f},{lon1:.6f},{hdg1:03d},{fl1_start*100},{cas1:.1f}\n")
-        f.write(f"{stamp0}ADDWPT {acid1} {cpa_lat:.6f},{cpa_lon:.6f},{_fmt_alt_token(fl_cpa1)},{cas1:.1f}\n")
+        f.write(f"{stamp0}CRE {acid1},{ac1},{lat1:.6f},{lon1:.6f},{hdg1:03d},{int(round(alt1_spawn_ft))},{cas1:.1f}\n")
+        f.write(f"{stamp0}ADDWPT {acid1} {cpa1_lat:.6f},{cpa1_lon:.6f},{_fmt_alt_token(fl_cpa1)},{cas1:.1f}\n")
         f.write(f"{stamp0}LNAV {acid1} ON\n{stamp0}VNAV {acid1} ON\n")
 
         # AC2
-        f.write(f"{stamp0}CRE {acid2},{ac2},{lat2:.6f},{lon2:.6f},{hdg2:03d},{fl2_start*100},{cas2:.1f}\n")
-        f.write(f"{stamp0}ADDWPT {acid2} {cpa_lat:.6f},{cpa_lon:.6f},{_fmt_alt_token(fl_cpa2)},{cas2:.1f}\n")
+        f.write(f"{stamp0}CRE {acid2},{ac2},{lat2:.6f},{lon2:.6f},{hdg2:03d},{int(round(alt2_spawn_ft))},{cas2:.1f}\n")
+        f.write(f"{stamp0}ADDWPT {acid2} {cpa2_lat:.6f},{cpa2_lon:.6f},{_fmt_alt_token(fl_cpa2)},{cas2:.1f}\n")
         f.write(f"{stamp0}LNAV {acid2} ON\n{stamp0}VNAV {acid2} ON\n")
 
     # Track all aircraft created in this session (for GC_DEL)
@@ -815,19 +931,156 @@ def _write_gc_scn(out_path: str, *,
 
     # Echo summary (ASCII only)
     r = STATE.gc_ranges
-    ang_txt = f"{angle:.1f} deg" if typ == "cross" else "-"
+    ang_txt = f"{angle:.1f} deg"
+    if abs(offset_ft) >= 1.0:
+        alt_dir = "above" if offset_ft >= 0.0 else "below"
+        alt_txt = f"dH0={abs(offset_ft):.0f} ft ({alt_dir})"
+    else:
+        alt_txt = "dH0=0 ft"
+    sep_txt = f"HSEP={hsep_nm:.2f} NM VSEP={vsep_ft:.0f} ft"
     act = "appended to" if append else "written"
     _echo_ok(
-        (f"GC {act}: {out_path}\n"
-         f" type={typ} altmode={altmode} CPA=({cpa_lat:.4f},{cpa_lon:.4f}) tcpa={tcpa}s angle={ang_txt}\n"
+    (f"GC {act}: {out_path}\n"
+     f" encounter={encounter} CPA1=({cpa1_lat:.4f},{cpa1_lon:.4f}) CPA2=({cpa2_lat:.4f},{cpa2_lon:.4f}) tcpa={tcpa}s angle={ang_txt} {alt_txt} {sep_txt}\n"
          f" Minima: HSEP={STATE.gc_hsep_nm} NM, VSEP={STATE.gc_vsep_ft} ft\n"
          f" Ranges: cas1={r['cas1'][0]}:{r['cas1'][1]} kt  cas2={r['cas2'][0]}:{r['cas2'][1]} kt\n"
          f"         fl1={r['fl1'][0]}:{r['fl1'][1]}       fl2={r['fl2'][0]}:{r['fl2'][1]}\n"
          f"         brg1={r['brg1'][0]}:{r['brg1'][1]} deg   angle={r['angle'][0]}:{r['angle'][1]} deg\n"
-         f" AC1={acid1} {ac1} brg={hdg1} cas={cas1:.1f} fl0={fl1_start}->CPA{fl_cpa1}\n"
-         f" AC2={acid2} {ac2} brg={hdg2} cas={cas2:.1f} fl0={fl2_start}->CPA{fl_cpa2}"),
+         f" AC1={acid1} {ac1} brg={hdg1} cas={cas1:.1f} alt={alt1_spawn_ft:.0f}ft->CPA{fl_cpa1}\n"
+         f" AC2={acid2} {ac2} brg={hdg2} cas={cas2:.1f} alt={alt2_spawn_ft:.0f}ft->CPA{fl_cpa2}"),
         nxt="Load: SATG_GC_RUN [SCNNAME]  |  Add more: SATG_GC_CRE name=<sameSCN> ...  |  Clean: SATG_GC_DEL"
     )
+
+
+# ---------------- Relative conflict helpers ---------------- #
+def _gc_rel_parse(argv: Tuple[str, ...]) -> Dict[str, str]:
+    """Parse key=value tokens from the command call."""
+    params: Dict[str, str] = {}
+    for raw in argv:
+        token = str(raw).strip()
+        if not token:
+            continue
+        if "=" in token:
+            key, val = token.split("=", 1)
+            params[key.strip().lower()] = val.strip()
+        else:
+            key = "mode" if "mode" not in params else token.lower()
+            params[key.strip().lower()] = "1"
+    return params
+
+
+def _gc_rel_bool(val: Optional[str], default: bool = False) -> bool:
+    if val is None:
+        return default
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+
+def _gc_rel_modes(mode_txt: Optional[str]) -> Tuple[bool, bool]:
+    if not mode_txt:
+        return True, False
+    tokens = [tok for tok in re.split(r"[,+/\s]+", mode_txt.lower()) if tok]
+    if not tokens:
+        tokens = [mode_txt.lower()]
+    if "both" in tokens:
+        return True, True
+    do_inject = any(tok == "inject" for tok in tokens)
+    do_write = any(tok == "write" for tok in tokens)
+    return do_inject, do_write
+
+
+def _gc_rel_find_idx(acid: str) -> int:
+    acid = str(acid).strip().upper()
+    traf = getattr(bs, "traf", None) if bs else None
+    if not traf:
+        return -1
+    try:
+        for idx, cur in enumerate(traf.id):
+            if str(cur).upper() == acid:
+                return idx
+    except Exception:
+        return -1
+    return -1
+
+
+def _gc_rel_next_acid(explicit: Optional[str] = None) -> str:
+    if explicit:
+        return str(explicit).strip().upper()
+    while True:
+        acid = f"SCREL{STATE.gc_rel_seq}"
+        STATE.gc_rel_seq += 1
+        if _gc_rel_find_idx(acid) < 0 and acid not in STATE.gc_last_acids:
+            return acid
+
+
+def _gc_rel_capture_state(acid: str) -> Optional[Dict[str, float]]:
+    idx = _gc_rel_find_idx(acid)
+    traf = getattr(bs, "traf", None) if bs else None
+    if traf is None or idx < 0:
+        return None
+    try:
+        return {
+            "acid": str(traf.id[idx]).upper(),
+            "type": str(traf.type[idx]),
+            "lat": float(traf.lat[idx]),
+            "lon": float(traf.lon[idx]),
+            "hdg": float(traf.trk[idx]),
+            "alt_ft": float(traf.alt[idx] / ft),
+            "cas_kt": float(traf.cas[idx] / kts),
+        }
+    except Exception:
+        return None
+
+
+def _gc_rel_extract_target(params: Dict[str, str]) -> Optional[Dict[str, float]]:
+    """Extract target creation data from parameters."""
+    acid = params.get("target_acid") or params.get("target")
+    lat = params.get("target_lat")
+    lon = params.get("target_lon")
+    hdg = params.get("target_hdg")
+    alt = params.get("target_alt_ft")
+    spd = params.get("target_spd")
+    if not all([acid, lat, lon, hdg, alt, spd]):
+        return None
+    return {
+        "acid": str(acid).strip().upper(),
+        "type": str(params.get("target_type", "A320")),
+        "lat": float(lat),
+        "lon": float(lon),
+        "hdg": float(hdg),
+        "alt_ft": float(alt),
+        "cas_kt": float(spd),
+    }
+
+
+def _gc_rel_cre_block(state: Dict[str, float]) -> List[str]:
+    lat = float(state["lat"])
+    lon = float(state["lon"])
+    hdg = int(round(float(state["hdg"]))) % 360
+    alt_ft = float(state["alt_ft"])
+    cas_kt = float(state["cas_kt"])
+    acid = state["acid"]
+    actype = state.get("type", "A320")
+    return [
+        f"CRE {acid},{actype},{lat:.6f},{lon:.6f},{hdg:03d},{alt_ft:.0f},{cas_kt:.1f}",
+        f"LNAV {acid} ON",
+        f"VNAV {acid} ON",
+    ]
+
+
+def _gc_rel_write_scn(path: str, *, append: bool, lines: List[str]) -> None:
+    stamp0 = _stamp(timedelta(seconds=0.0))
+    mode = "a" if append else "w"
+    with open(path, mode, encoding="utf-8") as f:
+        if not append:
+            f.write("0:00:00.00>HOLD\n")
+            f.write("0:00:00.00>ASAS ON\n")
+        for line in lines:
+            f.write(f"{stamp0}{line}\n")
 
 # ------- Procedures helpers ----------------- #
 def _dms_to_deg(sign, d, m, s):
@@ -1167,6 +1420,231 @@ def SATG_RL_RUN(name: str, overwrite: int = 0):
 
 # ---------------- GC commands (typed) ---------------- #
 @command
+def SATG_GC_REL(*argv):
+    """SATG_GC_REL mode=inject|write|both target=<acid> dpsi=<deg> dcpa=<NM> tlosh=<s>
+    Optional:
+      acid=<id> actype=<type> dh=<ft> tlosv=<s> spd=<CAS/Mach>
+      include_target=1 target_acid=<id> target_type=<type> target_lat=<deg> target_lon=<deg>
+                     target_hdg=<deg> target_alt_ft=<ft> target_spd=<kt>
+      name=<scenario> overwrite=1 capture=1 (write mode)
+    """
+
+    params = _gc_rel_parse(argv)
+    do_inject, do_write = _gc_rel_modes(params.get("mode"))
+    if not (do_inject or do_write):
+        _echo_err("SATG_GC_REL: mode must include inject and/or write")
+        return False, ""
+
+    include_target = _gc_rel_bool(params.get("include_target"))
+    capture = _gc_rel_bool(params.get("capture"))
+
+    intruder_acid = _gc_rel_next_acid(params.get("acid"))
+    actype = params.get("actype", "A320")
+    params["acid"] = intruder_acid
+    params["actype"] = actype
+
+    target_id = params.get("target") or (target_info["acid"] if target_info else None)
+    if not target_id:
+        _echo_err("SATG_GC_REL: target=<acid> required")
+        return False, ""
+    target_id = str(target_id).strip().upper()
+    params["target"] = target_id
+    target_info: Optional[Dict[str, float]] = None
+
+    rng = random.Random()
+
+    def _sample_param(key: str, label: str, *, allow_negative: bool,
+                      required: bool, as_int: bool=False,
+                      min_value: Optional[float]=None,
+                      max_value: Optional[float]=None) -> Tuple[Optional[float], bool]:
+        if key not in params:
+            if required:
+                _echo_err(f"SATG_GC_REL: {label} is required")
+            return None, False
+        raw = params.get(key)
+        if raw is None or str(raw).strip() == "":
+            if required:
+                _echo_err(f"SATG_GC_REL: {label} is required")
+            return None, False
+        parsed = _parse_value_range(raw, context="SATG_GC_REL", label=label,
+                                    allow_negative=allow_negative, required=True)
+        if parsed is None:
+            return None, False
+        lo, hi, is_range = parsed
+        if min_value is not None and (lo < min_value or hi < min_value):
+            _echo_err(f"SATG_GC_REL: {label} must be >= {min_value}")
+            return None, False
+        if max_value is not None and (lo > max_value or hi > max_value):
+            _echo_err(f"SATG_GC_REL: {label} must be <= {max_value}")
+            return None, False
+        value = lo if not is_range else _rand_in(rng, lo, hi)
+        params[key] = _format_numeric(value, as_int=as_int)
+        return float(value), is_range
+
+    dpsi_val, _ = _sample_param("dpsi", "dpsi", allow_negative=True, required=True,
+                                 min_value=-180.0, max_value=180.0)
+    if dpsi_val is None:
+        return False, ""
+    dcpa_val, _ = _sample_param("dcpa", "dcpa", allow_negative=False, required=True,
+                                 min_value=0.0)
+    if dcpa_val is None or dcpa_val <= 0.0:
+        _echo_err("SATG_GC_REL: dcpa must be greater than zero")
+        return False, ""
+    tlosh_val, _ = _sample_param("tlosh", "tlosh", allow_negative=False, required=True,
+                                  min_value=0.0)
+    if tlosh_val is None or tlosh_val <= 0.0:
+        _echo_err("SATG_GC_REL: tlosh must be greater than zero")
+        return False, ""
+
+    dh_val: Optional[float] = None
+    dh_is_range = False
+    if "dh" in params:
+        dh_val, dh_is_range = _sample_param("dh", "dh", allow_negative=True, required=True)
+        if dh_val is None:
+            return False, ""
+        if not dh_is_range and abs(dh_val) < 1e-6:
+            params.pop("dh", None)
+            dh_val = None
+    tlosv_val: Optional[float] = None
+    tlosv_is_range = False
+    if "tlosv" in params:
+        tlosv_val, tlosv_is_range = _sample_param("tlosv", "tlosv", allow_negative=False, required=True,
+                                                  min_value=0.0)
+        if tlosv_val is None:
+            return False, ""
+        if not tlosv_is_range and tlosv_val <= 1e-6:
+            params.pop("tlosv", None)
+            tlosv_val = None
+
+    if include_target:
+        lat_val, _ = _sample_param("target_lat", "target_lat", allow_negative=True, required=True)
+        if lat_val is None:
+            return False, ""
+        lon_val, _ = _sample_param("target_lon", "target_lon", allow_negative=True, required=True)
+        if lon_val is None:
+            return False, ""
+        hdg_val, _ = _sample_param("target_hdg", "target_hdg", allow_negative=False, required=True,
+                                   min_value=0.0, max_value=360.0)
+        if hdg_val is None:
+            return False, ""
+        # Normalize heading into [0, 360)
+        hdg_val = hdg_val % 360.0
+        params["target_hdg"] = _format_numeric(hdg_val, as_int=False)
+        alt_val, _ = _sample_param("target_alt_ft", "target_alt_ft", allow_negative=False,
+                                   required=True, as_int=True, min_value=0.0)
+        if alt_val is None:
+            return False, ""
+        spd_val, _ = _sample_param("target_spd", "target_spd", allow_negative=False,
+                                   required=True, min_value=0.0)
+        if spd_val is None:
+            return False, ""
+        target_info = _gc_rel_extract_target(params)
+        if target_info is None:
+            _echo_err("SATG_GC_REL: include_target=1 requires target_acid, target_lat, target_lon, target_hdg, target_alt_ft, target_spd")
+            return False, ""
+        target_info["acid"] = target_id
+
+    if target_info:
+        params.setdefault("target_acid", target_id)
+
+    inject_done = False
+    write_done = False
+
+    if do_inject:
+        traf = getattr(bs, "traf", None) if bs else None
+        if traf is None:
+            _echo_err("SATG_GC_REL: injection requires active BlueSky traffic")
+            return False, ""
+        if include_target:
+            if _gc_rel_find_idx(target_id) >= 0:
+                _echo_err(f"SATG_GC_REL: target {target_id} already exists")
+                return False, ""
+            try:
+                alt_m = target_info["alt_ft"] * ft
+                bs.traf.cre(target_id,
+                            target_info.get("type", "A320"),
+                            target_info["lat"], target_info["lon"],
+                            target_info["hdg"], alt_m, target_info["cas_kt"])
+                STATE.gc_last_acids.append(target_id)
+            except Exception as exc:
+                _echo_err(f"SATG_GC_REL: failed to create target {target_id}: {exc}")
+                return False, ""
+        target_idx = _gc_rel_find_idx(target_id)
+        if target_idx < 0:
+            _echo_err(f"SATG_GC_REL: target {target_id} not found")
+            return False, ""
+        dpsi = float(dpsi_val)
+        dcpa = float(dcpa_val)
+        tlosh = float(tlosh_val)
+        dH_m = float(dh_val) * ft if dh_val is not None else None
+        tlosv_used = float(tlosv_val) if tlosv_val is not None else None
+        spd_txt = params.get("spd")
+        if spd_txt is not None:
+            spd_txt = spd_txt.strip()
+            if not spd_txt:
+                spd_txt = None
+        try:
+            bs.traf.creconfs(intruder_acid, actype, target_idx,
+                             dpsi, dcpa, tlosh, dH_m, tlosv_used, spd_txt)
+        except Exception as exc:
+            _echo_err(f"SATG_GC_REL: failed to create intruder {intruder_acid}: {exc}")
+            return False, ""
+        STATE.gc_last_acids.append(intruder_acid)
+        inject_done = True
+        _echo_ok(
+            f"GC relative injected: {intruder_acid} vs {target_id} (dpsi={dpsi:.1f} deg dcpa={dcpa:.2f} NM tlosh={tlosh:.1f} s)",
+            nxt="Clean with SATG_GC_DEL if needed"
+        )
+
+    if do_write:
+        name = params.get("name")
+        if not name:
+            _echo_err("SATG_GC_REL: name=<scenario> required for write mode")
+            return False, ""
+        path = _scn_path(name)
+        overwrite = _gc_rel_bool(params.get("overwrite"))
+        append = os.path.isfile(path) and not overwrite
+        directory = os.path.dirname(path)
+        if directory and not os.path.isdir(directory):
+            os.makedirs(directory, exist_ok=True)
+        lines: List[str] = []
+        if capture:
+            captured = _gc_rel_capture_state(target_id)
+            if captured is None:
+                _echo_err(f"SATG_GC_REL: capture requested but target {target_id} not available")
+                return False, ""
+            lines.extend(_gc_rel_cre_block(captured))
+        elif include_target and target_info is not None:
+            lines.extend(_gc_rel_cre_block(target_info))
+        cmd_map: Dict[str, str] = {
+            "mode": "inject",
+            "target": target_id,
+            "acid": intruder_acid,
+            "actype": actype,
+            "dpsi": params["dpsi"],
+            "dcpa": params["dcpa"],
+            "tlosh": params["tlosh"],
+            "include_target": "0",
+        }
+        for opt in ("dh", "tlosv", "spd"):
+            val = params.get(opt)
+            if val not in (None, ""):
+                cmd_map[opt] = val
+        order = ["mode", "target", "acid", "actype", "dpsi", "dcpa", "tlosh", "dh", "tlosv", "spd", "include_target"]
+        tokens = [f"{key}={cmd_map[key]}" for key in order if key in cmd_map]
+        lines.append("SATG_GC_REL " + " ".join(tokens))
+        _gc_rel_write_scn(path, append=append, lines=lines)
+        write_done = True
+        act = "appended to" if append else "written to"
+        _echo_ok(
+            f"GC relative scenario {act} {path}",
+            nxt="Load with SATG_GC_RUN <name>"
+        )
+
+    return (inject_done or write_done), ""
+
+
+@command
 def SATG_GC_CONF(hsep_nm: float=5.0, vsep_ft: int=1000):
     """SATG_GC_CONF [hsep_nm] [vsep_ft]
     Set loss-of-separation thresholds used for GC design (informational).
@@ -1179,89 +1657,254 @@ def SATG_GC_CONF(hsep_nm: float=5.0, vsep_ft: int=1000):
     return True, ""
 
 @command
+def SATG_GC_TYPES(*types):
+    """SATG_GC_TYPES [TYPE1] [TYPE2] ...
+    Set the candidate aircraft types used for CPA scenario generation.
+    Without arguments, resets to the default list.
+    """
+    cleaned: List[str] = []
+    for tok in types:
+        s = str(tok).strip().upper()
+        if not s:
+            continue
+        for part in re.split(r"[,\s]+", s):
+            part = part.strip().upper()
+            if part:
+                cleaned.append(part)
+    if not cleaned:
+        STATE.gc_ac_types = ["A320", "B738", "A350", "B78X"]
+        _echo_ok("GC aircraft types reset to defaults",
+                 nxt="Set ranges with SATG_GC_RANGE or build scenarios with SATG_GC_CRE")
+    else:
+        dedup: List[str] = []
+        for typ in cleaned:
+            if typ and typ not in dedup:
+                dedup.append(typ)
+        STATE.gc_ac_types = dedup
+        _echo_ok("GC aircraft types set: " + ", ".join(STATE.gc_ac_types),
+                 nxt="Run SATG_GC_CRE to write a scenario")
+    return True, ""
+
+@command
 def SATG_GC_RANGE(cas1: str=None, cas2: str=None, fl1: str=None, fl2: str=None,
                   brg1: str=None, angle: str=None):
-    """SATG_GC_RANGE [cas1=lo:hi] [cas2=lo:hi] [fl1=lo:hi] [fl2=lo:hi] [brg1=lo:hi] [angle=lo:hi]
-    Define sampling ranges for initial CAS/FL/heading and crossing angle.
-    Examples:
-      SATG_GC_RANGE cas1=230:260 fl1=300:360 brg1=0:359 angle=80:100
-    Defaults apply even if you never call this.
+    """Configure sampling ranges for geometric conflicts.
+
+    Parameters mirror the SATG_GC_CRE inputs:
+      cas1/cas2 -> CAS range [kt] for aircraft 1/2
+      fl1/fl2   -> Flight level range for aircraft 1/2
+      brg1      -> Initial bearing range for aircraft 1 (deg)
+      angle     -> CPA angle range (0=head-on, 180=overtake)
     """
     r = STATE.gc_ranges
-    if cas1 is not None: r["cas1"] = _parse_range(cas1, r["cas1"])
-    if cas2 is not None: r["cas2"] = _parse_range(cas2, r["cas2"])
-    if fl1  is not None: r["fl1"]  = tuple(int(x) for x in _parse_range(fl1,  r["fl1"]))
-    if fl2  is not None: r["fl2"]  = tuple(int(x) for x in _parse_range(fl2,  r["fl2"]))
-    if brg1 is not None: r["brg1"] = _parse_range(brg1, r["brg1"])
-    if angle is not None: r["angle"] = _parse_range(angle, r["angle"])
+    if cas1 is not None:
+        r["cas1"] = _parse_range(cas1, r["cas1"])
+    if cas2 is not None:
+        r["cas2"] = _parse_range(cas2, r["cas2"])
+    if fl1 is not None:
+        r["fl1"] = tuple(int(x) for x in _parse_range(fl1, r["fl1"]))
+    if fl2 is not None:
+        r["fl2"] = tuple(int(x) for x in _parse_range(fl2, r["fl2"]))
+    if brg1 is not None:
+        r["brg1"] = _parse_range(brg1, r["brg1"])
+    if angle is not None:
+        r["angle"] = _parse_range(angle, r["angle"])
     _echo_ok(
         "GC ranges set:\n"
         f" cas1={r['cas1'][0]}:{r['cas1'][1]} kt   cas2={r['cas2'][0]}:{r['cas2'][1]} kt\n"
         f" fl1={r['fl1'][0]}:{r['fl1'][1]}        fl2={r['fl2'][0]}:{r['fl2'][1]}\n"
         f" brg1={r['brg1'][0]}:{r['brg1'][1]} deg angle={r['angle'][0]}:{r['angle'][1]} deg",
-        nxt="Build: SATG_GC_CRE name=<SCN> type=headon|cross|overtake altmode=level|altcross lat=<..> lon=<..> tcpa=<sec> [angle=<deg>]"
+    nxt="Build: SATG_GC_CRE name=<SCN> (lat=<..> lon=<..> | wp=<ident>) tcpa=<sec> angle=<deg> [dh=<ft>]"
     )
     return True, ""
 
 @command
-def SATG_GC_CRE(name: str, type: str, altmode: str, lat: float, lon: float, tcpa: float,
-                angle: float=None,
-                acid1: str="SC1", acid2: str="SC2",
-                ac1: str="A320", ac2: str="B738",
-                fl_cpa: int=None, seed: int=None, overwrite: str="0"):
-    """SATG_GC_CRE name type altmode lat lon tcpa [angle] [acid1] [acid2] [ac1] [ac2] [fl_cpa] [seed] [overwrite (0=append,1=overwrite)]
-    Create (or append) a 2-aircraft geometric conflict in <base>/scenarios/<name>.scn.
-      type: headon|cross|overtake
-      altmode: level|altcross          (altcross forces both to meet at FL_cpa at CPA)
-      lat,lon: CPA coordinates (deg)
-      tcpa: seconds to CPA from start (t=0)
-      angle: crossing angle in degrees (only used when type=cross; overrides random range)
-      acid1/2: callsigns (default SC1/SC2; will auto-increment on append if left as default)
-      ac1/2: BlueSky AC types (default A320/B738)
-      fl_cpa: flight level at CPA (used by altcross; default mid of sampled FLs)
-      seed: integer for repeatable sampling
-    Behavior:
-      - If <name>.scn doesn't exist, it's created with header (HOLD + ASAS ON).
-      - If it exists, new conflict lines are appended (no duplicate header).
-      - If appending and you keep default callsigns (SC1/SC2), they are auto-bumped to next SC# pair.
-    """
-    typ = type.strip().lower()
-    if typ not in ("headon","cross","overtake"):
-        _echo_err("SATG_GC_CRE: type must be headon|cross|overtake"); return False, ""
-    am = altmode.strip().lower()
-    if am not in ("level","altcross"):
-        _echo_err("SATG_GC_CRE: altmode must be level|altcross"); return False, ""
+def SATG_GC_CRE(*argv):
+    """SATG_GC_CRE name=<scn> (lat=<deg> lon=<deg> | wp=<ident>) tcpa=<s> [angle=<deg>] [dh=<ft>]
+    Optional: acid1, acid2, ac1, ac2, actypes, fl_cpa, seed, overwrite.
 
-    if not os.path.isdir(STATE.scn_dir): os.makedirs(STATE.scn_dir, exist_ok=True)
+    Legacy positional arguments (type/head-on, altmode) are still accepted but ignored.
+    """
+
+    order = [
+        "name", "type", "altmode", "lat", "lon", "tcpa", "angle",
+        "acid1", "acid2", "ac1", "ac2", "fl_cpa", "seed", "overwrite", "actypes"
+    ]
+    kv: Dict[str, str] = {}
+    pos_idx = 0
+    for tok in argv:
+        s = str(tok).strip()
+        if not s:
+            continue
+        if "=" in s:
+            key, val = s.split("=", 1)
+            kv.setdefault(key.strip().lower(), val.strip())
+        else:
+            if pos_idx < len(order):
+                kv.setdefault(order[pos_idx], s)
+            pos_idx += 1
+
+    name = kv.get("name")
+    lat_txt = kv.get("lat")
+    lon_txt = kv.get("lon")
+    wp_txt = kv.get("wp") or kv.get("wpt") or kv.get("fix") or kv.get("waypoint")
+    tcpa_txt = kv.get("tcpa")
+    if not (name and tcpa_txt and ((lat_txt and lon_txt) or wp_txt)):
+        _echo_err("SATG_GC_CRE: provide tcpa and either lat/lon or wp=<ident>")
+        return False, ""
+
     nm = name.strip()
-    if "=" in nm and nm.lower().startswith("name="): nm = nm.split("=",1)[1].strip()
+    if "=" in nm and nm.lower().startswith("name="):
+        nm = nm.split("=", 1)[1].strip()
+
+    parsed_tcpa = _parse_value_range(tcpa_txt, context="SATG_GC_CRE", label="tcpa")
+    if parsed_tcpa is None:
+        return False, ""
+    tcpa_lo, tcpa_hi, tcpa_is_range = parsed_tcpa
+    if tcpa_lo <= 0.0 or tcpa_hi <= 0.0:
+        _echo_err("SATG_GC_CRE: tcpa must be greater than zero")
+        return False, ""
+    tcpa_value = tcpa_lo
+    tcpa_range = (tcpa_lo, tcpa_hi) if tcpa_is_range or tcpa_lo != tcpa_hi else None
+
+    lat = lon = None
+    if lat_txt and lon_txt:
+        try:
+            lat = float(lat_txt)
+            lon = float(lon_txt)
+        except Exception:
+            _echo_err("SATG_GC_CRE: lat/lon must be numeric degrees")
+            return False, ""
+    else:
+        wp_key = (wp_txt or "").strip()
+        coord = _resolve_fix_coord(wp_key, STATE.gc_fix_cache)
+        if coord is None:
+            label = wp_key.upper() if wp_key else "(blank)"
+            _echo_err(f"SATG_GC_CRE: waypoint '{label}' not found")
+            return False, ""
+        lat, lon = coord
+
+    angle_txt = kv.get("angle")
+    angle_value: Optional[float] = None
+    angle_range: Optional[Tuple[float, float]] = None
+    if angle_txt is not None:
+        parsed_angle = _parse_value_range(angle_txt, context="SATG_GC_CRE", label="angle")
+        if parsed_angle is None:
+            return False, ""
+        ang_lo, ang_hi, ang_is_range = parsed_angle
+        if ang_lo < 0.0 or ang_hi > 180.0:
+            _echo_err("SATG_GC_CRE: angle must stay within 0-180 degrees")
+            return False, ""
+        if ang_is_range or ang_lo != ang_hi:
+            angle_range = (ang_lo, ang_hi)
+        else:
+            angle_value = ang_lo
+    else:
+        typ = (kv.get("type") or "").strip().lower()
+        if typ == "headon":
+            angle_value = 0.0
+        elif typ == "overtake":
+            angle_value = 180.0
+        elif typ == "cross":
+            angle_value = 90.0
+
+    dh_txt = kv.get("dh") or kv.get("dalt") or kv.get("alt_offset")
+    alt_offset_value: Optional[float] = None
+    alt_offset_range: Optional[Tuple[float, float]] = None
+    if dh_txt is not None:
+        parsed_dh = _parse_value_range(dh_txt, context="SATG_GC_CRE", label="alt_offset", allow_negative=True)
+        if parsed_dh is None:
+            return False, ""
+        dh_lo, dh_hi, dh_is_range = parsed_dh
+        if dh_is_range or dh_lo != dh_hi:
+            alt_offset_range = (dh_lo, dh_hi)
+        else:
+            alt_offset_value = dh_lo
+
+    actypes_txt = kv.get("actypes") or kv.get("types")
+    ac_types: Optional[List[str]] = None
+    if actypes_txt:
+        cleaned = actypes_txt.strip().strip('"').strip("'")
+        cleaned = cleaned.replace("|", " ")
+        raw = [p.strip().upper() for p in re.split(r"[,\s]+", cleaned) if p.strip()]
+        if raw:
+            seen: List[str] = []
+            for typ in raw:
+                if typ not in seen:
+                    seen.append(typ)
+            ac_types = seen
+
+    ac1 = kv.get("ac1", "A320")
+    ac2 = kv.get("ac2", "B738")
+    ac_types: Optional[List[str]] = None
+    actypes_txt = kv.get("actypes") or kv.get("types")
+    if actypes_txt:
+        raw_parts = [p.strip().upper() for p in re.split(r"[\,\s]+", actypes_txt) if p.strip()]
+        if raw_parts:
+            ac_types = raw_parts
+    acid1 = kv.get("acid1", "SC1").upper()
+    acid2 = kv.get("acid2", "SC2").upper()
+
+    fl_cpa_txt = kv.get("fl_cpa")
+    fl_cpa = None
+    if fl_cpa_txt:
+        try:
+            fl_cpa = int(float(fl_cpa_txt))
+        except Exception:
+            _echo_err("SATG_GC_CRE: fl_cpa must be an integer flight level")
+            return False, ""
+
+    seed_txt = kv.get("seed")
+    seed = None
+    if seed_txt:
+        try:
+            seed = int(float(seed_txt))
+        except Exception:
+            _echo_err("SATG_GC_CRE: seed must be an integer")
+            return False, ""
+
+    ow_txt = kv.get("overwrite", "0").strip()
+    if ow_txt not in ("0", "1"):
+        _echo_err("SATG_GC_CRE: overwrite must be 0 or 1")
+        return False, ""
+    overwrite = ow_txt == "1"
+
+    if not os.path.isdir(STATE.scn_dir):
+        os.makedirs(STATE.scn_dir, exist_ok=True)
     out_path = os.path.join(STATE.scn_dir, f"{nm}.scn")
 
-    # Overwrite handling
-    ow_raw = str(overwrite).strip()
-    if ow_raw not in ("0","1"):
-        _echo_err("SATG_GC_CRE: overwrite must be 0 or 1"); return False, ""
-    ow_true = (ow_raw == "1")
-    exists = os.path.isfile(out_path)
-    append = False if ow_true else exists
-    if ow_true and exists:
+    append = os.path.isfile(out_path) and not overwrite
+    if overwrite and os.path.isfile(out_path):
         try:
             os.remove(out_path)
         except Exception:
             pass
 
-    # Default ACIDs auto-increment when appending
-    ac1_final, ac2_final = acid1, acid2
     if append and acid1 == "SC1" and acid2 == "SC2":
-        nmax = _scan_max_sc_index(out_path)  # 0 if none found
-        ac1_final = f"SC{nmax + 1}"
-        ac2_final = f"SC{nmax + 2}"
+        nmax = _scan_max_sc_index(out_path)
+        acid1 = f"SC{nmax + 1}"
+        acid2 = f"SC{nmax + 2}"
 
-    _write_gc_scn(out_path, append=append, name=nm,
-              cpa_lat=float(lat), cpa_lon=float(lon), tcpa=float(tcpa),
-              typ=typ, altmode=am, fl_cpa=fl_cpa,
-              acid1=ac1_final, acid2=ac2_final, ac1=ac1, ac2=ac2,
-              seed=seed, angle_in=angle)
+    _write_gc_scn(
+        out_path,
+        append=append,
+        name=nm,
+        cpa_lat=lat,
+        cpa_lon=lon,
+        tcpa_value=tcpa_value,
+        tcpa_range=tcpa_range,
+        fl_cpa=fl_cpa,
+        acid1=acid1,
+        acid2=acid2,
+        ac1=ac1,
+        ac2=ac2,
+        ac_types=ac_types,
+        seed=seed,
+        angle_in=angle_value,
+        angle_range=angle_range,
+        alt_offset_value=alt_offset_value,
+        alt_offset_range=alt_offset_range,
+    )
 
     return True, ""
 
@@ -1404,10 +2047,17 @@ def SATG_RC_CIRCLE(*argv):
             theta = rng.uniform(0.0, 360.0)
             cpa_lat, cpa_lon = _dest_nm(center_lat, center_lon, theta, r)
 
-            angle_i = None
-            if typ == "cross":
+            if typ == "headon":
+                angle_i = 0.0
+            elif typ == "overtake":
+                angle_i = 180.0
+            else:
                 lo, hi = STATE.gc_ranges["angle"]
                 angle_i = _rand_in(rng, lo, hi)
+
+            dh_ft = float(STATE.gc_vsep_ft) if am_i == "altcross" else 0.0
+            if dh_ft != 0.0 and rng.random() < 0.5:
+                dh_ft = -dh_ft
 
             if append:
                 nmax = _scan_max_sc_index(out_path)
@@ -1419,11 +2069,26 @@ def SATG_RC_CIRCLE(*argv):
             ac1 = rng.choice(types_list)
             ac2 = rng.choice(types_list)
 
-            _write_gc_scn(out_path, append=append, name=nm,
-                          cpa_lat=cpa_lat, cpa_lon=cpa_lon, tcpa=float(tcpa_i),
-                          typ=typ, altmode=am_i, fl_cpa=None,
-                          acid1=acid1, acid2=acid2, ac1=ac1, ac2=ac2,
-                          seed=None, angle_in=angle_i)
+            _write_gc_scn(
+                out_path,
+                append=append,
+                name=nm,
+                cpa_lat=cpa_lat,
+                cpa_lon=cpa_lon,
+                tcpa_value=float(tcpa_i),
+                tcpa_range=None,
+                fl_cpa=None,
+                acid1=acid1,
+                acid2=acid2,
+                ac1=ac1,
+                ac2=ac2,
+                ac_types=None,
+                seed=None,
+                angle_in=angle_i,
+                angle_range=None,
+                alt_offset_value=dh_ft,
+                alt_offset_range=None,
+            )
             append = True
 
         _echo_ok(
@@ -2319,7 +2984,7 @@ def SATG_HELP(topic: str = ""):
         "Geometric conflicts:",
         "  SATG_GC_CONF HSEP VSEP",
         "  SATG_GC_RANGE fl=lo:hi cas=lo:hi",
-        "  SATG_GC_CRE name=<...> typ=<headon,cross,overtake> altmode=<level|altcross|mix> lat=<deg> lon=<deg> tcpa=<s> [angle=<deg>] overwrite=<0|1>",
+    "  SATG_GC_CRE name=<...> typ=<headon,cross,overtake> altmode=<level|altcross|mix> (lat=<deg> lon=<deg> | wp=<ident>) tcpa=<s> [angle=<deg>] [actypes=<csv>] overwrite=<0|1>",
         "  SATG_GC_RUN name",
         "",
         "Realistic replay:",

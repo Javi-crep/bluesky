@@ -3,17 +3,22 @@
 #
 # PyQt6; lazy window creation to avoid QApplication race.
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTime
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
-    QDialog, QDialogButtonBox, QTimeEdit, QScrollArea
+    QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup
 )
 from PyQt6 import sip
 from bluesky import stack
+try:
+    import bluesky as bs
+except Exception:
+    bs = None
+from bluesky.tools.aero import ft, kts
 import os, re
 
 # --- helpers ---------------------------------------------------------------
@@ -665,173 +670,352 @@ class RLTab(QWidget):
 
 # --- GC tab (Geometric Conflicts) ------------------------------------------
 
-class GCTab(QWidget):
+class GCMinimaPanel(QGroupBox):
     def __init__(self, parent=None):
+        super().__init__("Separation minima", parent)
+        layout = QFormLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self._hsep = QDoubleSpinBox(self)
+        self._hsep.setRange(0.1, 50.0)
+        self._hsep.setDecimals(2)
+        self._hsep.setSingleStep(0.1)
+        self._hsep.setValue(5.0)
+        layout.addRow("Horizontal [NM]:", self._hsep)
+
+        self._vsep = QSpinBox(self)
+        self._vsep.setRange(100, 5000)
+        self._vsep.setSingleStep(50)
+        self._vsep.setValue(1000)
+        layout.addRow("Vertical [ft]:", self._vsep)
+
+    def hsep_value(self) -> float:
+        return float(self._hsep.value())
+
+    def vsep_value(self) -> int:
+        return int(self._vsep.value())
+
+
+class GCAbsolutePage(QWidget):
+    def __init__(self, minima_panel: GCMinimaPanel, parent=None):
         super().__init__(parent)
+        self._minima = minima_panel
+
         main = QVBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(10)
 
-        # -------- 1) Batch options (match RC order) --------
-        gb1 = QGroupBox("1) Batch options")
+        gb1 = QGroupBox("1) CPA options")
         f1 = QFormLayout(gb1)
+        f1.setContentsMargins(8, 8, 8, 8)
+        f1.setSpacing(8)
 
-        # Scenario name
-        self.gc_name = QLineEdit("gc_scn")
-        f1.addRow("Scenario name:", self.gc_name)
+        # CPA reference row
+        cpa_row = QWidget()
+        cpa_layout = QHBoxLayout(cpa_row)
+        cpa_layout.setContentsMargins(0, 0, 0, 0)
+        cpa_layout.setSpacing(12)
 
-        # Types (checkboxes)
-        types_box = QWidget(); hb_types = QHBoxLayout(types_box); hb_types.setContentsMargins(0,0,0,0)
-        self.gc_headon = QCheckBox("Head-on");  self.gc_headon.setChecked(True)
-        self.gc_cross  = QCheckBox("Crossing"); self.gc_cross.setChecked(False)
-        self.gc_overtk = QCheckBox("Overtake"); self.gc_overtk.setChecked(False)
-        hb_types.addWidget(self.gc_headon); hb_types.addWidget(self.gc_cross); hb_types.addWidget(self.gc_overtk); hb_types.addStretch(1)
-        f1.addRow("Types:", types_box)
+        coord_box = QGroupBox("Coordinate")
+        coord_form = QFormLayout(coord_box)
+        coord_form.setContentsMargins(6, 6, 6, 6)
+        coord_form.setSpacing(6)
 
-        # Alt mode (checkboxes)
-        alt_row = QWidget(); alt_hb = QHBoxLayout(alt_row); alt_hb.setContentsMargins(0,0,0,0)
-        self.gc_alt_level    = QCheckBox("Level");     self.gc_alt_level.setChecked(True)
-        self.gc_alt_altcross = QCheckBox("Alt-cross"); self.gc_alt_altcross.setChecked(False)
-        alt_hb.addWidget(self.gc_alt_level); alt_hb.addWidget(self.gc_alt_altcross); alt_hb.addStretch(1)
-        f1.addRow("Alt mode:", alt_row)
+        self.gc_use_coords_rb = QRadioButton("Use coordinates")
+        self.gc_use_coords_rb.setChecked(True)
+        coord_form.addRow(self.gc_use_coords_rb)
+        self.gc_lat = QLineEdit("52.100000")
+        self.gc_lat.setClearButtonEnabled(True)
+        self.gc_lon = QLineEdit("4.500000")
+        self.gc_lon.setClearButtonEnabled(True)
+        coord_form.addRow("Lat [deg]:", self.gc_lat)
+        coord_form.addRow("Lon [deg]:", self.gc_lon)
 
-        # TCPA [s]
-        self.gc_tcpa = QDoubleSpinBox(); self.gc_tcpa.setDecimals(0); self.gc_tcpa.setRange(10, 3600); self.gc_tcpa.setValue(120)
-        f1.addRow("TCPA [s]:", self.gc_tcpa)
+        wp_box = QGroupBox("Waypoint")
+        wp_form = QFormLayout(wp_box)
+        wp_form.setContentsMargins(6, 6, 6, 6)
+        wp_form.setSpacing(6)
+        self.gc_use_wp_rb = QRadioButton("Use waypoint")
+        wp_form.addRow(self.gc_use_wp_rb)
+        self.gc_wp = QLineEdit("")
+        self.gc_wp.setPlaceholderText("e.g. SUGOL or EHAM")
+        self.gc_wp.setClearButtonEnabled(True)
+        wp_form.addRow("Identifier:", self.gc_wp)
 
-        # Angle [deg] (cross only)
-        self.gc_angle = QDoubleSpinBox(); self.gc_angle.setDecimals(0); self.gc_angle.setRange(0, 180); self.gc_angle.setValue(90)
-        f1.addRow("Cross angle [deg] (cross only):", self.gc_angle)
+        self.gc_cpa_mode = QButtonGroup(self)
+        self.gc_cpa_mode.addButton(self.gc_use_coords_rb)
+        self.gc_cpa_mode.addButton(self.gc_use_wp_rb)
 
-        # Separation minima (HSEP/VSEP)
-        self.gc_hsep = QDoubleSpinBox(); self.gc_hsep.setRange(0.1, 50.0); self.gc_hsep.setDecimals(2); self.gc_hsep.setValue(5.0)
-        self.gc_vsep = QSpinBox();       self.gc_vsep.setRange(100, 5000);  self.gc_vsep.setValue(1000)
-        f1.addRow("HSEP [NM]:", self.gc_hsep)
-        f1.addRow("VSEP [ft]:", self.gc_vsep)
+        cpa_layout.addWidget(coord_box, 1)
+        cpa_layout.addWidget(wp_box, 1)
+        f1.addRow("CPA reference:", cpa_row)
 
-        # Overwrite toggle (checkbox -> 0/1 when emitting)
-        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
-        self.gc_overwrite_cb.setChecked(False)
-        f1.addRow(self.gc_overwrite_cb)
+        self.gc_use_coords_rb.toggled.connect(self._update_cpa_reference_mode)
+        self.gc_use_wp_rb.toggled.connect(self._update_cpa_reference_mode)
+        self._update_cpa_reference_mode()
+
+        self.gc_tcpa_value = QLineEdit("120.0")
+        self.gc_tcpa_value.setClearButtonEnabled(True)
+        self.gc_tcpa_range = QLineEdit()
+        self.gc_tcpa_range.setClearButtonEnabled(True)
+        f1.addRow(
+            "TCPA [s]:",
+            self._make_value_range_row(self.gc_tcpa_value, self.gc_tcpa_range, "upper [s] (optional)"),
+        )
+
+        self.gc_angle_value = QLineEdit("90.0")
+        self.gc_angle_value.setClearButtonEnabled(True)
+        self.gc_angle_range = QLineEdit()
+        self.gc_angle_range.setClearButtonEnabled(True)
+        f1.addRow(
+            "CPA angle [deg] (cross only):",
+            self._make_value_range_row(self.gc_angle_value, self.gc_angle_range, "upper [deg] (optional)"),
+        )
+
+        self.gc_alt_offset_value = QLineEdit("0")
+        self.gc_alt_offset_value.setClearButtonEnabled(True)
+        self.gc_alt_offset_range = QLineEdit()
+        self.gc_alt_offset_range.setClearButtonEnabled(True)
+        f1.addRow(
+            "Altitude offset dH [ft] (optional):",
+            self._make_value_range_row(self.gc_alt_offset_value, self.gc_alt_offset_range, "upper [ft] (optional)"),
+        )
+
+        self.gc_actypes = QLineEdit("A320,B738,A350,B78X")
+        f1.addRow("AC types:", self.gc_actypes)
+
+        self.gc_seed = QSpinBox()
+        self.gc_seed.setRange(0, 2_000_000_000)
+        self.gc_seed.setValue(0)
+        f1.addRow("Seed (0 = random):", self.gc_seed)
 
         main.addWidget(gb1)
 
-        # enable angle only when Crossing is selected
-        def _upd_angle_enabled():
-            self.gc_angle.setEnabled(self.gc_cross.isChecked())
-        self.gc_cross.toggled.connect(lambda _: _upd_angle_enabled())
-        _upd_angle_enabled()
-
-        # -------- 2) CPA & ranges (match RC "region" section) --------
-        gb2 = QGroupBox("2) CPA & ranges")
+        gb2 = QGroupBox("2) Flight profile")
         f2 = QFormLayout(gb2)
+        f2.setContentsMargins(8, 8, 8, 8)
+        f2.setSpacing(8)
 
-        # CPA lat/lon
-        self.gc_lat = QLineEdit("52.100000")
-        self.gc_lon = QLineEdit("4.500000")
-        f2.addRow("CPA lat [deg]:", self.gc_lat)
-        f2.addRow("CPA lon [deg]:", self.gc_lon)
+        self.gc_fl_value = QLineEdit("310")
+        self.gc_fl_value.setClearButtonEnabled(True)
+        self.gc_fl_range = QLineEdit()
+        self.gc_fl_range.setClearButtonEnabled(True)
+        f2.addRow(
+            "FL (value or range):",
+            self._make_value_range_row(self.gc_fl_value, self.gc_fl_range, "upper FL (optional)"),
+        )
 
-        # FL range
-        self.gc_fl_lo = QDoubleSpinBox(); self.gc_fl_lo.setDecimals(0); self.gc_fl_lo.setRange(0, 450); self.gc_fl_lo.setValue(290)
-        self.gc_fl_hi = QDoubleSpinBox(); self.gc_fl_hi.setDecimals(0); self.gc_fl_hi.setRange(0, 450); self.gc_fl_hi.setValue(370)
-        self.gc_fl_lo.valueChanged.connect(lambda v: self.gc_fl_hi.setMinimum(v))
-        self.gc_fl_hi.valueChanged.connect(lambda v: self.gc_fl_lo.setMaximum(v))
-        row_fl = QWidget(); hb_fl = QHBoxLayout(row_fl); hb_fl.setContentsMargins(0,0,0,0)
-        hb_fl.addWidget(self.gc_fl_lo); hb_fl.addWidget(QLabel(" to ")); hb_fl.addWidget(self.gc_fl_hi)
-        f2.addRow("FL range (lo:hi):", row_fl)
-
-        # CAS range
-        self.gc_cas_lo = QDoubleSpinBox(); self.gc_cas_lo.setDecimals(0); self.gc_cas_lo.setRange(100, 600); self.gc_cas_lo.setValue(220)
-        self.gc_cas_hi = QDoubleSpinBox(); self.gc_cas_hi.setDecimals(0); self.gc_cas_hi.setRange(100, 600); self.gc_cas_hi.setValue(280)
-        self.gc_cas_lo.valueChanged.connect(lambda v: self.gc_cas_hi.setMinimum(v))
-        self.gc_cas_hi.valueChanged.connect(lambda v: self.gc_cas_lo.setMaximum(v))
-        row_cas = QWidget(); hb_cas = QHBoxLayout(row_cas); hb_cas.setContentsMargins(0,0,0,0)
-        hb_cas.addWidget(self.gc_cas_lo); hb_cas.addWidget(QLabel(" to ")); hb_cas.addWidget(self.gc_cas_hi)
-        f2.addRow("CAS range [kt] (lo:hi):", row_cas)
+        self.gc_cas_value = QLineEdit("250")
+        self.gc_cas_value.setClearButtonEnabled(True)
+        self.gc_cas_range = QLineEdit()
+        self.gc_cas_range.setClearButtonEnabled(True)
+        f2.addRow(
+            "CAS [kt] (value or range):",
+            self._make_value_range_row(self.gc_cas_value, self.gc_cas_range, "upper [kt] (optional)"),
+        )
 
         main.addWidget(gb2)
 
-        # -------- 3) Actions --------
         gb3 = QGroupBox("3) Actions")
         f3 = QFormLayout(gb3)
+        f3.setContentsMargins(8, 8, 8, 8)
+        f3.setSpacing(8)
 
-        btn_cre  = QPushButton("CREATE SCENARIO")
-        btn_run  = QPushButton("RUN SCENARIO")
+        name_row = QWidget()
+        name_layout = QHBoxLayout(name_row)
+        name_layout.setContentsMargins(0, 0, 0, 0)
+        name_layout.setSpacing(6)
+        name_layout.addWidget(QLabel("Scenario name:"))
+        self.gc_name = QLineEdit("gc_scn")
+        name_layout.addWidget(self.gc_name)
+        f3.addRow(name_row)
+
+        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
+        self.gc_overwrite_cb.setChecked(True)
+        f3.addRow(self.gc_overwrite_cb)
+
+        btn_row = QWidget()
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(10)
+        btn_cre = QPushButton("CREATE SCENARIO")
+        btn_run = QPushButton("RUN SCENARIO")
         btn_both = QPushButton("CREATE & RUN SCENARIO")
-        row_act = QWidget(); hb_act = QHBoxLayout(row_act); hb_act.setContentsMargins(0,0,0,0)
-        hb_act.addWidget(btn_cre); hb_act.addWidget(btn_run); hb_act.addWidget(btn_both)
-        f3.addRow(row_act)
+        btn_layout.addWidget(btn_cre)
+        btn_layout.addWidget(btn_run)
+        btn_layout.addWidget(btn_both)
+        btn_layout.addStretch(1)
+        f3.addRow(btn_row)
 
         main.addWidget(gb3)
 
-        # wire actions
         btn_cre.clicked.connect(self._gc_create)
         btn_run.clicked.connect(self._gc_run_only)
         btn_both.clicked.connect(self._gc_create_and_run)
 
-        
+    def _make_value_range_row(self, value_widget: QLineEdit, range_widget: QLineEdit, placeholder: str) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        value_widget.setMaximumWidth(90)
+        value_widget.setPlaceholderText("required")
+        value_widget.setToolTip("Required value (used as deterministic or lower bound).")
+        range_widget.setPlaceholderText(placeholder)
+        range_widget.setToolTip("Optional upper bound; leave empty for a fixed value.")
+        range_widget.setMinimumWidth(140)
+        layout.addWidget(value_widget)
+        layout.addWidget(range_widget, 1)
+        return row
 
-    # ---------- helpers ----------
-    def _gc_types_csv(self) -> str:
-        sel = []
-        if self.gc_headon.isChecked(): sel.append("headon")
-        if self.gc_cross.isChecked():  sel.append("cross")
-        if self.gc_overtk.isChecked(): sel.append("overtake")
-        return ",".join(sel)
+    def _extract_numeric_field(
+        self,
+        label: str,
+        primary: QLineEdit,
+        secondary: QLineEdit,
+        *,
+        allow_float: bool,
+        allow_negative: bool,
+    ) -> Optional[Tuple[str, bool, float, float]]:
+        primary_txt = primary.text().strip()
+        if not primary_txt:
+            _emit(f"ECHO Please fill the left {label} field.")
+            return None
+        try:
+            primary_val = self._coerce_number(primary_txt, allow_float, allow_negative, label, "value")
+        except ValueError as exc:
+            _emit(f"ECHO {exc}")
+            return None
+        secondary_txt = secondary.text().strip()
+        if secondary_txt:
+            try:
+                secondary_val = self._coerce_number(secondary_txt, allow_float, allow_negative, label, "upper bound")
+            except ValueError as exc:
+                _emit(f"ECHO {exc}")
+                return None
+            lo_val = float(primary_val)
+            hi_val = float(secondary_val)
+            if hi_val < lo_val:
+                lo_val, hi_val = hi_val, lo_val
+            normalized = f"{self._format_number(lo_val, allow_float)}:{self._format_number(hi_val, allow_float)}"
+            return normalized, True, lo_val, hi_val
 
-    def _gc_ensure_types(self) -> bool:
-        if self.gc_headon.isChecked() or self.gc_cross.isChecked() or self.gc_overtk.isChecked():
-            return True
-        _emit("ECHO Please select at least one conflict type.")
-        return False
+        normalized = self._format_number(primary_val, allow_float)
+        return normalized, False, float(primary_val), float(primary_val)
 
-    def _gc_altmode(self) -> str:
-        a = self.gc_alt_level.isChecked()
-        b = self.gc_alt_altcross.isChecked()
-        if a and b: return "mix"
-        if a: return "level"
-        if b: return "altcross"
-        return "level"
+    def _coerce_number(self, text: str, allow_float: bool, allow_negative: bool, label: str, desc: str):
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError(f"{label} {desc} is empty.")
+        try:
+            value = float(stripped)
+        except ValueError as exc:
+            raise ValueError(f"{label} {desc} must be numeric.") from exc
+        if not allow_negative and value < 0.0:
+            raise ValueError(f"{label} {desc} must be >= 0.")
+        if allow_float:
+            return value
+        return int(round(value))
 
-    # ---------- emitters ----------
+    def _format_number(self, value, allow_float: bool) -> str:
+        if allow_float:
+            txt = f"{float(value):.6f}".rstrip("0").rstrip(".")
+            return txt if txt and txt != "-0" else "0"
+        return str(int(round(float(value))))
+
     def _emit_gc_conf(self):
-        _emit(f"SATG_GC_CONF {self.gc_hsep.value()} {self.gc_vsep.value()}")
+        _emit(f"SATG_GC_CONF {self._minima.hsep_value()} {self._minima.vsep_value()}")
 
     def _emit_gc_range(self):
-        fl_lo, fl_hi   = int(self.gc_fl_lo.value()),  int(self.gc_fl_hi.value())
-        cas_lo, cas_hi = int(self.gc_cas_lo.value()), int(self.gc_cas_hi.value())
-        toks = ["SATG_GC_RANGE", _kv("fl", f"{fl_lo}:{fl_hi}"), _kv("cas", f"{cas_lo}:{cas_hi}")]
+        fl_field = self._extract_numeric_field("FL", self.gc_fl_value, self.gc_fl_range, allow_float=False, allow_negative=False)
+        if fl_field is None:
+            return
+        fl_txt, _, _, _ = fl_field
+
+        cas_field = self._extract_numeric_field("CAS [kt]", self.gc_cas_value, self.gc_cas_range, allow_float=False, allow_negative=False)
+        if cas_field is None:
+            return
+        cas_txt, _, _, _ = cas_field
+
+        toks = ["SATG_GC_RANGE", _kv("fl", fl_txt), _kv("cas", cas_txt)]
         _emit(_join_tokens(*toks))
 
     def _emit_gc_cre(self):
-        if not self._gc_ensure_types():
-            return
         name = self.gc_name.text().strip()
         if not name:
             _emit("ECHO Please provide a scenario name.")
             return
-        types_csv = self._gc_types_csv()
-        altmode   = self._gc_altmode()
-        ow        = 1 if self.gc_overwrite_cb.isChecked() else 0
 
-        toks = [
-            "SATG_GC_CRE",
-            _kv("name",   name),
-            _kv("typ",    types_csv),
-            _kv("altmode", altmode),
-            _kv("lat",    self.gc_lat.text().strip()),
-            _kv("lon",    self.gc_lon.text().strip()),
-            _kv("tcpa",   int(self.gc_tcpa.value())),
-            _kv("overwrite", ow),
-        ]
-        if "cross" in {t.strip() for t in types_csv.split(",") if t.strip()}:
-            toks.append(_kv("angle", int(self.gc_angle.value())))
-        _emit(_join_tokens(*toks))
+        location_tokens: List[str] = []
+        if self.gc_use_coords_rb.isChecked():
+            lat_txt = self.gc_lat.text().strip()
+            lon_txt = self.gc_lon.text().strip()
+            if not lat_txt or not lon_txt:
+                _emit("ECHO Please provide CPA latitude and longitude.")
+                return
+            location_tokens.extend([_kv("lat", lat_txt), _kv("lon", lon_txt)])
+        else:
+            wp_txt = self.gc_wp.text().strip().upper()
+            if not wp_txt:
+                _emit("ECHO Please provide a waypoint identifier for the CPA.")
+                return
+            location_tokens.append(_kv("wp", wp_txt))
 
-    # ---------- actions ----------
-    def _gc_create(self):
-        # Push minima and ranges first, then create (like RC)
+        tcpa_field = self._extract_numeric_field("TCPA [s]", self.gc_tcpa_value, self.gc_tcpa_range, allow_float=True, allow_negative=False)
+        if tcpa_field is None:
+            return
+        tcpa_txt, _, tcpa_lo, tcpa_hi = tcpa_field
+        if tcpa_lo <= 0 or tcpa_hi <= 0:
+            _emit("ECHO TCPA [s] must be greater than zero.")
+            return
+
+        angle_field = self._extract_numeric_field("CPA angle [deg]", self.gc_angle_value, self.gc_angle_range, allow_float=True, allow_negative=False)
+        if angle_field is None:
+            return
+        angle_txt, _, angle_lo, angle_hi = angle_field
+        if angle_lo < 0 or angle_hi > 180:
+            _emit("ECHO CPA angle must stay within 0-180 degrees.")
+            return
+
+        alt_field = self._extract_numeric_field("Initial altitude offset [ft]", self.gc_alt_offset_value, self.gc_alt_offset_range, allow_float=False, allow_negative=True)
+        if alt_field is None:
+            return
+        alt_txt, alt_is_range, alt_lo, _ = alt_field
+
+        toks = ["SATG_GC_CRE", _kv("name", name)]
+        toks.extend(location_tokens)
+        toks.extend([
+            _kv("tcpa", tcpa_txt),
+            _kv("overwrite", 1 if self.gc_overwrite_cb.isChecked() else 0),
+            _kv("angle", angle_txt),
+        ])
+
+        if alt_is_range or abs(alt_lo) > 1e-6:
+            toks.append(_kv("dh", alt_txt))
+
+        seed_val = int(self.gc_seed.value())
+        if seed_val > 0:
+            toks.append(_kv("seed", seed_val))
+
+        self._emit_gc_types()
         self._emit_gc_conf()
         self._emit_gc_range()
+        _emit(_join_tokens(*toks))
+
+    def _emit_gc_types(self):
+        raw = self.gc_actypes.text().strip()
+        if not raw:
+            _emit("SATG_GC_TYPES")
+            return
+        parts = [seg.strip().upper() for seg in re.split(r"[,\s]+", raw.replace("|", " ")) if seg.strip()]
+        if not parts:
+            _emit("SATG_GC_TYPES")
+            return
+        cmd = "SATG_GC_TYPES " + " ".join(parts)
+        _emit(cmd)
+
+    def _gc_create(self):
         self._emit_gc_cre()
 
     def _gc_run_only(self):
@@ -842,6 +1026,593 @@ class GCTab(QWidget):
     def _gc_create_and_run(self):
         self._gc_create()
         self._gc_run_only()
+
+    def _update_cpa_reference_mode(self):
+        use_coords = self.gc_use_coords_rb.isChecked()
+        self.gc_lat.setEnabled(use_coords)
+        self.gc_lon.setEnabled(use_coords)
+        self.gc_wp.setEnabled(not use_coords)
+
+
+class GCRelativePage(QWidget):
+    def __init__(self, minima_panel: GCMinimaPanel, parent=None):
+        super().__init__(parent)
+        self._minima = minima_panel
+
+        main = QVBoxLayout(self)
+        main.setContentsMargins(10, 10, 10, 10)
+        main.setSpacing(10)
+
+        target_box = QGroupBox("2) Target aircraft")
+        target_form = QFormLayout(target_box)
+        combo_row = QWidget()
+        combo_layout = QHBoxLayout(combo_row)
+        combo_layout.setContentsMargins(0, 0, 0, 0)
+        self.target_combo = QComboBox()
+        self.target_combo.setEditable(False)
+        self.refresh_btn = QPushButton("Refresh")
+        self.load_btn = QPushButton("Copy selection")
+        combo_layout.addWidget(self.target_combo, 1)
+        combo_layout.addWidget(self.refresh_btn)
+        combo_layout.addWidget(self.load_btn)
+        target_form.addRow("Live traffic:", combo_row)
+
+        self.include_target_cb = QCheckBox("Create / override target using the fields below")
+        target_form.addRow(self.include_target_cb)
+
+        self.target_acid = QLineEdit("")
+        target_form.addRow("Target callsign:", self.target_acid)
+        self.target_type = QLineEdit("A320")
+        target_form.addRow("Aircraft type:", self.target_type)
+
+        self.target_lat_value = QLineEdit("52.100000")
+        self.target_lat_value.setClearButtonEnabled(True)
+        self.target_lat_range = QLineEdit()
+        self.target_lat_range.setClearButtonEnabled(True)
+        target_form.addRow(
+            "Latitude [deg]:",
+            self._make_numeric_row(self.target_lat_value, self.target_lat_range, "upper [deg] (optional)"),
+        )
+
+        self.target_lon_value = QLineEdit("4.500000")
+        self.target_lon_value.setClearButtonEnabled(True)
+        self.target_lon_range = QLineEdit()
+        self.target_lon_range.setClearButtonEnabled(True)
+        target_form.addRow(
+            "Longitude [deg]:",
+            self._make_numeric_row(self.target_lon_value, self.target_lon_range, "upper [deg] (optional)"),
+        )
+
+        self.target_hdg_value = QLineEdit("0.0")
+        self.target_hdg_value.setClearButtonEnabled(True)
+        self.target_hdg_range = QLineEdit()
+        self.target_hdg_range.setClearButtonEnabled(True)
+        target_form.addRow(
+            "Track [deg]:",
+            self._make_numeric_row(self.target_hdg_value, self.target_hdg_range, "upper [deg] (optional)"),
+        )
+
+        self.target_alt_value = QLineEdit("20000")
+        self.target_alt_value.setClearButtonEnabled(True)
+        self.target_alt_range = QLineEdit()
+        self.target_alt_range.setClearButtonEnabled(True)
+        target_form.addRow(
+            "Altitude [ft]:",
+            self._make_numeric_row(self.target_alt_value, self.target_alt_range, "upper [ft] (optional)"),
+        )
+
+        self.target_spd_value = QLineEdit("250.0")
+        self.target_spd_value.setClearButtonEnabled(True)
+        self.target_spd_range = QLineEdit()
+        self.target_spd_range.setClearButtonEnabled(True)
+        target_form.addRow(
+            "CAS [kt]:",
+            self._make_numeric_row(self.target_spd_value, self.target_spd_range, "upper [kt] (optional)"),
+        )
+        main.addWidget(target_box)
+
+        intr_box = QGroupBox("3) Intruder setup")
+        intr_form = QFormLayout(intr_box)
+        self.intr_acid = QLineEdit("")
+        intr_form.addRow("Intruder callsign (optional):", self.intr_acid)
+        self.intr_type = QLineEdit("A320")
+        intr_form.addRow("Aircraft type:", self.intr_type)
+
+        self.intr_dpsi_value = QLineEdit("90.0")
+        self.intr_dpsi_value.setClearButtonEnabled(True)
+        self.intr_dpsi_range = QLineEdit()
+        self.intr_dpsi_range.setClearButtonEnabled(True)
+        intr_form.addRow(
+            "Conflict angle dpsi [deg]:",
+            self._make_numeric_row(self.intr_dpsi_value, self.intr_dpsi_range, "upper [deg] (optional)"),
+        )
+
+        self.intr_dcpa_value = QLineEdit("2.0")
+        self.intr_dcpa_value.setClearButtonEnabled(True)
+        self.intr_dcpa_range = QLineEdit()
+        self.intr_dcpa_range.setClearButtonEnabled(True)
+        intr_form.addRow(
+            "CPA distance dcpa [NM]:",
+            self._make_numeric_row(self.intr_dcpa_value, self.intr_dcpa_range, "upper [NM] (optional)"),
+        )
+
+        self.intr_tlosh_value = QLineEdit("120.0")
+        self.intr_tlosh_value.setClearButtonEnabled(True)
+        self.intr_tlosh_range = QLineEdit()
+        self.intr_tlosh_range.setClearButtonEnabled(True)
+        intr_form.addRow(
+            "Horizontal TL tlosh [s]:",
+            self._make_numeric_row(self.intr_tlosh_value, self.intr_tlosh_range, "upper [s] (optional)"),
+        )
+
+        self.intr_dh_value = QLineEdit("0")
+        self.intr_dh_value.setClearButtonEnabled(True)
+        self.intr_dh_range = QLineEdit()
+        self.intr_dh_range.setClearButtonEnabled(True)
+        intr_form.addRow(
+            "Vertical offset dH [ft] (optional):",
+            self._make_numeric_row(self.intr_dh_value, self.intr_dh_range, "upper [ft] (optional)"),
+        )
+
+        self.intr_tlosv_value = QLineEdit("0")
+        self.intr_tlosv_value.setClearButtonEnabled(True)
+        self.intr_tlosv_range = QLineEdit()
+        self.intr_tlosv_range.setClearButtonEnabled(True)
+        self.intr_tlosv_value.setToolTip("0 uses horizontal TL")
+        intr_form.addRow(
+            "Vertical TL tlosv [s] (optional):",
+            self._make_numeric_row(self.intr_tlosv_value, self.intr_tlosv_range, "upper [s] (optional)"),
+        )
+
+        self.intr_spd = QLineEdit("")
+        intr_form.addRow("CAS/Mach (optional):", self.intr_spd)
+        main.addWidget(intr_box)
+
+        scen_box = QGroupBox("4) Scenario output (write mode)")
+        scen_form = QFormLayout(scen_box)
+        self.scn_name = QLineEdit("gc_relative")
+        scen_form.addRow("Scenario name:", self.scn_name)
+        self.overwrite_cb = QCheckBox("Overwrite scenario if it exists")
+        scen_form.addRow(self.overwrite_cb)
+        self.capture_cb = QCheckBox("Capture live target when writing")
+        scen_form.addRow(self.capture_cb)
+        main.addWidget(scen_box)
+
+        btn_row = QWidget()
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(10)
+        self.btn_inject = QPushButton("INJECT")
+        self.btn_write = QPushButton("WRITE SCENARIO")
+        self.btn_both = QPushButton("INJECT & WRITE")
+        btn_layout.addWidget(self.btn_inject)
+        btn_layout.addWidget(self.btn_write)
+        btn_layout.addWidget(self.btn_both)
+        btn_layout.addStretch(1)
+        main.addWidget(btn_row)
+        main.addStretch(1)
+
+        self._target_detail_widgets = [
+            self.target_acid,
+            self.target_type,
+            self.target_lat_value,
+            self.target_lat_range,
+            self.target_lon_value,
+            self.target_lon_range,
+            self.target_hdg_value,
+            self.target_hdg_range,
+            self.target_alt_value,
+            self.target_alt_range,
+            self.target_spd_value,
+            self.target_spd_range,
+        ]
+
+        self.refresh_btn.clicked.connect(self._refresh_targets)
+        self.load_btn.clicked.connect(self._load_target_fields)
+        self.include_target_cb.toggled.connect(self._update_target_field_state)
+        self.btn_inject.clicked.connect(lambda: self._send("inject"))
+        self.btn_write.clicked.connect(lambda: self._send("write"))
+        self.btn_both.clicked.connect(lambda: self._send("both"))
+
+        self._refresh_targets()
+        self._update_target_field_state()
+
+    def _emit_conf(self):
+        _emit(f"SATG_GC_CONF {self._minima.hsep_value()} {self._minima.vsep_value()}")
+
+    def _combo_target_id(self) -> str:
+        data = self.target_combo.currentData()
+        if isinstance(data, str) and data:
+            return data
+        txt = self.target_combo.currentText().strip()
+        return txt.split()[0] if txt else ""
+
+    def _current_target_id(self) -> str:
+        if self.include_target_cb.isChecked():
+            return self.target_acid.text().strip().upper()
+        return self._combo_target_id().upper()
+
+    def _send(self, mode: str):
+        cmd = self._build_command(mode)
+        if not cmd:
+            return
+        self._emit_conf()
+        _emit(cmd)
+
+    def _build_command(self, mode: str) -> Optional[str]:
+        target_id = self._current_target_id()
+        if not target_id:
+            _emit("ECHO SATGGUI: Select or define a target aircraft first.")
+            return None
+
+        tokens = ["SATG_GC_REL", _kv("mode", mode), _kv("target", target_id)]
+
+        intr_acid = self.intr_acid.text().strip().upper()
+        if intr_acid:
+            tokens.append(_kv("acid", intr_acid))
+        intr_type = self.intr_type.text().strip() or "A320"
+        tokens.append(_kv("actype", intr_type))
+
+        dpsi_field = self._extract_numeric_pair(
+            "Conflict angle dpsi [deg]",
+            self.intr_dpsi_value,
+            self.intr_dpsi_range,
+            allow_float=True,
+            allow_negative=True,
+            min_value=-180.0,
+            max_value=180.0,
+        )
+        if dpsi_field is None:
+            return None
+        tokens.append(_kv("dpsi", dpsi_field[0]))
+
+        dcpa_field = self._extract_numeric_pair(
+            "CPA distance dcpa [NM]",
+            self.intr_dcpa_value,
+            self.intr_dcpa_range,
+            allow_float=True,
+            allow_negative=False,
+            min_value=0.0001,
+        )
+        if dcpa_field is None:
+            return None
+        tokens.append(_kv("dcpa", dcpa_field[0]))
+
+        tlosh_field = self._extract_numeric_pair(
+            "Horizontal TL tlosh [s]",
+            self.intr_tlosh_value,
+            self.intr_tlosh_range,
+            allow_float=True,
+            allow_negative=False,
+            min_value=0.0001,
+        )
+        if tlosh_field is None:
+            return None
+        tokens.append(_kv("tlosh", tlosh_field[0]))
+
+        dh_field = self._extract_numeric_pair(
+            "Vertical offset dH [ft]",
+            self.intr_dh_value,
+            self.intr_dh_range,
+            allow_float=False,
+            allow_negative=True,
+            allow_empty=True,
+            default_value=0.0,
+        )
+        if dh_field is None:
+            return None
+        dh_txt, dh_is_range, dh_lo, _ = dh_field
+        if dh_is_range or abs(dh_lo) >= 1.0:
+            tokens.append(_kv("dh", dh_txt))
+
+        tlosv_field = self._extract_numeric_pair(
+            "Vertical TL tlosv [s]",
+            self.intr_tlosv_value,
+            self.intr_tlosv_range,
+            allow_float=True,
+            allow_negative=False,
+            min_value=0.0,
+            allow_empty=True,
+            default_value=0.0,
+        )
+        if tlosv_field is None:
+            return None
+        tlosv_txt, tlosv_is_range, _, tlosv_hi = tlosv_field
+        if tlosv_is_range or tlosv_hi > 0.0:
+            tokens.append(_kv("tlosv", tlosv_txt))
+
+        spd_txt = self.intr_spd.text().strip().upper()
+        if spd_txt:
+            tokens.append(_kv("spd", spd_txt))
+
+        if self.include_target_cb.isChecked():
+            if not self.target_acid.text().strip():
+                _emit("ECHO SATGGUI: Fill in target callsign/lat/lon when creating the target.")
+                return None
+            lat_field = self._extract_numeric_pair(
+                "Target latitude [deg]",
+                self.target_lat_value,
+                self.target_lat_range,
+                allow_float=True,
+                allow_negative=True,
+                min_value=-90.0,
+                max_value=90.0,
+            )
+            if lat_field is None:
+                return None
+            lon_field = self._extract_numeric_pair(
+                "Target longitude [deg]",
+                self.target_lon_value,
+                self.target_lon_range,
+                allow_float=True,
+                allow_negative=True,
+                min_value=-360.0,
+                max_value=360.0,
+            )
+            if lon_field is None:
+                return None
+            hdg_field = self._extract_numeric_pair(
+                "Target heading [deg]",
+                self.target_hdg_value,
+                self.target_hdg_range,
+                allow_float=True,
+                allow_negative=False,
+                min_value=0.0,
+                max_value=360.0,
+            )
+            if hdg_field is None:
+                return None
+            alt_field = self._extract_numeric_pair(
+                "Target altitude [ft]",
+                self.target_alt_value,
+                self.target_alt_range,
+                allow_float=False,
+                allow_negative=False,
+                min_value=0.0,
+            )
+            if alt_field is None:
+                return None
+            spd_field = self._extract_numeric_pair(
+                "Target CAS [kt]",
+                self.target_spd_value,
+                self.target_spd_range,
+                allow_float=True,
+                allow_negative=False,
+                min_value=0.0,
+            )
+            if spd_field is None:
+                return None
+            tokens.append(_kv("include_target", 1))
+            tokens.append(_kv("target_acid", self.target_acid.text().strip().upper()))
+            tokens.append(_kv("target_type", self.target_type.text().strip() or "A320"))
+            tokens.append(_kv("target_lat", lat_field[0]))
+            tokens.append(_kv("target_lon", lon_field[0]))
+            tokens.append(_kv("target_hdg", hdg_field[0]))
+            tokens.append(_kv("target_alt_ft", alt_field[0]))
+            tokens.append(_kv("target_spd", spd_field[0]))
+
+        if self.capture_cb.isChecked():
+            tokens.append(_kv("capture", 1))
+
+        if mode in ("write", "both"):
+            name_txt = self.scn_name.text().strip()
+            if not name_txt:
+                _emit("ECHO SATGGUI: Provide a scenario name before writing.")
+                return None
+            tokens.append(_kv("name", name_txt))
+            if self.overwrite_cb.isChecked():
+                tokens.append(_kv("overwrite", 1))
+
+        return _join_tokens(*tokens)
+
+    def _refresh_targets(self):
+        self.target_combo.clear()
+        traf = getattr(bs, "traf", None) if bs else None
+        added = False
+        try:
+            if traf and getattr(traf, "ntraf", 0) > 0:
+                for idx in range(traf.ntraf):
+                    acid = str(traf.id[idx]).upper()
+                    if not acid:
+                        continue
+                    actype = str(traf.type[idx]) if hasattr(traf, "type") else "?"
+                    label = f"{acid} ({actype})"
+                    self.target_combo.addItem(label, acid)
+                    added = True
+        except Exception:
+            added = False
+        if not added:
+            self.target_combo.addItem("(no active aircraft)", "")
+
+    def _load_target_fields(self):
+        acid = self._combo_target_id()
+        if not acid:
+            _emit("ECHO SATGGUI: No live aircraft selected to copy.")
+            return
+        traf = getattr(bs, "traf", None) if bs else None
+        if traf is None:
+            _emit("ECHO SATGGUI: BlueSky traffic is not available.")
+            return
+        idx = -1
+        try:
+            for i in range(getattr(traf, "ntraf", 0)):
+                if str(traf.id[i]).upper() == acid:
+                    idx = i
+                    break
+        except Exception:
+            idx = -1
+        if idx < 0:
+            _emit(f"ECHO SATGGUI: Aircraft {acid} not found in traffic list.")
+            return
+        try:
+            self.target_acid.setText(acid)
+            self.target_type.setText(str(traf.type[idx]))
+            self.target_lat_value.setText(f"{float(traf.lat[idx]):.6f}")
+            self.target_lat_range.clear()
+            self.target_lon_value.setText(f"{float(traf.lon[idx]):.6f}")
+            self.target_lon_range.clear()
+            self.target_hdg_value.setText(f"{float(traf.trk[idx]) % 360.0:.2f}")
+            self.target_hdg_range.clear()
+            alt_ft = float(traf.alt[idx] / ft)
+            self.target_alt_value.setText(f"{alt_ft:.0f}")
+            self.target_alt_range.clear()
+            cas_kt = float(traf.cas[idx] / kts)
+            self.target_spd_value.setText(f"{cas_kt:.1f}")
+            self.target_spd_range.clear()
+            self.include_target_cb.setChecked(True)
+        except Exception:
+            _emit("ECHO SATGGUI: Failed to copy aircraft state; see console.")
+
+    def _update_target_field_state(self):
+        enable = self.include_target_cb.isChecked()
+        for widget in self._target_detail_widgets:
+            widget.setEnabled(enable)
+
+    def _make_numeric_row(self, value_widget: QLineEdit, range_widget: QLineEdit, placeholder: str) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        value_widget.setMaximumWidth(90)
+        value_widget.setPlaceholderText("required")
+        value_widget.setToolTip("Required value (used as deterministic or lower bound).")
+        range_widget.setPlaceholderText(placeholder)
+        range_widget.setToolTip("Optional upper bound; leave empty for a fixed value.")
+        range_widget.setMinimumWidth(140)
+        layout.addWidget(value_widget)
+        layout.addWidget(range_widget, 1)
+        return row
+
+    def _extract_numeric_pair(
+        self,
+        label: str,
+        primary: QLineEdit,
+        secondary: QLineEdit,
+        *,
+        allow_float: bool,
+        allow_negative: bool,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+        allow_empty: bool = False,
+        default_value: float = 0.0,
+    ) -> Optional[Tuple[str, bool, float, float]]:
+        primary_txt = primary.text().strip()
+        hi_txt = secondary.text().strip()
+        if not primary_txt:
+            if allow_empty and not hi_txt:
+                try:
+                    lo_val = self._coerce_numeric(
+                        str(default_value),
+                        label,
+                        "value",
+                        allow_float,
+                        allow_negative,
+                        min_value,
+                        max_value,
+                    )
+                except ValueError as exc:
+                    _emit(f"ECHO {exc}")
+                    return None
+                normalized = self._format_numeric(lo_val, allow_float)
+                return normalized, False, lo_val, lo_val
+            _emit(f"ECHO SATGGUI: {label} requires a value.")
+            return None
+        try:
+            lo_val = self._coerce_numeric(
+                primary_txt,
+                label,
+                "value",
+                allow_float,
+                allow_negative,
+                min_value,
+                max_value,
+            )
+        except ValueError as exc:
+            _emit(f"ECHO {exc}")
+            return None
+        if hi_txt:
+            try:
+                hi_val = self._coerce_numeric(
+                    hi_txt,
+                    label,
+                    "upper bound",
+                    allow_float,
+                    allow_negative,
+                    min_value,
+                    max_value,
+                )
+            except ValueError as exc:
+                _emit(f"ECHO {exc}")
+                return None
+            lo, hi = (lo_val, hi_val) if hi_val >= lo_val else (hi_val, lo_val)
+            normalized = f"{self._format_numeric(lo, allow_float)}:{self._format_numeric(hi, allow_float)}"
+            return normalized, True, lo, hi
+
+        normalized = self._format_numeric(lo_val, allow_float)
+        return normalized, False, lo_val, lo_val
+
+    def _coerce_numeric(
+        self,
+        text: str,
+        label: str,
+        desc: str,
+        allow_float: bool,
+        allow_negative: bool,
+        min_value: Optional[float],
+        max_value: Optional[float],
+    ) -> float:
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError(f"{label} {desc} is empty.")
+        try:
+            value = float(stripped)
+        except ValueError as exc:
+            raise ValueError(f"{label} {desc} must be numeric.") from exc
+        if not allow_negative and value < 0.0:
+            raise ValueError(f"{label} {desc} must be >= 0.")
+        if min_value is not None and value < min_value:
+            raise ValueError(f"{label} {desc} must be >= {min_value}.")
+        if max_value is not None and value > max_value:
+            raise ValueError(f"{label} {desc} must be <= {max_value}.")
+        if allow_float:
+            return value
+        return float(int(round(value)))
+
+    def _format_numeric(self, value: float, allow_float: bool) -> str:
+        if allow_float:
+            text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+            return text if text and text != "-0" else "0"
+        return str(int(round(value)))
+
+
+class GCTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        main = QVBoxLayout(self)
+        main.setContentsMargins(10, 10, 10, 10)
+        main.setSpacing(10)
+
+        self._minima = GCMinimaPanel(self)
+        main.addWidget(self._minima)
+
+        cols = QHBoxLayout()
+        cols.setContentsMargins(0, 0, 0, 0)
+        cols.setSpacing(12)
+
+        abs_box = QGroupBox("CPA (legacy)", self)
+        abs_layout = QVBoxLayout(abs_box)
+        abs_layout.setContentsMargins(8, 8, 8, 8)
+        abs_layout.addWidget(GCAbsolutePage(self._minima, abs_box))
+
+        rel_box = QGroupBox("Relative (creconfs)", self)
+        rel_layout = QVBoxLayout(rel_box)
+        rel_layout.setContentsMargins(8, 8, 8, 8)
+        rel_layout.addWidget(GCRelativePage(self._minima, rel_box))
+
+        cols.addWidget(abs_box, 1)
+        cols.addWidget(rel_box, 1)
+
+        main.addLayout(cols)
 
 
 # --- RC tab (Random Conflicts) ---------------------------------------------
