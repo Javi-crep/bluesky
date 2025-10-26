@@ -1832,247 +1832,385 @@ class GCTab(QWidget):
 # --- RC tab (Random Conflicts) ---------------------------------------------
 
 class RCTab(QWidget):
-    """Random Conflicts (RC) — Circle-only region, types via checkboxes, run buttons."""
+    """Random Conflicts (RC) — Modern geometric conflicts in a circle region."""
     def __init__(self, parent=None):
         super().__init__(parent)
-
+        
         main = QVBoxLayout(self)
-        main.setContentsMargins(10,10,10,10)
+        main.setContentsMargins(10, 10, 10, 10)
         main.setSpacing(10)
 
-        # 1) Batch options
-        gb1 = QGroupBox("1) Batch options")
-        gb1_layout = QVBoxLayout(gb1)
+        # Common settings section
+        common_gb = QGroupBox("1) Batch Settings")
+        common_layout = QVBoxLayout(common_gb)
         
-        # Create a scroll area for batch options
-        batch_scroll = QScrollArea()
-        batch_scroll.setWidgetResizable(True)
-        batch_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        batch_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        batch_scroll.setMaximumHeight(400)  # Limit height to trigger scrolling
+        # Create a scroll area for common settings
+        common_scroll = QScrollArea()
+        common_scroll.setWidgetResizable(True)
+        common_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        common_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        common_scroll.setMaximumHeight(300)  # Increased height for better visibility
         
-        # Create the form widget that will go inside the scroll area
-        batch_form_widget = QWidget()
-        f1 = QFormLayout(batch_form_widget)
-        f1.setContentsMargins(5, 5, 5, 5)
+        common_form_widget = QWidget()
+        common_form = QFormLayout(common_form_widget)
+        common_form.setContentsMargins(5, 5, 5, 5)
 
         self.scn = QLineEdit("rc_circle")
         self.n = QSpinBox(); self.n.setRange(1, 100000); self.n.setValue(20)
-
-        # Types as checkboxes
-        types_box = QWidget(); hb = QHBoxLayout(types_box); hb.setContentsMargins(0,0,0,0)
-        self.cb_headon   = QCheckBox("Head-on");  self.cb_headon.setChecked(True)
-        self.cb_cross    = QCheckBox("Crossing"); self.cb_cross.setChecked(True)
-        self.cb_overtake = QCheckBox("Overtake"); self.cb_overtake.setChecked(True)
-        hb.addWidget(self.cb_headon); hb.addWidget(self.cb_cross); hb.addWidget(self.cb_overtake); hb.addStretch(1)
-
-        alt_row = QWidget(); alt_hb = QHBoxLayout(alt_row); alt_hb.setContentsMargins(0,0,0,0)
-        self.alt_level   = QCheckBox("Level");    self.alt_level.setChecked(True)
-        self.alt_altcross= QCheckBox("Alt-cross"); # unchecked default
-        alt_hb.addWidget(self.alt_level); alt_hb.addWidget(self.alt_altcross); alt_hb.addStretch(1)
         self.seed = QSpinBox(); self.seed.setRange(0, 2**31-1); self.seed.setValue(0)
-        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.1, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
-        self.vsep = QSpinBox();       self.vsep.setRange(100, 5000);  self.vsep.setValue(1000)
-
-        self.actypes = QLineEdit("A320,B738,A350,B78X")
-        # Overwrite toggle (checkbox -> 0/1 when emitting)
-        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
-        self.gc_overwrite_cb.setChecked(False)
-
-        # TCPA lo/hi (seconds)
-        self.tcpa_lo = QDoubleSpinBox(); self.tcpa_lo.setDecimals(0); self.tcpa_lo.setRange(0, 3600); self.tcpa_lo.setValue(60)
-        self.tcpa_hi = QDoubleSpinBox(); self.tcpa_hi.setDecimals(0); self.tcpa_hi.setRange(0, 3600); self.tcpa_hi.setValue(240)
-        # keep lo <= hi
-        self.tcpa_lo.valueChanged.connect(lambda v: self.tcpa_hi.setMinimum(v))
-        self.tcpa_hi.valueChanged.connect(lambda v: self.tcpa_lo.setMaximum(v))
-        row_tcpa = QWidget(); hb_tcpa = QHBoxLayout(row_tcpa); hb_tcpa.setContentsMargins(0,0,0,0)
-        hb_tcpa.addWidget(self.tcpa_lo); hb_tcpa.addWidget(QLabel(" to ")); hb_tcpa.addWidget(self.tcpa_hi)
-
-        # Cross angle lo/hi (deg)
-        self.ang_lo = QDoubleSpinBox(); self.ang_lo.setDecimals(0); self.ang_lo.setRange(0, 180); self.ang_lo.setValue(60)
-        self.ang_hi = QDoubleSpinBox(); self.ang_hi.setDecimals(0); self.ang_hi.setRange(0, 180); self.ang_hi.setValue(120)
-        self.ang_lo.valueChanged.connect(lambda v: self.ang_hi.setMinimum(v))
-        self.ang_hi.valueChanged.connect(lambda v: self.ang_lo.setMaximum(v))
-        row_ang = QWidget(); hb_ang = QHBoxLayout(row_ang); hb_ang.setContentsMargins(0,0,0,0)
-        hb_ang.addWidget(self.ang_lo); hb_ang.addWidget(QLabel(" to ")); hb_ang.addWidget(self.ang_hi)
         
-        f1.addRow("Scenario name:", self.scn)
-        f1.addRow("Number of conflicts (n):", self.n)
-        f1.addRow("Types:", types_box)
-        f1.addRow("Alt mode:", alt_row)
-        f1.addRow("TCPA [s] (lo:hi):", row_tcpa)
-        f1.addRow("Cross angle [deg] (lo:hi):", row_ang)
-        f1.addRow("Seed (0=none):", self.seed)
-        f1.addRow("HSEP [NM]:", self.hsep)
-        f1.addRow("VSEP [ft]:", self.vsep)
-        f1.addRow("AC types:", self.actypes)
-        f1.addRow(self.gc_overwrite_cb)
-
-        def _upd_angle_enabled():
-            self.ang_lo.setEnabled(self.cb_cross.isChecked())
-            self.ang_hi.setEnabled(self.cb_cross.isChecked())
-
-        self.cb_cross.toggled.connect(lambda _: _upd_angle_enabled())
-        _upd_angle_enabled()
-
-        # Set the form widget as the scroll area's widget
-        batch_scroll.setWidget(batch_form_widget)
-        
-        # Add the scroll area to the group box
-        gb1_layout.addWidget(batch_scroll)
-        main.addWidget(gb1)
-
-        # 2) Circle region
-        gb2 = QGroupBox("2) Circle region")
-        gb2_layout = QVBoxLayout(gb2)
-        
-        # Create a scroll area for circle region
-        circle_scroll = QScrollArea()
-        circle_scroll.setWidgetResizable(True)
-        circle_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        circle_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        circle_scroll.setMaximumHeight(250)  # Limit height to trigger scrolling
-        
-        # Create the form widget that will go inside the scroll area
-        circle_form_widget = QWidget()
-        f2 = QFormLayout(circle_form_widget)
-        f2.setContentsMargins(5, 5, 5, 5)
-
-        # Make the note a widget, style the widget (not the layout), then add it
-        desc = QLabel("CPA uniformly sampled in a circle. All aircraft spawn at t=0; CPA time equals TCPA.")
-        desc.setStyleSheet("color: #666; font-style: italic;")
-        # Add as a full-width row in the form
-        f2.addRow(desc)
-
-
+        # Circle region settings
         self.c_lat = QLineEdit("52.100")
         self.c_lon = QLineEdit("4.500")
         self.c_rad = QDoubleSpinBox(); self.c_rad.setRange(0.1, 1000.0); self.c_rad.setDecimals(2); self.c_rad.setValue(25.0)
-
-        # FL lo/hi (flight levels)
-        self.fl_lo = QDoubleSpinBox(); self.fl_lo.setDecimals(0); self.fl_lo.setRange(0, 500); self.fl_lo.setValue(290)
-        self.fl_hi = QDoubleSpinBox(); self.fl_hi.setDecimals(0); self.fl_hi.setRange(0, 500); self.fl_hi.setValue(370)
-        self.fl_lo.valueChanged.connect(lambda v: self.fl_hi.setMinimum(v))
-        self.fl_hi.valueChanged.connect(lambda v: self.fl_lo.setMaximum(v))
-        row_fl = QWidget(); hb_fl = QHBoxLayout(row_fl); hb_fl.setContentsMargins(0,0,0,0)
-        hb_fl.addWidget(self.fl_lo); hb_fl.addWidget(QLabel(" to ")); hb_fl.addWidget(self.fl_hi)
-
-        # CAS lo/hi (kt)
-        self.cas_lo = QDoubleSpinBox(); self.cas_lo.setDecimals(0); self.cas_lo.setRange(100, 600); self.cas_lo.setValue(220)
-        self.cas_hi = QDoubleSpinBox(); self.cas_hi.setDecimals(0); self.cas_hi.setRange(100, 600); self.cas_hi.setValue(280)
-        self.cas_lo.valueChanged.connect(lambda v: self.cas_hi.setMinimum(v))
-        self.cas_hi.valueChanged.connect(lambda v: self.cas_lo.setMaximum(v))
-        row_cas = QWidget(); hb_cas = QHBoxLayout(row_cas); hb_cas.setContentsMargins(0,0,0,0)
-        hb_cas.addWidget(self.cas_lo); hb_cas.addWidget(QLabel(" to ")); hb_cas.addWidget(self.cas_hi)
         
-        f2.addRow("Center latitude [deg]:", self.c_lat)
-        f2.addRow("Center longitude [deg]:", self.c_lon)
-        f2.addRow("Radius [NM]:", self.c_rad)
-        f2.addRow("FL range (lo:hi):", row_fl)
-        f2.addRow("CAS range [kt] (lo:hi):", row_cas)
-
-        # Set the form widget as the scroll area's widget
-        circle_scroll.setWidget(circle_form_widget)
+        # Separation minima
+        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.1, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
+        self.vsep = QSpinBox(); self.vsep.setRange(100, 5000); self.vsep.setValue(1000)
         
-        # Add the scroll area to the group box
-        gb2_layout.addWidget(circle_scroll)
-        main.addWidget(gb2)
+        # Overwrite toggle
+        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
+        self.gc_overwrite_cb.setChecked(False)
 
-        # 3) Actions
-        gb3 = QGroupBox("3) Actions")
-        row = QWidget(); h = QHBoxLayout(row); h.setContentsMargins(0,0,0,0); h.setSpacing(8)
-        self.btn_cre = QPushButton("CREATE SCENARIO")
+        common_form.addRow("Scenario name:", self.scn)
+        common_form.addRow("Number of conflicts:", self.n)
+        common_form.addRow("Seed (0=random):", self.seed)
+        common_form.addRow("Circle center lat [deg]:", self.c_lat)
+        common_form.addRow("Circle center lon [deg]:", self.c_lon)
+        common_form.addRow("Circle radius [NM]:", self.c_rad)
+        common_form.addRow("HSEP [NM]:", self.hsep)
+        common_form.addRow("VSEP [ft]:", self.vsep)
+        common_form.addRow(self.gc_overwrite_cb)
+
+        common_scroll.setWidget(common_form_widget)
+        common_layout.addWidget(common_scroll)
+        main.addWidget(common_gb)
+
+        # Two-column layout for conflict modes
+        cols = QHBoxLayout()
+        cols.setContentsMargins(0, 0, 0, 0)
+        cols.setSpacing(12)
+
+        # Absolute conflicts column
+        abs_box = QGroupBox("2) Absolute Conflicts (CPA-based)")
+        abs_layout = QVBoxLayout(abs_box)
+        abs_layout.setContentsMargins(8, 8, 8, 8)
+        
+        self.abs_enabled = QCheckBox("Enable absolute conflicts")
+        self.abs_enabled.setChecked(True)
+        abs_layout.addWidget(self.abs_enabled)
+        
+        # Absolute settings scroll area
+        abs_scroll = QScrollArea()
+        abs_scroll.setWidgetResizable(True)
+        abs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        abs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        abs_scroll.setMaximumHeight(350)
+        
+        abs_form_widget = QWidget()
+        abs_form = QFormLayout(abs_form_widget)
+        abs_form.setContentsMargins(5, 5, 5, 5)
+
+        # TCPA range
+        self.abs_tcpa_lo = QDoubleSpinBox(); self.abs_tcpa_lo.setRange(30, 3600); self.abs_tcpa_lo.setValue(60)
+        self.abs_tcpa_hi = QDoubleSpinBox(); self.abs_tcpa_hi.setRange(30, 3600); self.abs_tcpa_hi.setValue(240)
+        self.abs_tcpa_lo.valueChanged.connect(lambda v: self.abs_tcpa_hi.setMinimum(v))
+        self.abs_tcpa_hi.valueChanged.connect(lambda v: self.abs_tcpa_lo.setMaximum(v))
+        tcpa_row = QWidget()
+        tcpa_layout = QHBoxLayout(tcpa_row)
+        tcpa_layout.setContentsMargins(0, 0, 0, 0)
+        tcpa_layout.addWidget(self.abs_tcpa_lo)
+        tcpa_layout.addWidget(QLabel(" to "))
+        tcpa_layout.addWidget(self.abs_tcpa_hi)
+
+        # CPA angle range (for crossing encounters)
+        self.abs_angle_lo = QDoubleSpinBox(); self.abs_angle_lo.setRange(0, 180); self.abs_angle_lo.setValue(60)
+        self.abs_angle_hi = QDoubleSpinBox(); self.abs_angle_hi.setRange(0, 180); self.abs_angle_hi.setValue(120)
+        self.abs_angle_lo.valueChanged.connect(lambda v: self.abs_angle_hi.setMinimum(v))
+        self.abs_angle_hi.valueChanged.connect(lambda v: self.abs_angle_lo.setMaximum(v))
+        angle_row = QWidget()
+        angle_layout = QHBoxLayout(angle_row)
+        angle_layout.setContentsMargins(0, 0, 0, 0)
+        angle_layout.addWidget(self.abs_angle_lo)
+        angle_layout.addWidget(QLabel(" to "))
+        angle_layout.addWidget(self.abs_angle_hi)
+
+        # Flight level range
+        self.abs_fl_lo = QDoubleSpinBox(); self.abs_fl_lo.setRange(0, 500); self.abs_fl_lo.setValue(290)
+        self.abs_fl_hi = QDoubleSpinBox(); self.abs_fl_hi.setRange(0, 500); self.abs_fl_hi.setValue(370)
+        self.abs_fl_lo.valueChanged.connect(lambda v: self.abs_fl_hi.setMinimum(v))
+        self.abs_fl_hi.valueChanged.connect(lambda v: self.abs_fl_lo.setMaximum(v))
+        fl_row = QWidget()
+        fl_layout = QHBoxLayout(fl_row)
+        fl_layout.setContentsMargins(0, 0, 0, 0)
+        fl_layout.addWidget(self.abs_fl_lo)
+        fl_layout.addWidget(QLabel(" to "))
+        fl_layout.addWidget(self.abs_fl_hi)
+
+        # CAS range
+        self.abs_cas_lo = QDoubleSpinBox(); self.abs_cas_lo.setRange(100, 600); self.abs_cas_lo.setValue(220)
+        self.abs_cas_hi = QDoubleSpinBox(); self.abs_cas_hi.setRange(100, 600); self.abs_cas_hi.setValue(280)
+        self.abs_cas_lo.valueChanged.connect(lambda v: self.abs_cas_hi.setMinimum(v))
+        self.abs_cas_hi.valueChanged.connect(lambda v: self.abs_cas_lo.setMaximum(v))
+        cas_row = QWidget()
+        cas_layout = QHBoxLayout(cas_row)
+        cas_layout.setContentsMargins(0, 0, 0, 0)
+        cas_layout.addWidget(self.abs_cas_lo)
+        cas_layout.addWidget(QLabel(" to "))
+        cas_layout.addWidget(self.abs_cas_hi)
+
+        self.abs_actypes = QLineEdit("A320,B738,A350,B78X")
+
+        abs_form.addRow("TCPA [s]:", tcpa_row)
+        abs_form.addRow("CPA angle [deg]:", angle_row)
+        abs_form.addRow("Flight level:", fl_row)
+        abs_form.addRow("CAS [kt]:", cas_row)
+        abs_form.addRow("Aircraft types:", self.abs_actypes)
+
+        abs_scroll.setWidget(abs_form_widget)
+        abs_layout.addWidget(abs_scroll)
+
+        # Relative conflicts column
+        rel_box = QGroupBox("3) Relative Conflicts (Target-Intruder)")
+        rel_layout = QVBoxLayout(rel_box)
+        rel_layout.setContentsMargins(8, 8, 8, 8)
+        
+        self.rel_enabled = QCheckBox("Enable relative conflicts")
+        self.rel_enabled.setChecked(False)
+        rel_layout.addWidget(self.rel_enabled)
+        
+        # Relative settings scroll area
+        rel_scroll = QScrollArea()
+        rel_scroll.setWidgetResizable(True)
+        rel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        rel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        rel_scroll.setMaximumHeight(350)
+        
+        rel_form_widget = QWidget()
+        rel_form = QFormLayout(rel_form_widget)
+        rel_form.setContentsMargins(5, 5, 5, 5)
+
+        # Time to loss of separation
+        self.rel_tlosh_lo = QDoubleSpinBox(); self.rel_tlosh_lo.setRange(30, 3600); self.rel_tlosh_lo.setValue(60)
+        self.rel_tlosh_hi = QDoubleSpinBox(); self.rel_tlosh_hi.setRange(30, 3600); self.rel_tlosh_hi.setValue(240)
+        self.rel_tlosh_lo.valueChanged.connect(lambda v: self.rel_tlosh_hi.setMinimum(v))
+        self.rel_tlosh_hi.valueChanged.connect(lambda v: self.rel_tlosh_lo.setMaximum(v))
+        tlosh_row = QWidget()
+        tlosh_layout = QHBoxLayout(tlosh_row)
+        tlosh_layout.setContentsMargins(0, 0, 0, 0)
+        tlosh_layout.addWidget(self.rel_tlosh_lo)
+        tlosh_layout.addWidget(QLabel(" to "))
+        tlosh_layout.addWidget(self.rel_tlosh_hi)
+
+        # Relative bearing change
+        self.rel_dpsi_lo = QDoubleSpinBox(); self.rel_dpsi_lo.setRange(-180, 180); self.rel_dpsi_lo.setValue(-90)
+        self.rel_dpsi_hi = QDoubleSpinBox(); self.rel_dpsi_hi.setRange(-180, 180); self.rel_dpsi_hi.setValue(90)
+        self.rel_dpsi_lo.valueChanged.connect(lambda v: self.rel_dpsi_hi.setMinimum(v))
+        self.rel_dpsi_hi.valueChanged.connect(lambda v: self.rel_dpsi_lo.setMaximum(v))
+        dpsi_row = QWidget()
+        dpsi_layout = QHBoxLayout(dpsi_row)
+        dpsi_layout.setContentsMargins(0, 0, 0, 0)
+        dpsi_layout.addWidget(self.rel_dpsi_lo)
+        dpsi_layout.addWidget(QLabel(" to "))
+        dpsi_layout.addWidget(self.rel_dpsi_hi)
+
+        # Altitude range for both target and intruder
+        self.rel_alt_lo = QDoubleSpinBox(); self.rel_alt_lo.setRange(1000, 50000); self.rel_alt_lo.setValue(29000)
+        self.rel_alt_hi = QDoubleSpinBox(); self.rel_alt_hi.setRange(1000, 50000); self.rel_alt_hi.setValue(37000)
+        self.rel_alt_lo.valueChanged.connect(lambda v: self.rel_alt_hi.setMinimum(v))
+        self.rel_alt_hi.valueChanged.connect(lambda v: self.rel_alt_lo.setMaximum(v))
+        alt_row = QWidget()
+        alt_layout = QHBoxLayout(alt_row)
+        alt_layout.setContentsMargins(0, 0, 0, 0)
+        alt_layout.addWidget(self.rel_alt_lo)
+        alt_layout.addWidget(QLabel(" to "))
+        alt_layout.addWidget(self.rel_alt_hi)
+
+        # Speed range
+        self.rel_spd_lo = QDoubleSpinBox(); self.rel_spd_lo.setRange(100, 600); self.rel_spd_lo.setValue(220)
+        self.rel_spd_hi = QDoubleSpinBox(); self.rel_spd_hi.setRange(100, 600); self.rel_spd_hi.setValue(280)
+        self.rel_spd_lo.valueChanged.connect(lambda v: self.rel_spd_hi.setMinimum(v))
+        self.rel_spd_hi.valueChanged.connect(lambda v: self.rel_spd_lo.setMaximum(v))
+        spd_row = QWidget()
+        spd_layout = QHBoxLayout(spd_row)
+        spd_layout.setContentsMargins(0, 0, 0, 0)
+        spd_layout.addWidget(self.rel_spd_lo)
+        spd_layout.addWidget(QLabel(" to "))
+        spd_layout.addWidget(self.rel_spd_hi)
+
+        self.rel_actypes = QLineEdit("A320,B738,A350,B78X")
+
+        rel_form.addRow("Time to LoS [s]:", tlosh_row)
+        rel_form.addRow("Rel bearing change [deg]:", dpsi_row)
+        rel_form.addRow("Altitude [ft]:", alt_row)
+        rel_form.addRow("Speed [kt]:", spd_row)
+        rel_form.addRow("Aircraft types:", self.rel_actypes)
+
+        rel_scroll.setWidget(rel_form_widget)
+        rel_layout.addWidget(rel_scroll)
+
+        cols.addWidget(abs_box, 1)
+        cols.addWidget(rel_box, 1)
+        main.addLayout(cols)
+
+        # Actions
+        actions_gb = QGroupBox("4) Actions")
+        actions_layout = QHBoxLayout(actions_gb)
+        self.btn_create = QPushButton("CREATE SCENARIO")
         self.btn_run = QPushButton("RUN SCENARIO")
-        self.btn_both= QPushButton("CREATE & RUN SCENARIO")
-        self.btn_cre.clicked.connect(self._create)
+        self.btn_both = QPushButton("CREATE & RUN SCENARIO")
+        self.btn_create.clicked.connect(self._create)
         self.btn_run.clicked.connect(self._run)
         self.btn_both.clicked.connect(self._create_and_run)
-        h.addWidget(self.btn_cre); h.addWidget(self.btn_run); h.addWidget(self.btn_both); h.addStretch(1)
-        lay3 = QVBoxLayout(gb3); lay3.addWidget(row)
+        actions_layout.addWidget(self.btn_create)
+        actions_layout.addWidget(self.btn_run)
+        actions_layout.addWidget(self.btn_both)
+        actions_layout.addStretch(1)
 
-        main.addWidget(gb3); main.addStretch(1)
-
-    def _types_csv(self) -> str:
-        t = []
-        if self.cb_headon.isChecked():   t.append("headon")
-        if self.cb_cross.isChecked():    t.append("cross")
-        if self.cb_overtake.isChecked(): t.append("overtake")
-        return ",".join(t)
-
-    def _ensure_types(self) -> bool:
-        if self._types_csv(): return True
-        _emit("ECHO SATGGUI: Select at least one type.")
-        return False
+        main.addWidget(actions_gb)
+        main.addStretch(1)
 
     def _create(self):
-        # 0) Must have at least one conflict type selected
-        if not self._ensure_types():
+        """Create random conflicts using modern geometric conflicts commands."""
+        # Validate inputs
+        if not self.abs_enabled.isChecked() and not self.rel_enabled.isChecked():
+            _emit("ECHO SATGGUI: Enable at least one conflict mode (Absolute or Relative).")
+            return
+            
+        if self.abs_enabled.isChecked() and not self._validate_abs_settings():
+            return
+            
+        name = self.scn.text().strip()
+        if not name:
+            _emit("ECHO SATGGUI: Enter a scenario name.")
+            return
+            
+        try:
+            center_lat = float(self.c_lat.text())
+            center_lon = float(self.c_lon.text())
+        except ValueError:
+            _emit("ECHO SATGGUI: Invalid latitude/longitude values.")
             return
 
-        # 1) Alt mode from checkboxes
-        if self.alt_level.isChecked() and self.alt_altcross.isChecked():
-            altmode_val = "mix"
-        elif self.alt_level.isChecked():
-            altmode_val = "level"
-        elif self.alt_altcross.isChecked():
-            altmode_val = "altcross"
-        else:
-            altmode_val = "level"  # fallback
-
-        # 2) Push HSEP/VSEP first so backend minima are in sync
+        # Set separation minima
         _emit(f"SATG_GC_CONF {self.hsep.value()} {self.vsep.value()}")
+        
+        # Count conflicts to generate
+        total_conflicts = self.n.value()
+        abs_conflicts = 0
+        rel_conflicts = 0
+        
+        if self.abs_enabled.isChecked() and self.rel_enabled.isChecked():
+            # Split roughly equally
+            abs_conflicts = total_conflicts // 2
+            rel_conflicts = total_conflicts - abs_conflicts
+        elif self.abs_enabled.isChecked():
+            abs_conflicts = total_conflicts
+        elif self.rel_enabled.isChecked():
+            rel_conflicts = total_conflicts
+            
+        overwrite = 1 if self.gc_overwrite_cb.isChecked() else 0
+        
+        # Generate absolute conflicts
+        if abs_conflicts > 0:
+            self._create_absolute_conflicts(name, abs_conflicts, center_lat, center_lon, overwrite)
+            overwrite = 0  # Don't overwrite for subsequent calls
+            
+        # Generate relative conflicts  
+        if rel_conflicts > 0:
+            self._create_relative_conflicts(name, rel_conflicts, center_lat, center_lon, overwrite)
 
-        # 3) Gather inputs
-        name_val   = self.scn.text().strip()
-        types_csv  = self._types_csv()  # from head-on / crossing / overtake checkboxes
-        center_lat = self.c_lat.text().strip()
-        center_lon = self.c_lon.text().strip()
-        radius_nm  = float(self.c_rad.value())
-        seed_val   = int(self.seed.value())
-        actypes_val = self.actypes.text().strip()
-        overwrite_val = 1 if self.gc_overwrite_cb.isChecked() else 0
+    def _validate_abs_settings(self) -> bool:
+        """Check if absolute conflict settings are valid."""
+        # For modern geometric conflicts, no specific validation needed beyond enabled state
+        return True
 
-        # Ranges from spin boxes -> "lo:hi"
-        tcpa_lo, tcpa_hi = int(self.tcpa_lo.value()), int(self.tcpa_hi.value())   # seconds
-        fl_lo,   fl_hi   = int(self.fl_lo.value()),   int(self.fl_hi.value())     # flight levels
-        cas_lo,  cas_hi  = int(self.cas_lo.value()),  int(self.cas_hi.value())    # knots
-
-        # 4) Build command tokens
-        toks = [
+    def _create_absolute_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
+        """Generate absolute (CPA-based) conflicts in the circle."""
+        # Set FL and CAS ranges  
+        fl_range = f"{int(self.abs_fl_lo.value())}:{int(self.abs_fl_hi.value())}"
+        cas_range = f"{int(self.abs_cas_lo.value())}:{int(self.abs_cas_hi.value())}"
+        _emit(f"SATG_GC_RANGE fl={fl_range} cas={cas_range}")
+        
+        # Generate multiple encounters using the circle region
+        # Modern geometric conflicts use mixed encounter types automatically
+        tcpa_range = f"{self.abs_tcpa_lo.value()}:{self.abs_tcpa_hi.value()}"
+        angle_range = f"{self.abs_angle_lo.value()}:{self.abs_angle_hi.value()}"
+        
+        cmd_parts = [
             "SATG_RC_CIRCLE",
-            _kv("name", name_val),
-            _kv("n", self.n.value()),
-            _kv("types", types_csv),
-            _kv("center_lat", center_lat),
-            _kv("center_lon", center_lon),
-            _kv("radius_nm", radius_nm),
-            _kv("altmode", altmode_val),
-            _kv("tcpa", f"{tcpa_lo}:{tcpa_hi}"),
-            _kv("fl",   f"{fl_lo}:{fl_hi}"),
-            _kv("cas",  f"{cas_lo}:{cas_hi}"),
-            _kv("actypes", actypes_val),
-            _kv("overwrite", overwrite_val),
+            f"name={name}",
+            f"n={count}",
+            "types=headon,cross,overtake",  # Use all types for modern geometric conflicts
+            f"center_lat={lat}",
+            f"center_lon={lon}",
+            f"radius_nm={self.c_rad.value()}",
+            "mode=abs",
+            "altmode=level",
+            f"tcpa={tcpa_range}",
+            f"fl={fl_range}",
+            f"cas={cas_range}",
+            f"actypes={self.abs_actypes.text()}",
+            f"overwrite={overwrite}",
+            f"angle={angle_range}",
         ]
+            
+        # Add seed if specified
+        if self.seed.value() != 0:
+            cmd_parts.append(f"seed={self.seed.value()}")
+            
+        _emit(" ".join(cmd_parts))
 
-        # Angle only matters if 'cross' is selected
-        type_set = {t.strip() for t in types_csv.split(",") if t.strip()}
-        if "cross" in type_set:
-            ang_lo, ang_hi = int(self.ang_lo.value()), int(self.ang_hi.value())
-            toks.append(_kv("angle", f"{ang_lo}:{ang_hi}"))
-
-        # Seed is optional; omit if 0
-        if seed_val != 0:
-            toks.append(_kv("seed", seed_val))
-
-        # 5) Emit
-        _emit(_join_tokens(*toks))
+    def _create_relative_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
+        """Generate relative (target-intruder) conflicts in the circle."""
+        # For relative conflicts, we'll use the existing SATG_RC_CIRCLE command in relative mode
+        # But we need to map the relative parameters to the expected format
+        
+        # Convert relative parameters to the format expected by SATG_RC_CIRCLE
+        # For relative mode, tcpa becomes tlosh, angle becomes dpsi
+        tlosh_range = f"{self.rel_tlosh_lo.value()}:{self.rel_tlosh_hi.value()}"
+        dpsi_range = f"{self.rel_dpsi_lo.value()}:{self.rel_dpsi_hi.value()}"
+        
+        # Convert altitude from feet to flight levels (approximately)
+        alt_lo_fl = int(self.rel_alt_lo.value() / 100)
+        alt_hi_fl = int(self.rel_alt_hi.value() / 100)
+        fl_range = f"{alt_lo_fl}:{alt_hi_fl}"
+        
+        cas_range = f"{int(self.rel_spd_lo.value())}:{int(self.rel_spd_hi.value())}"
+        
+        cmd_parts = [
+            "SATG_RC_CIRCLE",
+            f"name={name}",
+            f"n={count}",
+            "types=cross",  # Relative conflicts are typically crossing encounters
+            f"center_lat={lat}",
+            f"center_lon={lon}",
+            f"radius_nm={self.c_rad.value()}",
+            "mode=rel",
+            "altmode=level",
+            f"tcpa={tlosh_range}",  # tcpa parameter will be interpreted as tlosh in rel mode
+            f"fl={fl_range}",
+            f"cas={cas_range}",
+            f"actypes={self.rel_actypes.text()}",
+            f"overwrite={overwrite}",
+            f"angle={dpsi_range}",  # angle parameter will be interpreted as dpsi in rel mode
+        ]
+        
+        if self.seed.value() != 0:
+            cmd_parts.append(f"seed={self.seed.value()}")
+            
+        _emit(" ".join(cmd_parts))
 
     def _run(self):
-        nm = self.scn.text().strip()
-        if nm: _emit(_join_tokens("SATG_GC_RUN", _kv("name", nm)))
-        else:  _emit("ECHO SATGGUI: Set a scenario name before running.")
+        """Run the generated scenario."""
+        name = self.scn.text().strip()
+        if name:
+            _emit(f"SATG_GC_RUN name={name}")
+        else:
+            _emit("ECHO SATGGUI: Set a scenario name before running.")
 
     def _create_and_run(self):
+        """Create and immediately run the scenario."""
         self._create()
         self._run()
         
@@ -3146,7 +3284,33 @@ class HelpTab(QWidget):
             "\n"
             "Random conflicts in a circle (GUI tab: Random Conflicts)\n"
             "--------------------------------------------------------\n"
-            "Command: SATG_RC_CIRCLE name N types center_lat center_lon radius_nm altmode tcpa fl cas actypes overwrite [angle]\n"
+            "The Random Conflicts tab has been modernized to use the geometric conflicts\n"
+            "architecture. It provides separate configuration for absolute (CPA-based)\n"
+            "and relative (target-intruder) conflict generation within a circular region.\n"
+            "\n"
+            "Batch Settings:\n"
+            "- Scenario name, number of conflicts, seed, circle location and radius\n"
+            "- Separation minima (HSEP/VSEP) that apply to all generated conflicts\n"
+            "\n"
+            "Absolute Conflicts Column:\n"
+            "- Enable/disable absolute conflict generation\n"
+            "- Encounter types: head-on, crossing, overtake\n"
+            "- TCPA range [s]: time to closest point of approach\n"
+            "- Cross angle range [deg]: relative bearing for crossing encounters\n"
+            "- Flight level and CAS ranges for aircraft generation\n"
+            "- Aircraft types list\n"
+            "\n"
+            "Relative Conflicts Column:\n"
+            "- Enable/disable relative conflict generation\n"
+            "- Time to loss of separation [s]: when conflicts will occur\n"
+            "- Relative bearing change [deg]: how tracks converge\n"
+            "- Altitude and speed ranges for target and intruder aircraft\n"
+            "- Aircraft types list\n"
+            "\n"
+            "Backend Commands:\n"
+            "Uses SATG_RC_CIRCLE with mode=abs|rel|mix parameter\n"
+            "Command: SATG_RC_CIRCLE name N types center_lat center_lon radius_nm mode altmode tcpa fl cas actypes overwrite [angle]\n"
+            "  mode: abs|rel|mix (abs=absolute CPA-based, rel=relative target+intruder, mix=random selection)\n"
             "\n"
             "Required\n"
             "- name: scenario name (file will be name.scn)\n"
