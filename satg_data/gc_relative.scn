@@ -1,4 +1,0 @@
-0:00:00.00>HOLD
-0:00:00.00>ASAS ON
-0:00:00.00>SATG_GC_REL mode=inject target=SC1 acid=SCREL1 actype=A320 dpsi=45.0 dcpa=2.0 tlosh=120.0 include_target=0
-0:00:00.00>SATG_GC_REL mode=inject target=SC2 acid=SCREL1 actype=A320 dpsi=90 dcpa=2 tlosh=120 include_target=0

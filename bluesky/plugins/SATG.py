@@ -793,6 +793,25 @@ def _scan_max_sc_index(path: str) -> int:
             if n > maxn: maxn = n
     return maxn
 
+def _scan_max_screl_index(path: str) -> int:
+    """Return the highest SCREL<number> found in an existing .scn (0 if none)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except Exception:
+        return 0
+    maxn = 0
+    # Look for CRE lines and SATG_GC_REL commands
+    for m in re.finditer(r"(>\s*CRE\s+([A-Za-z0-9_-]+)\s*,|acid=([A-Za-z0-9_-]+)|target=([A-Za-z0-9_-]+))", txt):
+        for i in range(2, 5):  # Check groups 2, 3, 4
+            if m.group(i):
+                acid = m.group(i)
+                m2 = re.fullmatch(r"SCREL(\d+)", acid)
+                if m2:
+                    n = int(m2.group(1))
+                    if n > maxn: maxn = n
+    return maxn
+
 # ---------------- GC scenario writer (append-aware) ---------------- #
 def _write_gc_scn(out_path: str, *,
                   append: bool,
@@ -980,60 +999,14 @@ def _gc_rel_bool(val: Optional[str], default: bool = False) -> bool:
     return default
 
 
-def _gc_rel_modes(mode_txt: Optional[str]) -> Tuple[bool, bool]:
-    if not mode_txt:
-        return True, False
-    tokens = [tok for tok in re.split(r"[,+/\s]+", mode_txt.lower()) if tok]
-    if not tokens:
-        tokens = [mode_txt.lower()]
-    if "both" in tokens:
-        return True, True
-    do_inject = any(tok == "inject" for tok in tokens)
-    do_write = any(tok == "write" for tok in tokens)
-    return do_inject, do_write
-
-
-def _gc_rel_find_idx(acid: str) -> int:
-    acid = str(acid).strip().upper()
-    traf = getattr(bs, "traf", None) if bs else None
-    if not traf:
-        return -1
-    try:
-        for idx, cur in enumerate(traf.id):
-            if str(cur).upper() == acid:
-                return idx
-    except Exception:
-        return -1
-    return -1
-
-
 def _gc_rel_next_acid(explicit: Optional[str] = None) -> str:
     if explicit:
         return str(explicit).strip().upper()
     while True:
         acid = f"SCREL{STATE.gc_rel_seq}"
         STATE.gc_rel_seq += 1
-        if _gc_rel_find_idx(acid) < 0 and acid not in STATE.gc_last_acids:
+        if acid not in STATE.gc_last_acids:
             return acid
-
-
-def _gc_rel_capture_state(acid: str) -> Optional[Dict[str, float]]:
-    idx = _gc_rel_find_idx(acid)
-    traf = getattr(bs, "traf", None) if bs else None
-    if traf is None or idx < 0:
-        return None
-    try:
-        return {
-            "acid": str(traf.id[idx]).upper(),
-            "type": str(traf.type[idx]),
-            "lat": float(traf.lat[idx]),
-            "lon": float(traf.lon[idx]),
-            "hdg": float(traf.trk[idx]),
-            "alt_ft": float(traf.alt[idx] / ft),
-            "cas_kt": float(traf.cas[idx] / kts),
-        }
-    except Exception:
-        return None
 
 
 def _gc_rel_extract_target(params: Dict[str, str]) -> Optional[Dict[str, float]]:
@@ -1044,17 +1017,110 @@ def _gc_rel_extract_target(params: Dict[str, str]) -> Optional[Dict[str, float]]
     hdg = params.get("target_hdg")
     alt = params.get("target_alt_ft")
     spd = params.get("target_spd")
-    if not all([acid, lat, lon, hdg, alt, spd]):
+    # acid is optional - will be auto-generated if not provided
+    if not all([lat, lon, hdg, alt, spd]):
         return None
     return {
-        "acid": str(acid).strip().upper(),
-        "type": str(params.get("target_type", "A320")),
+        "acid": str(acid).strip().upper() if acid else "",  # Will be set later if empty
+        "type": str(params.get("target_type", "A320")),  # This will be processed later
         "lat": float(lat),
         "lon": float(lon),
         "hdg": float(hdg),
         "alt_ft": float(alt),
         "cas_kt": float(spd),
     }
+
+
+def _gc_rel_format_mach(value: float) -> str:
+    txt = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    if not txt or txt == "0":
+        txt = "0"
+    if txt.startswith("."):
+        txt = "0" + txt
+    return f"M{txt}"
+
+
+def _gc_rel_normalize_speed_token(token: str) -> Tuple[str, float, bool]:
+    cleaned = token.strip()
+    if not cleaned:
+        raise ValueError("CAS/Mach value is empty.")
+    compact = cleaned.replace(" ", "")
+    upper = compact.upper()
+    if upper.startswith("M"):
+        num_txt = upper[1:]
+        if not num_txt:
+            raise ValueError("Mach value must include digits after the 'M' prefix.")
+        try:
+            value = float(num_txt)
+        except ValueError as exc:
+            raise ValueError("Mach value must be numeric, e.g. M0.78.") from exc
+        if value <= 0.0:
+            raise ValueError("Mach value must be greater than zero.")
+        return _gc_rel_format_mach(value), value, True
+    try:
+        value = float(cleaned)
+    except ValueError as exc:
+        raise ValueError("CAS value must be numeric knots or use the 'M' prefix for Mach.") from exc
+    if value <= 0.0:
+        raise ValueError("CAS value must be greater than zero.")
+    return _format_numeric(value, as_int=False), value, False
+
+
+def _gc_rel_pick_speed_value(raw: str, rng: random.Random) -> str:
+    token = raw.strip()
+    if not token:
+        raise ValueError("CAS/Mach value is empty.")
+    if ":" not in token:
+        normalized, _, _ = _gc_rel_normalize_speed_token(token)
+        return normalized
+    left_txt, right_txt = token.split(":", 1)
+    _, left_val, left_is_mach = _gc_rel_normalize_speed_token(left_txt)
+    _, right_val, right_is_mach = _gc_rel_normalize_speed_token(right_txt)
+    if left_is_mach != right_is_mach:
+        raise ValueError("CAS/Mach range must use consistent units (both CAS or both Mach).")
+    lo_val = min(left_val, right_val)
+    hi_val = max(left_val, right_val)
+    value = lo_val if hi_val <= lo_val else _rand_in(rng, lo_val, hi_val)
+    if left_is_mach:
+        return _gc_rel_format_mach(value)
+    return _format_numeric(value, as_int=False)
+
+
+def _gc_rel_normalize_speed_param(params: Dict[str, str], rng: random.Random) -> bool:
+    raw = params.get("spd")
+    if raw is None:
+        return True
+    text = str(raw).strip()
+    if not text:
+        params.pop("spd", None)
+        return True
+    try:
+        params["spd"] = _gc_rel_pick_speed_value(text, rng)
+    except ValueError as exc:
+        _echo_err(f"SATG_GC_REL: {exc}")
+        return False
+    return True
+
+
+def _gc_rel_pick_actype(raw: Optional[str], rng: random.Random) -> str:
+    cleaned = str(raw).strip() if raw is not None else ""
+    if cleaned:
+        # Strip surrounding quotes if present
+        if cleaned.startswith('"') and cleaned.endswith('"'):
+            cleaned = cleaned[1:-1]
+        # Handle both pipe and comma separators (like GC CRE does)
+        cleaned = cleaned.replace("|", " ")
+        parts = [seg.strip().upper() for seg in re.split(r"[,\s]+", cleaned) if seg.strip()]
+        if len(parts) == 1:
+            return parts[0]
+        if parts:
+            return rng.choice(parts)
+    defaults = [str(typ).strip().upper() for typ in STATE.gc_ac_types if str(typ).strip()]
+    if len(defaults) == 1:
+        return defaults[0]
+    if defaults:
+        return rng.choice(defaults)
+    return "A320"
 
 
 def _gc_rel_cre_block(state: Dict[str, float]) -> List[str]:
@@ -1067,8 +1133,9 @@ def _gc_rel_cre_block(state: Dict[str, float]) -> List[str]:
     actype = state.get("type", "A320")
     return [
         f"CRE {acid},{actype},{lat:.6f},{lon:.6f},{hdg:03d},{alt_ft:.0f},{cas_kt:.1f}",
-        f"LNAV {acid} ON",
-        f"VNAV {acid} ON",
+        # Remove LNAV/VNAV commands - not needed for conflict scenarios and cause errors
+        # f"LNAV {acid} ON",
+        # f"VNAV {acid} ON",
     ]
 
 
@@ -1237,8 +1304,23 @@ def _scn_path(name: str) -> str:
     name = name.strip()
     if not name.lower().endswith(".scn"):
         name += ".scn"
-    base = getattr(STATE, "base_dir", "")
-    return os.path.join(base, name) if base else name
+    # Absolute path: honor it directly
+    if os.path.isabs(name):
+        return os.path.normpath(name)
+
+    base = getattr(STATE, "base_dir", "") or ""
+    scn_dir = getattr(STATE, "scn_dir", "") or ""
+
+    # If the provided name already navigates directories, treat it as
+    # relative to the base directory (matches longstanding SATG_DIR docs).
+    if any(sep in name for sep in ("/", "\\")):
+        root = base if base else os.getcwd()
+        return os.path.normpath(os.path.join(root, name))
+
+    # Default: place scenarios in the configured scenario folder when
+    # available (same behavior as CPA writers). Fallback to base, then CWD.
+    root = scn_dir or base or os.getcwd()
+    return os.path.normpath(os.path.join(root, name))
 
 def _normpath(p: str) -> str:
     """Normalize a user-supplied path. Strips quotes, expands ~, makes absolute.
@@ -1421,37 +1503,78 @@ def SATG_RL_RUN(name: str, overwrite: int = 0):
 # ---------------- GC commands (typed) ---------------- #
 @command
 def SATG_GC_REL(*argv):
-    """SATG_GC_REL mode=inject|write|both target=<acid> dpsi=<deg> dcpa=<NM> tlosh=<s>
+    """SATG_GC_REL target=<acid> dpsi=<deg> dcpa=<NM> tlosh=<s>
     Optional:
       acid=<id> actype=<type> dh=<ft> tlosv=<s> spd=<CAS/Mach>
-      include_target=1 target_acid=<id> target_type=<type> target_lat=<deg> target_lon=<deg>
-                     target_hdg=<deg> target_alt_ft=<ft> target_spd=<kt>
-      name=<scenario> overwrite=1 capture=1 (write mode)
+    include_target=1 target_acid=<id> target_type=<type> target_lat=<deg> target_lon=<deg>
+               target_hdg=<deg> target_alt_ft=<ft> target_spd=<kt>
+    name=<scenario> overwrite=1 seed=<int>
     """
 
     params = _gc_rel_parse(argv)
-    do_inject, do_write = _gc_rel_modes(params.get("mode"))
-    if not (do_inject or do_write):
-        _echo_err("SATG_GC_REL: mode must include inject and/or write")
+    
+    # Always use write mode (scenario generation)
+    name = params.get("name")
+    if not name:
+        _echo_err("SATG_GC_REL: name=<scenario> required")
         return False, ""
+    path = _scn_path(name)
+    overwrite = _gc_rel_bool(params.get("overwrite"))
+    file_exists = os.path.isfile(path)
+    
+    # Reset sequence when overwriting or creating new file
+    if (overwrite and file_exists) or not file_exists:
+        STATE.gc_rel_seq = 1
+        
+        # Also reset simulation when overwriting to clear existing aircraft
+        if overwrite and file_exists:
+            bs.sim.reset()
+            STATE.gc_last_acids.clear()
 
     include_target = _gc_rel_bool(params.get("include_target"))
-    capture = _gc_rel_bool(params.get("capture"))
+    
+    # Parse seed parameter like CPA does
+    seed_txt = params.get("seed", "").strip()
+    seed = None
+    if seed_txt:
+        try:
+            seed = int(float(seed_txt))
+        except Exception:
+            _echo_err("SATG_GC_REL: seed must be an integer")
+            return False, ""
+    
+    rng = random.Random(seed) if seed is not None else random.Random()
 
-    intruder_acid = _gc_rel_next_acid(params.get("acid"))
-    actype = params.get("actype", "A320")
-    params["acid"] = intruder_acid
-    params["actype"] = actype
-
-    target_id = params.get("target") or (target_info["acid"] if target_info else None)
-    if not target_id:
+    # Handle target ID determination (but don't generate auto IDs yet)
+    raw_target = str(params.get("target") or "").strip()
+    raw_target_acid = str(params.get("target_acid") or "").strip()
+    target_id = None
+    if raw_target:
+        target_id = raw_target.upper()
+    elif raw_target_acid:
+        target_id = raw_target_acid.upper()
+    elif not include_target:
         _echo_err("SATG_GC_REL: target=<acid> required")
         return False, ""
-    target_id = str(target_id).strip().upper()
-    params["target"] = target_id
-    target_info: Optional[Dict[str, float]] = None
+    # target_id will be generated later if needed
 
-    rng = random.Random()
+    # Handle intruder ID (also defer auto-generation)
+    raw_intruder_acid = params.get("acid")
+    intruder_acid = None
+    if raw_intruder_acid:
+        intruder_acid = str(raw_intruder_acid).strip().upper()
+    # intruder_acid will be generated later if needed
+
+    actype_raw = params.get("actype")
+    actype = _gc_rel_pick_actype(actype_raw, rng)
+    params["actype"] = actype
+
+    if include_target:
+        # Target aircraft should sample from the same aircraft types as intruder
+        # Both should use STATE.gc_ac_types (set by SATG_GC_TYPES command)
+        params["target_type"] = _gc_rel_pick_actype(None, rng)
+
+    target_info: Optional[Dict[str, float]] = None
 
     def _sample_param(key: str, label: str, *, allow_negative: bool,
                       required: bool, as_int: bool=False,
@@ -1542,106 +1665,95 @@ def SATG_GC_REL(*argv):
         if target_info is None:
             _echo_err("SATG_GC_REL: include_target=1 requires target_acid, target_lat, target_lon, target_hdg, target_alt_ft, target_spd")
             return False, ""
-        target_info["acid"] = target_id
+        # Note: target_info["acid"] will be set later after ID generation
+        # Process target type through the aircraft type picker to handle quoted comma-separated values
+        target_info["type"] = _gc_rel_pick_actype(target_info["type"], rng)
 
     if target_info:
         params.setdefault("target_acid", target_id)
 
-    inject_done = False
-    write_done = False
+    if not _gc_rel_normalize_speed_param(params, rng):
+        return False, ""
 
-    if do_inject:
-        traf = getattr(bs, "traf", None) if bs else None
-        if traf is None:
-            _echo_err("SATG_GC_REL: injection requires active BlueSky traffic")
-            return False, ""
-        if include_target:
-            if _gc_rel_find_idx(target_id) >= 0:
-                _echo_err(f"SATG_GC_REL: target {target_id} already exists")
-                return False, ""
-            try:
-                alt_m = target_info["alt_ft"] * ft
-                bs.traf.cre(target_id,
-                            target_info.get("type", "A320"),
-                            target_info["lat"], target_info["lon"],
-                            target_info["hdg"], alt_m, target_info["cas_kt"])
-                STATE.gc_last_acids.append(target_id)
-            except Exception as exc:
-                _echo_err(f"SATG_GC_REL: failed to create target {target_id}: {exc}")
-                return False, ""
-        target_idx = _gc_rel_find_idx(target_id)
-        if target_idx < 0:
-            _echo_err(f"SATG_GC_REL: target {target_id} not found")
-            return False, ""
-        dpsi = float(dpsi_val)
-        dcpa = float(dcpa_val)
-        tlosh = float(tlosh_val)
-        dH_m = float(dh_val) * ft if dh_val is not None else None
-        tlosv_used = float(tlosv_val) if tlosv_val is not None else None
-        spd_txt = params.get("spd")
-        if spd_txt is not None:
-            spd_txt = spd_txt.strip()
-            if not spd_txt:
-                spd_txt = None
+    # Generate scenario file
+    # name and path already validated earlier
+    file_exists = os.path.isfile(path)
+    append = file_exists and not overwrite
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory, exist_ok=True)
+    if overwrite and file_exists:
         try:
-            bs.traf.creconfs(intruder_acid, actype, target_idx,
-                             dpsi, dcpa, tlosh, dH_m, tlosv_used, spd_txt)
+            os.remove(path)
+            append = False
         except Exception as exc:
-            _echo_err(f"SATG_GC_REL: failed to create intruder {intruder_acid}: {exc}")
-            return False, ""
-        STATE.gc_last_acids.append(intruder_acid)
-        inject_done = True
-        _echo_ok(
-            f"GC relative injected: {intruder_acid} vs {target_id} (dpsi={dpsi:.1f} deg dcpa={dcpa:.2f} NM tlosh={tlosh:.1f} s)",
-            nxt="Clean with SATG_GC_DEL if needed"
-        )
+            _echo_err(f"SATG_GC_REL: failed to remove existing scenario {path}: {exc}")
+            append = False
+    
+    # Smart numbering: when appending to existing scenario, adjust sequence first
+    if append:
+        max_existing = _scan_max_screl_index(path)
+        if max_existing > 0:
+            # Adjust our sequence to continue from where the file left off
+            STATE.gc_rel_seq = max(STATE.gc_rel_seq, max_existing + 1)
+    
+    # Now generate IDs (either auto-generated or explicit)
+    if target_id is None:
+        target_id = _gc_rel_next_acid()
+    if intruder_acid is None:
+        intruder_acid = _gc_rel_next_acid()
+    
+    # Update params with final IDs
+    params["target"] = target_id
+    params["acid"] = intruder_acid
+    if include_target:
+        params["target_acid"] = target_id
+        # IMPORTANT: Now update target_info with the final generated target_id
+        if target_info is not None:
+            target_info["acid"] = target_id
+    lines: List[str] = []
+    if include_target and target_info is not None:
+        lines.extend(_gc_rel_cre_block(target_info))
+    
+    # Generate CRECONFS command instead of SATG_GC_REL command
+    # CRECONFS syntax: id, type, targetid, dpsi, cpa, tlos_hor, dH, tlos_ver, spd
+    creconfs_parts = [
+        "CRECONFS",
+        intruder_acid,
+        actype,
+        target_id,
+        params["dpsi"],
+        params["dcpa"], 
+        params["tlosh"]
+    ]
+    
+    # Add optional parameters
+    dh_val = params.get("dh")
+    if dh_val not in (None, ""):
+        creconfs_parts.append(str(dh_val))
+    else:
+        creconfs_parts.append("")  # Empty placeholder for dH
+        
+    tlosv_val = params.get("tlosv") 
+    if tlosv_val not in (None, ""):
+        creconfs_parts.append(str(tlosv_val))
+    else:
+        creconfs_parts.append("")  # Empty placeholder for tlos_ver
+        
+    spd_val = params.get("spd")
+    if spd_val not in (None, ""):
+        creconfs_parts.append(str(spd_val))
+    
+    # Join with commas as CRECONFS expects comma-separated parameters
+    lines.append(",".join(creconfs_parts))
+    _gc_rel_write_scn(path, append=append, lines=lines)
+    act = "appended to" if append else "written to"
+    _echo_ok(
+        f"GC relative scenario {act} {path}",
+        nxt="Load with SATG_GC_RUN <name>"
+    )
 
-    if do_write:
-        name = params.get("name")
-        if not name:
-            _echo_err("SATG_GC_REL: name=<scenario> required for write mode")
-            return False, ""
-        path = _scn_path(name)
-        overwrite = _gc_rel_bool(params.get("overwrite"))
-        append = os.path.isfile(path) and not overwrite
-        directory = os.path.dirname(path)
-        if directory and not os.path.isdir(directory):
-            os.makedirs(directory, exist_ok=True)
-        lines: List[str] = []
-        if capture:
-            captured = _gc_rel_capture_state(target_id)
-            if captured is None:
-                _echo_err(f"SATG_GC_REL: capture requested but target {target_id} not available")
-                return False, ""
-            lines.extend(_gc_rel_cre_block(captured))
-        elif include_target and target_info is not None:
-            lines.extend(_gc_rel_cre_block(target_info))
-        cmd_map: Dict[str, str] = {
-            "mode": "inject",
-            "target": target_id,
-            "acid": intruder_acid,
-            "actype": actype,
-            "dpsi": params["dpsi"],
-            "dcpa": params["dcpa"],
-            "tlosh": params["tlosh"],
-            "include_target": "0",
-        }
-        for opt in ("dh", "tlosv", "spd"):
-            val = params.get(opt)
-            if val not in (None, ""):
-                cmd_map[opt] = val
-        order = ["mode", "target", "acid", "actype", "dpsi", "dcpa", "tlosh", "dh", "tlosv", "spd", "include_target"]
-        tokens = [f"{key}={cmd_map[key]}" for key in order if key in cmd_map]
-        lines.append("SATG_GC_REL " + " ".join(tokens))
-        _gc_rel_write_scn(path, append=append, lines=lines)
-        write_done = True
-        act = "appended to" if append else "written to"
-        _echo_ok(
-            f"GC relative scenario {act} {path}",
-            nxt="Load with SATG_GC_RUN <name>"
-        )
-
-    return (inject_done or write_done), ""
+    return True, ""
 
 
 @command
@@ -3034,3 +3146,9 @@ def SATG_HELP(topic: str = ""):
 # ------------------- Plugin init -------------------- #
 def init_plugin():
     return {'plugin_name': 'SATG', 'plugin_type': 'sim'}
+
+def reset():
+    """Reset SATG plugin state when BlueSky simulation resets (e.g., when loading a new scenario)."""
+    # Clear tracked aircraft lists so they don't carry over to the new scenario
+    STATE.gc_last_acids.clear()
+    STATE.gc_rel_seq = 1

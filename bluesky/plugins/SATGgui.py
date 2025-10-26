@@ -18,7 +18,6 @@ try:
     import bluesky as bs
 except Exception:
     bs = None
-from bluesky.tools.aero import ft, kts
 import os, re
 
 # --- helpers ---------------------------------------------------------------
@@ -725,12 +724,12 @@ class GCAbsolutePage(QWidget):
         self.gc_use_coords_rb = QRadioButton("Use coordinates")
         self.gc_use_coords_rb.setChecked(True)
         coord_form.addRow(self.gc_use_coords_rb)
-        self.gc_lat = QLineEdit("52.100000")
+        self.gc_lat = QLineEdit("52.100")
         self.gc_lat.setClearButtonEnabled(True)
-        self.gc_lon = QLineEdit("4.500000")
+        self.gc_lon = QLineEdit("4.500")
         self.gc_lon.setClearButtonEnabled(True)
-        coord_form.addRow("Lat [deg]:", self.gc_lat)
-        coord_form.addRow("Lon [deg]:", self.gc_lon)
+        coord_form.addRow("Latitude [deg]:", self.gc_lat)
+        coord_form.addRow("Longitude [deg]:", self.gc_lon)
 
         wp_box = QGroupBox("Waypoint")
         wp_form = QFormLayout(wp_box)
@@ -785,11 +784,6 @@ class GCAbsolutePage(QWidget):
         self.gc_actypes = QLineEdit("A320,B738,A350,B78X")
         f1.addRow("AC types:", self.gc_actypes)
 
-        self.gc_seed = QSpinBox()
-        self.gc_seed.setRange(0, 2_000_000_000)
-        self.gc_seed.setValue(0)
-        f1.addRow("Seed (0 = random):", self.gc_seed)
-
         main.addWidget(gb1)
 
         gb2 = QGroupBox("2) Flight profile")
@@ -830,6 +824,12 @@ class GCAbsolutePage(QWidget):
         self.gc_name = QLineEdit("gc_scn")
         name_layout.addWidget(self.gc_name)
         f3.addRow(name_row)
+
+        # Add seed field like GC Relative has
+        self.gc_seed = QSpinBox()
+        self.gc_seed.setRange(0, 2_000_000_000)
+        self.gc_seed.setValue(0)
+        f3.addRow("Seed (0 = random):", self.gc_seed)
 
         self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
         self.gc_overwrite_cb.setChecked(True)
@@ -923,6 +923,39 @@ class GCAbsolutePage(QWidget):
             txt = f"{float(value):.6f}".rstrip("0").rstrip(".")
             return txt if txt and txt != "-0" else "0"
         return str(int(round(float(value))))
+
+    def _format_mach(self, value: float) -> str:
+        txt = f"{float(value):.3f}".rstrip("0").rstrip(".")
+        if not txt or txt == "0":
+            txt = "0"
+        if txt.startswith("."):
+            txt = "0" + txt
+        return f"M{txt}"
+
+    def _normalize_speed_text(self, text: str) -> Tuple[str, float, bool]:
+        raw = text.strip()
+        if not raw:
+            raise ValueError("CAS/Mach value is empty.")
+        compact = raw.replace(" ", "")
+        upper = compact.upper()
+        if upper.startswith("M"):
+            num_txt = upper[1:]
+            if not num_txt:
+                raise ValueError("Mach value must include digits after the 'M' prefix.")
+            try:
+                value = float(num_txt)
+            except ValueError as exc:
+                raise ValueError("Mach value must be numeric, e.g. M0.78.") from exc
+            if value <= 0.0:
+                raise ValueError("Mach value must be greater than zero.")
+            return self._format_mach(value), value, True
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError("CAS value must be numeric knots or use the 'M' prefix for Mach.") from exc
+        if value <= 0.0:
+            raise ValueError("CAS value must be greater than zero.")
+        return self._format_number(value, allow_float=True), value, False
 
     def _emit_gc_conf(self):
         _emit(f"SATG_GC_CONF {self._minima.hsep_value()} {self._minima.vsep_value()}")
@@ -1050,22 +1083,25 @@ class GCRelativePage(QWidget):
         combo_layout.setContentsMargins(0, 0, 0, 0)
         self.target_combo = QComboBox()
         self.target_combo.setEditable(False)
+        self.target_combo.setToolTip("Active traffic IDs captured live; blank means auto-generate when creating a target.")
         self.refresh_btn = QPushButton("Refresh")
-        self.load_btn = QPushButton("Copy selection")
         combo_layout.addWidget(self.target_combo, 1)
         combo_layout.addWidget(self.refresh_btn)
-        combo_layout.addWidget(self.load_btn)
+        combo_layout.addStretch(1)
         target_form.addRow("Live traffic:", combo_row)
 
         self.include_target_cb = QCheckBox("Create / override target using the fields below")
         target_form.addRow(self.include_target_cb)
 
         self.target_acid = QLineEdit("")
+        self.target_acid.setPlaceholderText("optional – auto if left blank")
+        self.target_acid.setClearButtonEnabled(True)
         target_form.addRow("Target callsign:", self.target_acid)
-        self.target_type = QLineEdit("A320")
+        self.target_type = QLineEdit("A320,B738,A350,B78X")
+        self.target_type.setClearButtonEnabled(True)
         target_form.addRow("Aircraft type:", self.target_type)
 
-        self.target_lat_value = QLineEdit("52.100000")
+        self.target_lat_value = QLineEdit("52.100")
         self.target_lat_value.setClearButtonEnabled(True)
         self.target_lat_range = QLineEdit()
         self.target_lat_range.setClearButtonEnabled(True)
@@ -1074,7 +1110,7 @@ class GCRelativePage(QWidget):
             self._make_numeric_row(self.target_lat_value, self.target_lat_range, "upper [deg] (optional)"),
         )
 
-        self.target_lon_value = QLineEdit("4.500000")
+        self.target_lon_value = QLineEdit("4.500")
         self.target_lon_value.setClearButtonEnabled(True)
         self.target_lon_range = QLineEdit()
         self.target_lon_range.setClearButtonEnabled(True)
@@ -1114,8 +1150,11 @@ class GCRelativePage(QWidget):
         intr_box = QGroupBox("3) Intruder setup")
         intr_form = QFormLayout(intr_box)
         self.intr_acid = QLineEdit("")
+        self.intr_acid.setPlaceholderText("optional – auto if left blank")
+        self.intr_acid.setClearButtonEnabled(True)
         intr_form.addRow("Intruder callsign (optional):", self.intr_acid)
-        self.intr_type = QLineEdit("A320")
+        self.intr_type = QLineEdit("A320,B738,A350,B78X")
+        self.intr_type.setClearButtonEnabled(True)
         intr_form.addRow("Aircraft type:", self.intr_type)
 
         self.intr_dpsi_value = QLineEdit("90.0")
@@ -1163,30 +1202,45 @@ class GCRelativePage(QWidget):
             "Vertical TL tlosv [s] (optional):",
             self._make_numeric_row(self.intr_tlosv_value, self.intr_tlosv_range, "upper [s] (optional)"),
         )
-
-        self.intr_spd = QLineEdit("")
-        intr_form.addRow("CAS/Mach (optional):", self.intr_spd)
+        spd_row = QWidget()
+        spd_layout = QHBoxLayout(spd_row)
+        spd_layout.setContentsMargins(0, 0, 0, 0)
+        spd_layout.setSpacing(6)
+        self.intr_spd_value = QLineEdit("")
+        self.intr_spd_value.setClearButtonEnabled(True)
+        self.intr_spd_value.setPlaceholderText("value (e.g. 250 or M0.78)")
+        self.intr_spd_range = QLineEdit("")
+        self.intr_spd_range.setClearButtonEnabled(True)
+        self.intr_spd_range.setPlaceholderText("upper (optional)")
+        spd_layout.addWidget(self.intr_spd_value)
+        spd_layout.addWidget(self.intr_spd_range, 1)
+        intr_form.addRow("CAS/Mach (optional):", spd_row)
         main.addWidget(intr_box)
 
         scen_box = QGroupBox("4) Scenario output (write mode)")
         scen_form = QFormLayout(scen_box)
         self.scn_name = QLineEdit("gc_relative")
         scen_form.addRow("Scenario name:", self.scn_name)
+        
+        # Add seed field like CPA has
+        self.gc_rel_seed = QSpinBox()
+        self.gc_rel_seed.setRange(0, 2_000_000_000)
+        self.gc_rel_seed.setValue(0)
+        scen_form.addRow("Seed (0 = random):", self.gc_rel_seed)
+        
         self.overwrite_cb = QCheckBox("Overwrite scenario if it exists")
         scen_form.addRow(self.overwrite_cb)
-        self.capture_cb = QCheckBox("Capture live target when writing")
-        scen_form.addRow(self.capture_cb)
         main.addWidget(scen_box)
 
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(10)
-        self.btn_inject = QPushButton("INJECT")
-        self.btn_write = QPushButton("WRITE SCENARIO")
-        self.btn_both = QPushButton("INJECT & WRITE")
-        btn_layout.addWidget(self.btn_inject)
+        self.btn_write = QPushButton("CREATE SCENARIO")
+        self.btn_run = QPushButton("RUN SCENARIO")
+        self.btn_both = QPushButton("CREATE & RUN SCENARIO")
         btn_layout.addWidget(self.btn_write)
+        btn_layout.addWidget(self.btn_run)
         btn_layout.addWidget(self.btn_both)
         btn_layout.addStretch(1)
         main.addWidget(btn_row)
@@ -1208,11 +1262,10 @@ class GCRelativePage(QWidget):
         ]
 
         self.refresh_btn.clicked.connect(self._refresh_targets)
-        self.load_btn.clicked.connect(self._load_target_fields)
         self.include_target_cb.toggled.connect(self._update_target_field_state)
-        self.btn_inject.clicked.connect(lambda: self._send("inject"))
-        self.btn_write.clicked.connect(lambda: self._send("write"))
-        self.btn_both.clicked.connect(lambda: self._send("both"))
+        self.btn_write.clicked.connect(self._gc_rel_create)
+        self.btn_run.clicked.connect(self._gc_rel_run_only)
+        self.btn_both.clicked.connect(self._gc_rel_create_and_run)
 
         self._refresh_targets()
         self._update_target_field_state()
@@ -1232,26 +1285,59 @@ class GCRelativePage(QWidget):
             return self.target_acid.text().strip().upper()
         return self._combo_target_id().upper()
 
-    def _send(self, mode: str):
-        cmd = self._build_command(mode)
+    def _gc_rel_create(self):
+        """Create scenario file only (like CPA _gc_create)"""
+        self._emit_gc_rel()
+
+    def _gc_rel_create_and_run(self):
+        """Create scenario file and run it (like CPA _gc_create_and_run)"""
+        self._gc_rel_create()
+        self._gc_rel_run_only()
+
+    def _gc_rel_run_only(self):
+        """Run existing scenario (like CPA _gc_run_only)"""
+        name = self.scn_name.text().strip()
+        if name:
+            _emit("SATG_GC_RUN " + name)
+
+    def _emit_gc_rel(self):
+        """Send the SATG_GC_REL command with write mode and overwrite parameter"""
+        cmd = self._build_command()
         if not cmd:
             return
+        # Send aircraft types separately before the main command (like GC Absolute does)
+        self._emit_gc_types()
         self._emit_conf()
         _emit(cmd)
 
-    def _build_command(self, mode: str) -> Optional[str]:
+    def _emit_gc_types(self):
+        """Send SATG_GC_TYPES command with aircraft types from the intruder type field."""
+        raw = self.intr_type.text().strip()
+        if not raw:
+            _emit("SATG_GC_TYPES")
+            return
+        parts = [seg.strip().upper() for seg in re.split(r"[,\s]+", raw.replace("|", " ")) if seg.strip()]
+        if not parts:
+            _emit("SATG_GC_TYPES")
+            return
+        cmd = "SATG_GC_TYPES " + " ".join(parts)
+        _emit(cmd)
+
+    def _build_command(self) -> Optional[str]:
+        include_target = self.include_target_cb.isChecked()
         target_id = self._current_target_id()
-        if not target_id:
+        if not target_id and not include_target:
             _emit("ECHO SATGGUI: Select or define a target aircraft first.")
             return None
 
-        tokens = ["SATG_GC_REL", _kv("mode", mode), _kv("target", target_id)]
+        # Always use write mode like CPA does
+        tokens = ["SATG_GC_REL", _kv("mode", "write")]
+        if target_id:
+            tokens.append(_kv("target", target_id))
 
         intr_acid = self.intr_acid.text().strip().upper()
         if intr_acid:
             tokens.append(_kv("acid", intr_acid))
-        intr_type = self.intr_type.text().strip() or "A320"
-        tokens.append(_kv("actype", intr_type))
 
         dpsi_field = self._extract_numeric_pair(
             "Conflict angle dpsi [deg]",
@@ -1321,14 +1407,41 @@ class GCRelativePage(QWidget):
         if tlosv_is_range or tlosv_hi > 0.0:
             tokens.append(_kv("tlosv", tlosv_txt))
 
-        spd_txt = self.intr_spd.text().strip().upper()
-        if spd_txt:
-            tokens.append(_kv("spd", spd_txt))
-
-        if self.include_target_cb.isChecked():
-            if not self.target_acid.text().strip():
-                _emit("ECHO SATGGUI: Fill in target callsign/lat/lon when creating the target.")
+        spd_value_txt = self.intr_spd_value.text().strip()
+        spd_range_txt = self.intr_spd_range.text().strip()
+        if spd_range_txt and not spd_value_txt:
+            _emit("ECHO CAS/Mach: fill the left field before setting an upper bound.")
+            return None
+        if spd_value_txt:
+            try:
+                base_norm, base_val, base_is_mach = self._normalize_speed_text(spd_value_txt)
+            except ValueError as exc:
+                _emit(f"ECHO {exc}")
                 return None
+            if spd_range_txt:
+                try:
+                    _, range_val, range_is_mach = self._normalize_speed_text(spd_range_txt)
+                except ValueError as exc:
+                    _emit(f"ECHO {exc}")
+                    return None
+                if base_is_mach != range_is_mach:
+                    _emit("ECHO CAS/Mach range must use the same units (both CAS or both Mach).")
+                    return None
+                lo_val = min(base_val, range_val)
+                hi_val = max(base_val, range_val)
+                if base_is_mach:
+                    lo_txt = self._format_mach(lo_val)
+                    hi_txt = self._format_mach(hi_val)
+                else:
+                    lo_txt = self._format_numeric(lo_val, allow_float=True)
+                    hi_txt = self._format_numeric(hi_val, allow_float=True)
+                spd_token = f"{lo_txt}:{hi_txt}" if hi_val > lo_val else lo_txt
+            else:
+                spd_token = base_norm
+            if spd_token:
+                tokens.append(_kv("spd", spd_token))
+
+        if include_target:
             lat_field = self._extract_numeric_pair(
                 "Target latitude [deg]",
                 self.target_lat_value,
@@ -1383,25 +1496,28 @@ class GCRelativePage(QWidget):
             if spd_field is None:
                 return None
             tokens.append(_kv("include_target", 1))
-            tokens.append(_kv("target_acid", self.target_acid.text().strip().upper()))
-            tokens.append(_kv("target_type", self.target_type.text().strip() or "A320"))
+            target_acid_txt = self.target_acid.text().strip().upper()
+            target_type_txt = self.target_type.text().strip().upper()
+            tokens.append(_kv("target_acid", target_acid_txt or None))
+            tokens.append(_kv("target_type", target_type_txt or None))
             tokens.append(_kv("target_lat", lat_field[0]))
             tokens.append(_kv("target_lon", lon_field[0]))
             tokens.append(_kv("target_hdg", hdg_field[0]))
             tokens.append(_kv("target_alt_ft", alt_field[0]))
             tokens.append(_kv("target_spd", spd_field[0]))
 
-        if self.capture_cb.isChecked():
-            tokens.append(_kv("capture", 1))
-
-        if mode in ("write", "both"):
-            name_txt = self.scn_name.text().strip()
-            if not name_txt:
-                _emit("ECHO SATGGUI: Provide a scenario name before writing.")
-                return None
-            tokens.append(_kv("name", name_txt))
-            if self.overwrite_cb.isChecked():
-                tokens.append(_kv("overwrite", 1))
+        # Always include scenario name and overwrite flag (like CPA does)
+        name_txt = self.scn_name.text().strip()
+        if not name_txt:
+            _emit("ECHO SATGGUI: Provide a scenario name before writing.")
+            return None
+        tokens.append(_kv("name", name_txt))
+        tokens.append(_kv("overwrite", 1 if self.overwrite_cb.isChecked() else 0))
+        
+        # Add seed parameter like CPA does
+        seed_val = int(self.gc_rel_seed.value())
+        if seed_val > 0:
+            tokens.append(_kv("seed", seed_val))
 
         return _join_tokens(*tokens)
 
@@ -1415,53 +1531,12 @@ class GCRelativePage(QWidget):
                     acid = str(traf.id[idx]).upper()
                     if not acid:
                         continue
-                    actype = str(traf.type[idx]) if hasattr(traf, "type") else "?"
-                    label = f"{acid} ({actype})"
-                    self.target_combo.addItem(label, acid)
+                    self.target_combo.addItem(acid, acid)
                     added = True
         except Exception:
             added = False
         if not added:
             self.target_combo.addItem("(no active aircraft)", "")
-
-    def _load_target_fields(self):
-        acid = self._combo_target_id()
-        if not acid:
-            _emit("ECHO SATGGUI: No live aircraft selected to copy.")
-            return
-        traf = getattr(bs, "traf", None) if bs else None
-        if traf is None:
-            _emit("ECHO SATGGUI: BlueSky traffic is not available.")
-            return
-        idx = -1
-        try:
-            for i in range(getattr(traf, "ntraf", 0)):
-                if str(traf.id[i]).upper() == acid:
-                    idx = i
-                    break
-        except Exception:
-            idx = -1
-        if idx < 0:
-            _emit(f"ECHO SATGGUI: Aircraft {acid} not found in traffic list.")
-            return
-        try:
-            self.target_acid.setText(acid)
-            self.target_type.setText(str(traf.type[idx]))
-            self.target_lat_value.setText(f"{float(traf.lat[idx]):.6f}")
-            self.target_lat_range.clear()
-            self.target_lon_value.setText(f"{float(traf.lon[idx]):.6f}")
-            self.target_lon_range.clear()
-            self.target_hdg_value.setText(f"{float(traf.trk[idx]) % 360.0:.2f}")
-            self.target_hdg_range.clear()
-            alt_ft = float(traf.alt[idx] / ft)
-            self.target_alt_value.setText(f"{alt_ft:.0f}")
-            self.target_alt_range.clear()
-            cas_kt = float(traf.cas[idx] / kts)
-            self.target_spd_value.setText(f"{cas_kt:.1f}")
-            self.target_spd_range.clear()
-            self.include_target_cb.setChecked(True)
-        except Exception:
-            _emit("ECHO SATGGUI: Failed to copy aircraft state; see console.")
 
     def _update_target_field_state(self):
         enable = self.include_target_cb.isChecked()
@@ -1482,6 +1557,39 @@ class GCRelativePage(QWidget):
         layout.addWidget(value_widget)
         layout.addWidget(range_widget, 1)
         return row
+
+    def _format_mach(self, value: float) -> str:
+        txt = f"{float(value):.3f}".rstrip("0").rstrip(".")
+        if not txt or txt == "0":
+            txt = "0"
+        if txt.startswith("."):
+            txt = "0" + txt
+        return f"M{txt}"
+
+    def _normalize_speed_text(self, text: str) -> Tuple[str, float, bool]:
+        raw = text.strip()
+        if not raw:
+            raise ValueError("CAS/Mach value is empty.")
+        compact = raw.replace(" ", "")
+        upper = compact.upper()
+        if upper.startswith("M"):
+            num_txt = upper[1:]
+            if not num_txt:
+                raise ValueError("Mach value must include digits after the 'M' prefix.")
+            try:
+                value = float(num_txt)
+            except ValueError as exc:
+                raise ValueError("Mach value must be numeric, e.g. M0.78.") from exc
+            if value <= 0.0:
+                raise ValueError("Mach value must be greater than zero.")
+            return self._format_mach(value), value, True
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError("CAS value must be numeric knots or use the 'M' prefix for Mach.") from exc
+        if value <= 0.0:
+            raise ValueError("CAS value must be greater than zero.")
+        return self._format_numeric(value, allow_float=True), value, False
 
     def _extract_numeric_pair(
         self,
@@ -1700,8 +1808,8 @@ class RCTab(QWidget):
         f2.addRow(desc)
 
 
-        self.c_lat = QLineEdit("52.10")
-        self.c_lon = QLineEdit("4.50")
+        self.c_lat = QLineEdit("52.100")
+        self.c_lon = QLineEdit("4.500")
         self.c_rad = QDoubleSpinBox(); self.c_rad.setRange(0.1, 1000.0); self.c_rad.setDecimals(2); self.c_rad.setValue(25.0)
 
         # FL lo/hi (flight levels)
@@ -1720,8 +1828,8 @@ class RCTab(QWidget):
         row_cas = QWidget(); hb_cas = QHBoxLayout(row_cas); hb_cas.setContentsMargins(0,0,0,0)
         hb_cas.addWidget(self.cas_lo); hb_cas.addWidget(QLabel(" to ")); hb_cas.addWidget(self.cas_hi)
         
-        f2.addRow("Center lat [deg]:", self.c_lat)
-        f2.addRow("Center lon [deg]:", self.c_lon)
+        f2.addRow("Center latitude [deg]:", self.c_lat)
+        f2.addRow("Center longitude [deg]:", self.c_lon)
         f2.addRow("Radius [NM]:", self.c_rad)
         f2.addRow("FL range (lo:hi):", row_fl)
         f2.addRow("CAS range [kt] (lo:hi):", row_cas)
