@@ -777,7 +777,7 @@ def _gc_offset_from_cpa(lat_cpa: float, lon_cpa: float,
     return _dest_nm(lat_cpa, lon_cpa, bearing, dist_nm)
 
 def _scan_max_sc_index(path: str) -> int:
-    """Return the highest SC<number> found in an existing .scn (0 if none)."""
+    """Return the highest GCA<number> found in an existing .scn (0 if none)."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             txt = f.read()
@@ -787,14 +787,14 @@ def _scan_max_sc_index(path: str) -> int:
     # Look for CRE lines: "...>CRE ACID,TYPE,..."
     for m in re.finditer(r">\s*CRE\s+([A-Za-z0-9_-]+)\s*,", txt):
         acid = m.group(1)
-        m2 = re.fullmatch(r"SC(\d+)", acid)
+        m2 = re.fullmatch(r"GCA(\d+)", acid)
         if m2:
             n = int(m2.group(1))
             if n > maxn: maxn = n
     return maxn
 
-def _scan_max_screl_index(path: str) -> int:
-    """Return the highest SCREL<number> found in an existing .scn (0 if none)."""
+def _scan_max_gcr_index(path: str) -> int:
+    """Return the highest GCR<number> found in an existing .scn (0 if none)."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             txt = f.read()
@@ -806,7 +806,7 @@ def _scan_max_screl_index(path: str) -> int:
         for i in range(2, 5):  # Check groups 2, 3, 4
             if m.group(i):
                 acid = m.group(i)
-                m2 = re.fullmatch(r"SCREL(\d+)", acid)
+                m2 = re.fullmatch(r"GCR(\d+)", acid)
                 if m2:
                     n = int(m2.group(1))
                     if n > maxn: maxn = n
@@ -1003,7 +1003,7 @@ def _gc_rel_next_acid(explicit: Optional[str] = None) -> str:
     if explicit:
         return str(explicit).strip().upper()
     while True:
-        acid = f"SCREL{STATE.gc_rel_seq}"
+        acid = f"GCR{STATE.gc_rel_seq}"
         STATE.gc_rel_seq += 1
         if acid not in STATE.gc_last_acids:
             return acid
@@ -1692,7 +1692,7 @@ def SATG_GC_REL(*argv):
     
     # Smart numbering: when appending to existing scenario, adjust sequence first
     if append:
-        max_existing = _scan_max_screl_index(path)
+        max_existing = _scan_max_gcr_index(path)
         if max_existing > 0:
             # Adjust our sequence to continue from where the file left off
             STATE.gc_rel_seq = max(STATE.gc_rel_seq, max_existing + 1)
@@ -1954,8 +1954,8 @@ def SATG_GC_CRE(*argv):
         raw_parts = [p.strip().upper() for p in re.split(r"[\,\s]+", actypes_txt) if p.strip()]
         if raw_parts:
             ac_types = raw_parts
-    acid1 = kv.get("acid1", "SC1").upper()
-    acid2 = kv.get("acid2", "SC2").upper()
+    acid1 = kv.get("acid1", "GCA1").upper()
+    acid2 = kv.get("acid2", "GCA2").upper()
 
     fl_cpa_txt = kv.get("fl_cpa")
     fl_cpa = None
@@ -1992,10 +1992,10 @@ def SATG_GC_CRE(*argv):
         except Exception:
             pass
 
-    if append and acid1 == "SC1" and acid2 == "SC2":
+    if append and acid1 == "GCA1" and acid2 == "GCA2":
         nmax = _scan_max_sc_index(out_path)
-        acid1 = f"SC{nmax + 1}"
-        acid2 = f"SC{nmax + 2}"
+        acid1 = f"GCA{nmax + 1}"
+        acid2 = f"GCA{nmax + 2}"
 
     _write_gc_scn(
         out_path,
@@ -2173,9 +2173,9 @@ def SATG_RC_CIRCLE(*argv):
 
             if append:
                 nmax = _scan_max_sc_index(out_path)
-                acid1 = f"SC{nmax+1}"; acid2 = f"SC{nmax+2}"
+                acid1 = f"GCA{nmax+1}"; acid2 = f"GCA{nmax+2}"
             else:
-                acid1, acid2 = "SC1","SC2"
+                acid1, acid2 = "GCA1","GCA2"
             
             # Sample AC types uniformly for each aircraft
             ac1 = rng.choice(types_list)
@@ -2691,7 +2691,7 @@ def SATG_PROC_MAKE(name: str,
         nonlocal next_pr_index
         while True:
             next_pr_index += 1
-            acid = f"PR{next_pr_index:03d}"
+            acid = f"PRC{next_pr_index:03d}"
             if acid not in used:
                 used.add(acid)
                 return acid
