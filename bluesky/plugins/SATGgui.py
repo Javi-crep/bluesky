@@ -1968,60 +1968,58 @@ class RCTab(QWidget):
         abs_form = QFormLayout(abs_form_widget)
         abs_form.setContentsMargins(5, 5, 5, 5)
 
-        # TCPA range
-        self.abs_tcpa_lo = QDoubleSpinBox(); self.abs_tcpa_lo.setRange(30, 3600); self.abs_tcpa_lo.setValue(60)
-        self.abs_tcpa_hi = QDoubleSpinBox(); self.abs_tcpa_hi.setRange(30, 3600); self.abs_tcpa_hi.setValue(240)
-        self.abs_tcpa_lo.valueChanged.connect(lambda v: self.abs_tcpa_hi.setMinimum(v))
-        self.abs_tcpa_hi.valueChanged.connect(lambda v: self.abs_tcpa_lo.setMaximum(v))
-        tcpa_row = QWidget()
-        tcpa_layout = QHBoxLayout(tcpa_row)
-        tcpa_layout.setContentsMargins(0, 0, 0, 0)
-        tcpa_layout.addWidget(self.abs_tcpa_lo)
-        tcpa_layout.addWidget(QLabel(" to "))
-        tcpa_layout.addWidget(self.abs_tcpa_hi)
+        # TCPA using two-field format like geometric conflicts
+        self.abs_tcpa_value = QLineEdit("120.0")
+        self.abs_tcpa_value.setClearButtonEnabled(True)
+        self.abs_tcpa_range = QLineEdit()
+        self.abs_tcpa_range.setClearButtonEnabled(True)
+        abs_form.addRow(
+            "TCPA [s]:",
+            self._make_value_range_row(self.abs_tcpa_value, self.abs_tcpa_range, "upper [s] (optional)"),
+        )
 
-        # CPA angle range (for crossing encounters)
-        self.abs_angle_lo = QDoubleSpinBox(); self.abs_angle_lo.setRange(0, 180); self.abs_angle_lo.setValue(60)
-        self.abs_angle_hi = QDoubleSpinBox(); self.abs_angle_hi.setRange(0, 180); self.abs_angle_hi.setValue(120)
-        self.abs_angle_lo.valueChanged.connect(lambda v: self.abs_angle_hi.setMinimum(v))
-        self.abs_angle_hi.valueChanged.connect(lambda v: self.abs_angle_lo.setMaximum(v))
-        angle_row = QWidget()
-        angle_layout = QHBoxLayout(angle_row)
-        angle_layout.setContentsMargins(0, 0, 0, 0)
-        angle_layout.addWidget(self.abs_angle_lo)
-        angle_layout.addWidget(QLabel(" to "))
-        angle_layout.addWidget(self.abs_angle_hi)
+        # CPA angle using two-field format
+        self.abs_angle_value = QLineEdit("90.0")
+        self.abs_angle_value.setClearButtonEnabled(True)
+        self.abs_angle_range = QLineEdit()
+        self.abs_angle_range.setClearButtonEnabled(True)
+        abs_form.addRow(
+            "CPA angle [deg]:",
+            self._make_value_range_row(self.abs_angle_value, self.abs_angle_range, "upper [deg] (optional)"),
+        )
 
-        # Flight level range
-        self.abs_fl_lo = QDoubleSpinBox(); self.abs_fl_lo.setRange(0, 500); self.abs_fl_lo.setValue(290)
-        self.abs_fl_hi = QDoubleSpinBox(); self.abs_fl_hi.setRange(0, 500); self.abs_fl_hi.setValue(370)
-        self.abs_fl_lo.valueChanged.connect(lambda v: self.abs_fl_hi.setMinimum(v))
-        self.abs_fl_hi.valueChanged.connect(lambda v: self.abs_fl_lo.setMaximum(v))
-        fl_row = QWidget()
-        fl_layout = QHBoxLayout(fl_row)
-        fl_layout.setContentsMargins(0, 0, 0, 0)
-        fl_layout.addWidget(self.abs_fl_lo)
-        fl_layout.addWidget(QLabel(" to "))
-        fl_layout.addWidget(self.abs_fl_hi)
+        # Altitude offset using two-field format
+        self.abs_alt_offset_value = QLineEdit("0")
+        self.abs_alt_offset_value.setClearButtonEnabled(True)
+        self.abs_alt_offset_range = QLineEdit()
+        self.abs_alt_offset_range.setClearButtonEnabled(True)
+        abs_form.addRow(
+            "Altitude offset dH [ft] (optional):",
+            self._make_value_range_row(self.abs_alt_offset_value, self.abs_alt_offset_range, "upper [ft] (optional)"),
+        )
 
-        # CAS range
-        self.abs_cas_lo = QDoubleSpinBox(); self.abs_cas_lo.setRange(100, 600); self.abs_cas_lo.setValue(220)
-        self.abs_cas_hi = QDoubleSpinBox(); self.abs_cas_hi.setRange(100, 600); self.abs_cas_hi.setValue(280)
-        self.abs_cas_lo.valueChanged.connect(lambda v: self.abs_cas_hi.setMinimum(v))
-        self.abs_cas_hi.valueChanged.connect(lambda v: self.abs_cas_lo.setMaximum(v))
-        cas_row = QWidget()
-        cas_layout = QHBoxLayout(cas_row)
-        cas_layout.setContentsMargins(0, 0, 0, 0)
-        cas_layout.addWidget(self.abs_cas_lo)
-        cas_layout.addWidget(QLabel(" to "))
-        cas_layout.addWidget(self.abs_cas_hi)
+        # Flight level using two-field format
+        self.abs_fl_value = QLineEdit("310")
+        self.abs_fl_value.setClearButtonEnabled(True)
+        self.abs_fl_range = QLineEdit()
+        self.abs_fl_range.setClearButtonEnabled(True)
+        abs_form.addRow(
+            "Flight level:",
+            self._make_value_range_row(self.abs_fl_value, self.abs_fl_range, "upper FL (optional)"),
+        )
+
+        # CAS using two-field format
+        self.abs_cas_value = QLineEdit("250")
+        self.abs_cas_value.setClearButtonEnabled(True)
+        self.abs_cas_range = QLineEdit()
+        self.abs_cas_range.setClearButtonEnabled(True)
+        abs_form.addRow(
+            "CAS [kt]:",
+            self._make_value_range_row(self.abs_cas_value, self.abs_cas_range, "upper [kt] (optional)"),
+        )
 
         self.abs_actypes = QLineEdit("A320,B738,A350,B78X")
 
-        abs_form.addRow("TCPA [s]:", tcpa_row)
-        abs_form.addRow("CPA angle [deg]:", angle_row)
-        abs_form.addRow("Flight level:", fl_row)
-        abs_form.addRow("CAS [kt]:", cas_row)
         abs_form.addRow("Aircraft types:", self.abs_actypes)
 
         abs_scroll.setWidget(abs_form_widget)
@@ -2047,61 +2045,86 @@ class RCTab(QWidget):
         rel_form = QFormLayout(rel_form_widget)
         rel_form.setContentsMargins(5, 5, 5, 5)
 
-        # Time to loss of separation
-        self.rel_tlosh_lo = QDoubleSpinBox(); self.rel_tlosh_lo.setRange(30, 3600); self.rel_tlosh_lo.setValue(60)
-        self.rel_tlosh_hi = QDoubleSpinBox(); self.rel_tlosh_hi.setRange(30, 3600); self.rel_tlosh_hi.setValue(240)
-        self.rel_tlosh_lo.valueChanged.connect(lambda v: self.rel_tlosh_hi.setMinimum(v))
-        self.rel_tlosh_hi.valueChanged.connect(lambda v: self.rel_tlosh_lo.setMaximum(v))
-        tlosh_row = QWidget()
-        tlosh_layout = QHBoxLayout(tlosh_row)
-        tlosh_layout.setContentsMargins(0, 0, 0, 0)
-        tlosh_layout.addWidget(self.rel_tlosh_lo)
-        tlosh_layout.addWidget(QLabel(" to "))
-        tlosh_layout.addWidget(self.rel_tlosh_hi)
+        # Aircraft type field (copied from geometric conflicts intruder setup)
+        self.rel_type = QLineEdit("A320,B738,A350,B78X")
+        self.rel_type.setClearButtonEnabled(True)
+        rel_form.addRow("Aircraft type:", self.rel_type)
 
-        # Relative bearing change
-        self.rel_dpsi_lo = QDoubleSpinBox(); self.rel_dpsi_lo.setRange(-180, 180); self.rel_dpsi_lo.setValue(-90)
-        self.rel_dpsi_hi = QDoubleSpinBox(); self.rel_dpsi_hi.setRange(-180, 180); self.rel_dpsi_hi.setValue(90)
-        self.rel_dpsi_lo.valueChanged.connect(lambda v: self.rel_dpsi_hi.setMinimum(v))
-        self.rel_dpsi_hi.valueChanged.connect(lambda v: self.rel_dpsi_lo.setMaximum(v))
-        dpsi_row = QWidget()
-        dpsi_layout = QHBoxLayout(dpsi_row)
-        dpsi_layout.setContentsMargins(0, 0, 0, 0)
-        dpsi_layout.addWidget(self.rel_dpsi_lo)
-        dpsi_layout.addWidget(QLabel(" to "))
-        dpsi_layout.addWidget(self.rel_dpsi_hi)
+        # Conflict angle dpsi (copied from geometric conflicts intruder setup)
+        self.rel_dpsi_value = QLineEdit("90.0")
+        self.rel_dpsi_value.setClearButtonEnabled(True)
+        self.rel_dpsi_range = QLineEdit()
+        self.rel_dpsi_range.setClearButtonEnabled(True)
+        rel_form.addRow(
+            "Conflict angle dpsi [deg]:",
+            self._make_value_range_row(self.rel_dpsi_value, self.rel_dpsi_range, "upper [deg] (optional)"),
+        )
 
-        # Altitude range for both target and intruder
-        self.rel_alt_lo = QDoubleSpinBox(); self.rel_alt_lo.setRange(1000, 50000); self.rel_alt_lo.setValue(29000)
-        self.rel_alt_hi = QDoubleSpinBox(); self.rel_alt_hi.setRange(1000, 50000); self.rel_alt_hi.setValue(37000)
-        self.rel_alt_lo.valueChanged.connect(lambda v: self.rel_alt_hi.setMinimum(v))
-        self.rel_alt_hi.valueChanged.connect(lambda v: self.rel_alt_lo.setMaximum(v))
-        alt_row = QWidget()
-        alt_layout = QHBoxLayout(alt_row)
-        alt_layout.setContentsMargins(0, 0, 0, 0)
-        alt_layout.addWidget(self.rel_alt_lo)
-        alt_layout.addWidget(QLabel(" to "))
-        alt_layout.addWidget(self.rel_alt_hi)
+        # CPA distance dcpa (copied from geometric conflicts intruder setup)
+        self.rel_dcpa_value = QLineEdit("2.0")
+        self.rel_dcpa_value.setClearButtonEnabled(True)
+        self.rel_dcpa_range = QLineEdit()
+        self.rel_dcpa_range.setClearButtonEnabled(True)
+        rel_form.addRow(
+            "CPA distance dcpa [NM]:",
+            self._make_value_range_row(self.rel_dcpa_value, self.rel_dcpa_range, "upper [NM] (optional)"),
+        )
 
-        # Speed range
-        self.rel_spd_lo = QDoubleSpinBox(); self.rel_spd_lo.setRange(100, 600); self.rel_spd_lo.setValue(220)
-        self.rel_spd_hi = QDoubleSpinBox(); self.rel_spd_hi.setRange(100, 600); self.rel_spd_hi.setValue(280)
-        self.rel_spd_lo.valueChanged.connect(lambda v: self.rel_spd_hi.setMinimum(v))
-        self.rel_spd_hi.valueChanged.connect(lambda v: self.rel_spd_lo.setMaximum(v))
-        spd_row = QWidget()
-        spd_layout = QHBoxLayout(spd_row)
-        spd_layout.setContentsMargins(0, 0, 0, 0)
-        spd_layout.addWidget(self.rel_spd_lo)
-        spd_layout.addWidget(QLabel(" to "))
-        spd_layout.addWidget(self.rel_spd_hi)
+        # Horizontal TL tlosh (copied from geometric conflicts intruder setup)
+        self.rel_tlosh_value = QLineEdit("120.0")
+        self.rel_tlosh_value.setClearButtonEnabled(True)
+        self.rel_tlosh_range = QLineEdit()
+        self.rel_tlosh_range.setClearButtonEnabled(True)
+        rel_form.addRow(
+            "Horizontal TL tlosh [s]:",
+            self._make_value_range_row(self.rel_tlosh_value, self.rel_tlosh_range, "upper [s] (optional)"),
+        )
 
-        self.rel_actypes = QLineEdit("A320,B738,A350,B78X")
+        # Vertical offset dH (copied from geometric conflicts intruder setup)
+        self.rel_dh_value = QLineEdit("0")
+        self.rel_dh_value.setClearButtonEnabled(True)
+        self.rel_dh_range = QLineEdit()
+        self.rel_dh_range.setClearButtonEnabled(True)
+        rel_form.addRow(
+            "Vertical offset dH [ft] (optional):",
+            self._make_value_range_row(self.rel_dh_value, self.rel_dh_range, "upper [ft] (optional)"),
+        )
 
-        rel_form.addRow("Time to LoS [s]:", tlosh_row)
-        rel_form.addRow("Rel bearing change [deg]:", dpsi_row)
-        rel_form.addRow("Altitude [ft]:", alt_row)
-        rel_form.addRow("Speed [kt]:", spd_row)
-        rel_form.addRow("Aircraft types:", self.rel_actypes)
+        # Vertical TL tlosv (copied from geometric conflicts intruder setup)
+        self.rel_tlosv_value = QLineEdit("0")
+        self.rel_tlosv_value.setClearButtonEnabled(True)
+        self.rel_tlosv_range = QLineEdit()
+        self.rel_tlosv_range.setClearButtonEnabled(True)
+        self.rel_tlosv_value.setToolTip("0 uses horizontal TL")
+        rel_form.addRow(
+            "Vertical TL tlosv [s] (optional):",
+            self._make_value_range_row(self.rel_tlosv_value, self.rel_tlosv_range, "upper [s] (optional)"),
+        )
+
+        # CAS/Mach speed (copied from geometric conflicts intruder setup)
+        rel_spd_row = QWidget()
+        rel_spd_layout = QHBoxLayout(rel_spd_row)
+        rel_spd_layout.setContentsMargins(0, 0, 0, 0)
+        rel_spd_layout.setSpacing(6)
+        self.rel_spd_value = QLineEdit("")
+        self.rel_spd_value.setClearButtonEnabled(True)
+        self.rel_spd_value.setPlaceholderText("value (e.g. 250 or M0.78)")
+        self.rel_spd_range = QLineEdit("")
+        self.rel_spd_range.setClearButtonEnabled(True)
+        self.rel_spd_range.setPlaceholderText("upper (optional)")
+        rel_spd_layout.addWidget(self.rel_spd_value)
+        rel_spd_layout.addWidget(self.rel_spd_range, 1)
+        rel_form.addRow("CAS/Mach (optional):", rel_spd_row)
+
+        # Flight level/altitude fields to match absolute conflicts format
+        self.rel_fl_value = QLineEdit("310")
+        self.rel_fl_value.setClearButtonEnabled(True)
+        self.rel_fl_range = QLineEdit()
+        self.rel_fl_range.setClearButtonEnabled(True)
+        rel_form.addRow(
+            "Flight level:",
+            self._make_value_range_row(self.rel_fl_value, self.rel_fl_range, "upper FL (optional)"),
+        )
 
         rel_scroll.setWidget(rel_form_widget)
         rel_layout.addWidget(rel_scroll)
@@ -2228,28 +2251,15 @@ class RCTab(QWidget):
         
         # Count conflicts to generate
         total_conflicts = self.n.value()
-        abs_conflicts = 0
-        rel_conflicts = 0
-        
-        if self.abs_enabled.isChecked() and self.rel_enabled.isChecked():
-            # Split roughly equally
-            abs_conflicts = total_conflicts // 2
-            rel_conflicts = total_conflicts - abs_conflicts
-        elif self.abs_enabled.isChecked():
-            abs_conflicts = total_conflicts
-        elif self.rel_enabled.isChecked():
-            rel_conflicts = total_conflicts
-            
         overwrite = 1 if self.gc_overwrite_cb.isChecked() else 0
         
-        # Generate absolute conflicts
-        if abs_conflicts > 0:
-            self._create_absolute_conflicts(name, abs_conflicts, center_lat, center_lon, overwrite)
-            overwrite = 0  # Don't overwrite for subsequent calls
-            
-        # Generate relative conflicts  
-        if rel_conflicts > 0:
-            self._create_relative_conflicts(name, rel_conflicts, center_lat, center_lon, overwrite)
+        if self.abs_enabled.isChecked() and self.rel_enabled.isChecked():
+            # Use random mode like backend - let SATG_RC_CIRCLE decide randomly for each conflict
+            self._create_mixed_conflicts(name, total_conflicts, center_lat, center_lon, overwrite)
+        elif self.abs_enabled.isChecked():
+            self._create_absolute_conflicts(name, total_conflicts, center_lat, center_lon, overwrite)
+        elif self.rel_enabled.isChecked():
+            self._create_relative_conflicts(name, total_conflicts, center_lat, center_lon, overwrite)
 
     def _validate_abs_settings(self) -> bool:
         """Check if absolute conflict settings are valid."""
@@ -2258,16 +2268,43 @@ class RCTab(QWidget):
 
     def _create_absolute_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
         """Generate absolute (CPA-based) conflicts in the circle."""
-        # Set FL and CAS ranges  
-        fl_range = f"{int(self.abs_fl_lo.value())}:{int(self.abs_fl_hi.value())}"
-        cas_range = f"{int(self.abs_cas_lo.value())}:{int(self.abs_cas_hi.value())}"
-        _emit(f"SATG_GC_RANGE fl={fl_range} cas={cas_range}")
         
-        # Generate multiple encounters using the circle region
-        # Modern geometric conflicts use mixed encounter types automatically
-        tcpa_range = f"{self.abs_tcpa_lo.value()}:{self.abs_tcpa_hi.value()}"
-        angle_range = f"{self.abs_angle_lo.value()}:{self.abs_angle_hi.value()}"
+        # Extract and validate TCPA field
+        tcpa_field = self._extract_numeric_field("TCPA [s]", self.abs_tcpa_value, self.abs_tcpa_range, allow_float=True, allow_negative=False)
+        if tcpa_field is None:
+            return
+        tcpa_txt, _, tcpa_lo, tcpa_hi = tcpa_field
+
+        # Extract and validate CPA angle field  
+        angle_field = self._extract_numeric_field("CPA angle [deg]", self.abs_angle_value, self.abs_angle_range, allow_float=True, allow_negative=False)
+        if angle_field is None:
+            return
+        angle_txt, _, angle_lo, angle_hi = angle_field
+
+        # Extract and validate altitude offset field (optional)
+        alt_offset_txt = ""
+        if self.abs_alt_offset_value.text().strip() or self.abs_alt_offset_range.text().strip():
+            alt_offset_field = self._extract_numeric_field("Altitude offset [ft]", self.abs_alt_offset_value, self.abs_alt_offset_range, allow_float=True, allow_negative=True)
+            if alt_offset_field is None:
+                return
+            alt_offset_txt, _, _, _ = alt_offset_field
+
+        # Extract and validate flight level field
+        fl_field = self._extract_numeric_field("Flight level", self.abs_fl_value, self.abs_fl_range, allow_float=False, allow_negative=False)
+        if fl_field is None:
+            return
+        fl_txt, _, _, _ = fl_field
+
+        # Extract and validate CAS field
+        cas_field = self._extract_numeric_field("CAS [kt]", self.abs_cas_value, self.abs_cas_range, allow_float=True, allow_negative=False)
+        if cas_field is None:
+            return
+        cas_txt, _, _, _ = cas_field
         
+        # Set FL and CAS ranges for backward compatibility with SATG_GC_RANGE
+        _emit(f"SATG_GC_RANGE fl={fl_txt} cas={cas_txt}")
+        
+        # Build command parts
         cmd_parts = [
             "SATG_RC_CIRCLE",
             f"name={name}",
@@ -2278,13 +2315,17 @@ class RCTab(QWidget):
             f"radius_nm={self.c_rad.value()}",
             "mode=abs",
             "altmode=level",
-            f"tcpa={tcpa_range}",
-            f"fl={fl_range}",
-            f"cas={cas_range}",
+            f"tcpa={tcpa_txt}",
+            f"fl={fl_txt}",
+            f"cas={cas_txt}",
             f"actypes={self.abs_actypes.text()}",
             f"overwrite={overwrite}",
-            f"angle={angle_range}",
+            f"angle={angle_txt}",
         ]
+        
+        # Add altitude offset if specified
+        if alt_offset_txt:
+            cmd_parts.append(f"dh={alt_offset_txt}")
             
         # Add seed if specified
         if self.seed.value() != 0:
@@ -2294,21 +2335,60 @@ class RCTab(QWidget):
 
     def _create_relative_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
         """Generate relative (target-intruder) conflicts in the circle."""
-        # For relative conflicts, we'll use the existing SATG_RC_CIRCLE command in relative mode
-        # But we need to map the relative parameters to the expected format
+        # Extract parameters using the two-field format like geometric conflicts
         
-        # Convert relative parameters to the format expected by SATG_RC_CIRCLE
-        # For relative mode, tcpa becomes tlosh, angle becomes dpsi
-        tlosh_range = f"{self.rel_tlosh_lo.value()}:{self.rel_tlosh_hi.value()}"
-        dpsi_range = f"{self.rel_dpsi_lo.value()}:{self.rel_dpsi_hi.value()}"
+        # Extract dpsi (conflict angle)
+        dpsi_field = self._extract_numeric_field("dpsi [deg]", self.rel_dpsi_value, self.rel_dpsi_range, allow_float=True, allow_negative=True)
+        if not dpsi_field:
+            return
+        dpsi_str = f"{dpsi_field[2]:.1f}" if not dpsi_field[1] else f"{dpsi_field[2]:.1f}:{dpsi_field[3]:.1f}"
         
-        # Convert altitude from feet to flight levels (approximately)
-        alt_lo_fl = int(self.rel_alt_lo.value() / 100)
-        alt_hi_fl = int(self.rel_alt_hi.value() / 100)
-        fl_range = f"{alt_lo_fl}:{alt_hi_fl}"
+        # Extract dcpa (CPA distance) 
+        dcpa_field = self._extract_numeric_field("dcpa [NM]", self.rel_dcpa_value, self.rel_dcpa_range, allow_float=True, allow_negative=False)
+        if not dcpa_field:
+            return
+        dcpa_str = f"{dcpa_field[2]:.1f}" if not dcpa_field[1] else f"{dcpa_field[2]:.1f}:{dcpa_field[3]:.1f}"
         
-        cas_range = f"{int(self.rel_spd_lo.value())}:{int(self.rel_spd_hi.value())}"
+        # Extract tlosh (horizontal time to loss)
+        tlosh_field = self._extract_numeric_field("tlosh [s]", self.rel_tlosh_value, self.rel_tlosh_range, allow_float=True, allow_negative=False)
+        if not tlosh_field:
+            return
+        tlosh_str = f"{tlosh_field[2]:.1f}" if not tlosh_field[1] else f"{tlosh_field[2]:.1f}:{tlosh_field[3]:.1f}"
         
+        # Extract dh (vertical offset) - optional
+        dh_str = ""
+        if self.rel_dh_value.text().strip():
+            dh_field = self._extract_numeric_field("dH [ft]", self.rel_dh_value, self.rel_dh_range, allow_float=False, allow_negative=True)
+            if not dh_field:
+                return
+            dh_str = f"{int(dh_field[2])}" if not dh_field[1] else f"{int(dh_field[2])}:{int(dh_field[3])}"
+        
+        # Extract tlosv (vertical time to loss) - optional
+        tlosv_str = ""
+        if self.rel_tlosv_value.text().strip() and self.rel_tlosv_value.text().strip() != "0":
+            tlosv_field = self._extract_numeric_field("tlosv [s]", self.rel_tlosv_value, self.rel_tlosv_range, allow_float=True, allow_negative=False)
+            if not tlosv_field:
+                return
+            tlosv_str = f"{tlosv_field[2]:.1f}" if not tlosv_field[1] else f"{tlosv_field[2]:.1f}:{tlosv_field[3]:.1f}"
+        
+        # Extract flight level
+        fl_field = self._extract_numeric_field("FL", self.rel_fl_value, self.rel_fl_range, allow_float=False, allow_negative=False)
+        if not fl_field:
+            return
+        fl_str = f"{int(fl_field[2])}" if not fl_field[1] else f"{int(fl_field[2])}:{int(fl_field[3])}"
+        
+        # Extract speed - optional
+        spd_str = ""
+        if self.rel_spd_value.text().strip():
+            # Speed can be CAS (numeric) or Mach (M0.xx), so we don't use the numeric validator
+            spd_val = self.rel_spd_value.text().strip()
+            spd_range = self.rel_spd_range.text().strip()
+            if spd_range:
+                spd_str = f"{spd_val}:{spd_range}"
+            else:
+                spd_str = spd_val
+        
+        # Build SATG_RC_CIRCLE command
         cmd_parts = [
             "SATG_RC_CIRCLE",
             f"name={name}",
@@ -2319,17 +2399,104 @@ class RCTab(QWidget):
             f"radius_nm={self.c_rad.value()}",
             "mode=rel",
             "altmode=level",
-            f"tcpa={tlosh_range}",  # tcpa parameter will be interpreted as tlosh in rel mode
-            f"fl={fl_range}",
-            f"cas={cas_range}",
-            f"actypes={self.rel_actypes.text()}",
+            f"tcpa={tlosh_str}",  # tcpa parameter will be interpreted as tlosh in rel mode
+            f"fl={fl_str}",
+            f"actypes={self.rel_type.text()}",
             f"overwrite={overwrite}",
-            f"angle={dpsi_range}",  # angle parameter will be interpreted as dpsi in rel mode
+            f"angle={dpsi_str}",  # angle parameter will be interpreted as dpsi in rel mode
+            f"dcpa={dcpa_str}",
         ]
         
+        # Add optional parameters
+        if dh_str:
+            cmd_parts.append(f"dh={dh_str}")
+        if tlosv_str:
+            cmd_parts.append(f"tlosv={tlosv_str}")
+        if spd_str:
+            cmd_parts.append(f"cas={spd_str}")
         if self.seed.value() != 0:
             cmd_parts.append(f"seed={self.seed.value()}")
             
+        _emit(" ".join(cmd_parts))
+
+    def _create_mixed_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
+        """Generate mixed conflicts using SATG_RC_CIRCLE mode=mix (random for each conflict)."""
+        
+        # We need to determine which parameters to use for the mixed mode
+        # We'll combine parameters from both absolute and relative settings
+        
+        # Use absolute settings for basic parameters, but allow both types
+        tcpa_field = self._extract_numeric_field("TCPA [s]", self.abs_tcpa_value, self.abs_tcpa_range, allow_float=True, allow_negative=False)
+        if tcpa_field is None:
+            return
+        tcpa_str = f"{tcpa_field[2]:.1f}" if not tcpa_field[1] else f"{tcpa_field[2]:.1f}:{tcpa_field[3]:.1f}"
+        
+        # Angle from absolute settings
+        angle_field = self._extract_numeric_field("Angle [deg]", self.abs_angle_value, self.abs_angle_range, allow_float=True, allow_negative=False)
+        if angle_field is None:
+            return
+        angle_str = f"{angle_field[2]:.1f}" if not angle_field[1] else f"{angle_field[2]:.1f}:{angle_field[3]:.1f}"
+        
+        # Flight level from absolute settings
+        fl_field = self._extract_numeric_field("FL", self.abs_fl_value, self.abs_fl_range, allow_float=False, allow_negative=False)
+        if fl_field is None:
+            return
+        fl_str = f"{int(fl_field[2])}" if not fl_field[1] else f"{int(fl_field[2])}:{int(fl_field[3])}"
+        
+        # CAS from absolute settings
+        cas_field = self._extract_numeric_field("CAS [kt]", self.abs_cas_value, self.abs_cas_range, allow_float=False, allow_negative=False)
+        if cas_field is None:
+            return
+        cas_str = f"{int(cas_field[2])}" if not cas_field[1] else f"{int(cas_field[2])}:{int(cas_field[3])}"
+        
+        # Aircraft types - combine both lists
+        abs_types = self.abs_actypes.text().strip()
+        rel_types = self.rel_type.text().strip()
+        all_types = []
+        if abs_types:
+            all_types.extend([t.strip() for t in abs_types.split(",") if t.strip()])
+        if rel_types:
+            rel_types_list = [t.strip() for t in rel_types.split(",") if t.strip()]
+            # Add relative types that aren't already in absolute types
+            for t in rel_types_list:
+                if t not in all_types:
+                    all_types.append(t)
+        if not all_types:
+            all_types = ["A320", "B738"]  # Default fallback
+        
+        # Altitude offset from absolute settings (will be used for altcross mode)
+        dh_str = ""
+        if self.abs_alt_offset_value.text().strip():
+            dh_field = self._extract_numeric_field("dH [ft]", self.abs_alt_offset_value, self.abs_alt_offset_range, allow_float=False, allow_negative=True)
+            if dh_field is None:
+                return
+            dh_str = f"{int(dh_field[2])}" if not dh_field[1] else f"{int(dh_field[2])}:{int(dh_field[3])}"
+        
+        # Build SATG_RC_CIRCLE command with mode=mix
+        cmd_parts = [
+            "SATG_RC_CIRCLE",
+            f"name={name}",
+            f"n={count}",
+            "types=cross",  # Use cross as default type
+            f"center_lat={lat}",
+            f"center_lon={lon}",
+            f"radius_nm={self.c_rad.value()}",
+            "mode=mix",     # This is the key - random mode like backend
+            "altmode=level",
+            f"tcpa={tcpa_str}",
+            f"angle={angle_str}",
+            f"fl={fl_str}",
+            f"cas={cas_str}",
+            f"actypes={','.join(all_types)}",
+            f"overwrite={overwrite}",
+        ]
+        
+        # Add optional parameters
+        if dh_str:
+            cmd_parts.append(f"dh={dh_str}")
+        if self.seed.value() != 0:
+            cmd_parts.append(f"seed={self.seed.value()}")
+        
         _emit(" ".join(cmd_parts))
 
     def _run(self):
@@ -2344,6 +2511,78 @@ class RCTab(QWidget):
         """Create and immediately run the scenario."""
         self._create()
         self._run()
+
+    def _make_value_range_row(self, value_widget: QLineEdit, range_widget: QLineEdit, placeholder: str) -> QWidget:
+        """Create a two-field row like geometric conflicts for value + optional range."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        value_widget.setMaximumWidth(90)
+        value_widget.setPlaceholderText("required")
+        value_widget.setToolTip("Required value (used as deterministic or lower bound).")
+        range_widget.setPlaceholderText(placeholder)
+        range_widget.setToolTip("Optional upper bound; leave empty for a fixed value.")
+        range_widget.setMinimumWidth(140)
+        layout.addWidget(value_widget)
+        layout.addWidget(range_widget, 1)
+        return row
+
+    def _extract_numeric_field(
+        self,
+        label: str,
+        primary: QLineEdit,
+        secondary: QLineEdit,
+        *,
+        allow_float: bool,
+        allow_negative: bool,
+    ) -> Optional[Tuple[str, bool, float, float]]:
+        """Extract and validate a numeric field in value:range format."""
+        primary_txt = primary.text().strip()
+        if not primary_txt:
+            _emit(f"ECHO Please fill the left {label} field.")
+            return None
+        try:
+            primary_val = self._coerce_number(primary_txt, allow_float, allow_negative, label, "value")
+        except ValueError as exc:
+            _emit(f"ECHO {exc}")
+            return None
+        secondary_txt = secondary.text().strip()
+        if secondary_txt:
+            try:
+                secondary_val = self._coerce_number(secondary_txt, allow_float, allow_negative, label, "upper bound")
+            except ValueError as exc:
+                _emit(f"ECHO {exc}")
+                return None
+            lo_val = float(primary_val)
+            hi_val = float(secondary_val)
+            if hi_val < lo_val:
+                lo_val, hi_val = hi_val, lo_val
+            normalized = f"{self._format_number(lo_val, allow_float)}:{self._format_number(hi_val, allow_float)}"
+            return normalized, True, lo_val, hi_val
+
+        normalized = self._format_number(primary_val, allow_float)
+        return normalized, False, float(primary_val), float(primary_val)
+
+    def _coerce_number(self, text: str, allow_float: bool, allow_negative: bool, label: str, desc: str):
+        """Convert text to number with validation."""
+        try:
+            value = float(text)
+        except ValueError:
+            raise ValueError(f"{label} {desc} must be numeric.")
+        if not allow_negative and value < 0:
+            raise ValueError(f"{label} {desc} must be >= 0.")
+        if not allow_float:
+            value = round(value)
+        return value
+
+    def _format_number(self, value, allow_float: bool) -> str:
+        """Format number for command generation."""
+        if allow_float:
+            txt = f"{float(value):.6f}".rstrip("0").rstrip(".")
+            return txt if txt and txt != "-0" else "0"
+        else:
+            return str(int(round(value)))
         
 # --- Procedure Tab ----------------------------------------------------------
 class ProcTab(QWidget):
