@@ -519,40 +519,75 @@ class RLTab(QWidget):
         gb_load = QGroupBox("1) Load data - Required")
         gb_load_layout = QVBoxLayout(gb_load)
         
-        # Create a scroll area for load section
-        load_scroll = QScrollArea()
-        load_scroll.setWidgetResizable(True)
-        load_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        load_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        load_scroll.setMaximumHeight(200)  # Limit height to trigger scrolling
-        
-        # Create the form widget that will go inside the scroll area
-        load_form_widget = QWidget()
-        fl = QFormLayout(load_form_widget)
-        fl.setContentsMargins(5, 5, 5, 5)
-        desc1 = QLabel("Load aircraft tracks from selected path")
+        # Description
+        desc1 = QLabel("Select flight data and track data files (both required)")
         desc1.setStyleSheet("color: #666; font-style: italic;")
-        self.opt_auto = QCheckBox("Use AUTO folder (./satg_data/data)")
-        self.opt_auto.setChecked(True)
-
-        btn_file = QPushButton("(Optionally) Add files manually")
-        self._chosen_files = []  # internal list of selected CSV files
-        btn_file.clicked.connect(self._pick_files)
-
-        btn_load = QPushButton("LOAD FILES")
-
-        fl.addRow(desc1)
-        fl.addRow(self.opt_auto)
-        fl.addRow("Files:", btn_file)
-        fl.addRow(btn_load)
-
-        btn_load.clicked.connect(self._load)
-
-        # Set the form widget as the scroll area's widget
-        load_scroll.setWidget(load_form_widget)
+        gb_load_layout.addWidget(desc1)
         
-        # Add the scroll area to the group box
-        gb_load_layout.addWidget(load_scroll)
+        # Flight data files section (top)
+        flights_section = QWidget()
+        flights_layout = QVBoxLayout(flights_section)
+        flights_layout.setContentsMargins(0, 0, 0, 0)
+        
+        flights_label = QLabel("Flight data files:")
+        flights_layout.addWidget(flights_label)
+        
+        self.lst_flights_files = QListWidget()
+        self.lst_flights_files.setMaximumHeight(100)
+        self.lst_flights_files.setToolTip("CSV files containing flight information (callsign, origin, destination, etc.)")
+        self._chosen_flights_files = []
+        flights_layout.addWidget(self.lst_flights_files)
+        
+        # Flight files buttons
+        flights_buttons = QHBoxLayout()
+        btn_add_flights = QPushButton("Add")
+        btn_add_flights.setToolTip("Add flight data CSV files")
+        btn_add_flights.clicked.connect(self._add_flights_files)
+        btn_remove_flights = QPushButton("Remove")
+        btn_remove_flights.clicked.connect(self._remove_flights_files)
+        btn_clear_flights = QPushButton("Clear")
+        btn_clear_flights.clicked.connect(self._clear_flights_files)
+        
+        flights_buttons.addWidget(btn_add_flights)
+        flights_buttons.addWidget(btn_remove_flights)
+        flights_buttons.addWidget(btn_clear_flights)
+        flights_buttons.addStretch()
+        flights_layout.addLayout(flights_buttons)
+        
+        gb_load_layout.addWidget(flights_section)
+        
+        # Track data files section (bottom)
+        tracks_section = QWidget()
+        tracks_layout = QVBoxLayout(tracks_section)
+        tracks_layout.setContentsMargins(0, 0, 0, 0)
+        
+        tracks_label = QLabel("Track data files:")
+        tracks_layout.addWidget(tracks_label)
+        
+        self.lst_tracks_files = QListWidget()
+        self.lst_tracks_files.setMaximumHeight(100)
+        self.lst_tracks_files.setToolTip("CSV files containing flight track points (time, position, altitude, etc.)")
+        self._chosen_tracks_files = []
+        tracks_layout.addWidget(self.lst_tracks_files)
+        
+        # Track files buttons
+        tracks_buttons = QHBoxLayout()
+        btn_add_tracks = QPushButton("Add")
+        btn_add_tracks.setToolTip("Add track data CSV files")
+        btn_add_tracks.clicked.connect(self._add_tracks_files)
+        btn_remove_tracks = QPushButton("Remove")
+        btn_remove_tracks.clicked.connect(self._remove_tracks_files)
+        btn_clear_tracks = QPushButton("Clear")
+        btn_clear_tracks.clicked.connect(self._clear_tracks_files)
+        
+        tracks_buttons.addWidget(btn_add_tracks)
+        tracks_buttons.addWidget(btn_remove_tracks)
+        tracks_buttons.addWidget(btn_clear_tracks)
+        tracks_buttons.addStretch()
+        tracks_layout.addLayout(tracks_buttons)
+        
+        gb_load_layout.addWidget(tracks_section)
+        
         main.addWidget(gb_load)
 
         # 2) Jitter (Optional)
@@ -611,49 +646,142 @@ class RLTab(QWidget):
         gb_j_layout.addWidget(jitter_scroll)
         main.addWidget(gb_j)
 
-        # 3) Run (Required)
-        gb_run = QGroupBox("3) Run - Required")
-        fr = QFormLayout(gb_run)
-        desc3 = QLabel("Select overwrite or not, Set auto-deletion, create scenario file or run directly; press Play in BlueSky.")
-        desc3.setStyleSheet("color: #666; font-style: italic;")
+        # 3) Options
+        gb_options = QGroupBox("3) Options")
+        options_layout = QVBoxLayout(gb_options)
+        options_layout.setContentsMargins(8, 8, 8, 8)
+        
+        self.autodel_chk = QCheckBox("Auto-delete at last waypoint")
+        self.autodel_chk.setChecked(True)
+        options_layout.addWidget(self.autodel_chk)
+        
+        main.addWidget(gb_options)
 
-        self.autodel_chk = QCheckBox("Auto-delete at last waypoint"); self.autodel_chk.setChecked(True)
-
-        self.scn_name = QLineEdit(); self.scn_name.setPlaceholderText("Scenario name, e.g. replay_01")
+        # 4) Create Scenario
+        actions_gb = QGroupBox("4) Create Scenario")
+        actions_main_layout = QVBoxLayout(actions_gb)
+        actions_main_layout.setContentsMargins(8, 8, 8, 8)
+        actions_main_layout.setSpacing(10)
+        
+        # Scenario controls form
+        scenario_form = QFormLayout()
+        scenario_form.setContentsMargins(0, 0, 0, 0)
+        scenario_form.setSpacing(8)
+        
+        self.scn_name = QLineEdit("replay")
+        self.scn_name.setPlaceholderText("Scenario name, e.g. replay_01")
+        
+        self.rl_seed = QSpinBox()
+        self.rl_seed.setRange(0, 2**31-1)
+        self.rl_seed.setValue(0)
+        self.rl_seed.setToolTip("Seed for jitter (0=random)")
+        
         self.rl_overwrite = QCheckBox("Overwrite scenario if it exists")
-
+        self.rl_overwrite.setChecked(False)
+        
+        scenario_form.addRow("Scenario name:", self.scn_name)
+        scenario_form.addRow("Seed (0=random):", self.rl_seed)
+        scenario_form.addRow(self.rl_overwrite)
+        
+        actions_main_layout.addLayout(scenario_form)
+        
+        # Action buttons
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(8)
+        
         btn_make = QPushButton("CREATE SCENARIO")
-        btn_run  = QPushButton("CREATE & RUN SCENARIO")
-
-        hb_make = QHBoxLayout(); hb_make.addWidget(self.scn_name, 1); hb_make.addWidget(btn_make); hb_make.addWidget(btn_run)
-
-        fr.addRow(desc3)
-        fr.addRow(self.rl_overwrite)
-        fr.addRow(self.autodel_chk)
-        fr.addRow(hb_make)
-
+        btn_run_only = QPushButton("RUN SCENARIO")
+        btn_run = QPushButton("CREATE & RUN SCENARIO")
+        
         btn_make.clicked.connect(self._make)
+        btn_run_only.clicked.connect(self._run_only)
         btn_run.clicked.connect(self._run)
+        
+        buttons_layout.addWidget(btn_make)
+        buttons_layout.addWidget(btn_run_only)
+        buttons_layout.addWidget(btn_run)
+        buttons_layout.addStretch(1)
+        
+        actions_main_layout.addLayout(buttons_layout)
 
-        # assemble
-        main.addWidget(gb_run)
+        main.addWidget(actions_gb)
         main.addStretch(1)
 
-    def _pick_files(self):
+    def _add_flights_files(self):
+        """Add flight data files to the list"""
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Choose CSV files", filter="CSV files (*.csv);All files (*)"
+            self, "Choose flight data CSV files", 
+            filter="CSV files (*.csv);;All files (*)"
         )
-        if files:
-            self._chosen_files = files[:]     # store internally
-            self.opt_auto.setChecked(False)   # switch off AUTO if user picked files
-
-
-    def _load(self):
-        if self.opt_auto.isChecked() or not self._chosen_files:
-            _emit("SATG_RL_LOAD AUTO")
+        if not files:
             return
-        # Join full paths with commas (no quotes needed; BlueSky supports raw CSV list)
-        _emit("SATG_RL_LOAD " + ",".join(self._chosen_files))
+            
+        # Add new files that aren't already in the list
+        new_files = [f for f in files if f not in self._chosen_flights_files]
+        self._chosen_flights_files.extend(new_files)
+        
+        # Update the list widget
+        for file_path in new_files:
+            self.lst_flights_files.addItem(file_path)
+
+    def _remove_flights_files(self):
+        """Remove selected flight files from the list"""
+        selected_items = self.lst_flights_files.selectedItems()
+        for item in selected_items:
+            file_path = item.text()
+            # Remove from internal list
+            if file_path in self._chosen_flights_files:
+                self._chosen_flights_files.remove(file_path)
+            # Remove from list widget
+            self.lst_flights_files.takeItem(self.lst_flights_files.row(item))
+
+    def _clear_flights_files(self):
+        """Clear all flight files from the list"""
+        self._chosen_flights_files.clear()
+        self.lst_flights_files.clear()
+
+    def _add_tracks_files(self):
+        """Add track data files to the list"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Choose track data CSV files", 
+            filter="CSV files (*.csv);;All files (*)"
+        )
+        if not files:
+            return
+            
+        # Add new files that aren't already in the list
+        new_files = [f for f in files if f not in self._chosen_tracks_files]
+        self._chosen_tracks_files.extend(new_files)
+        
+        # Update the list widget
+        for file_path in new_files:
+            self.lst_tracks_files.addItem(file_path)
+
+    def _remove_tracks_files(self):
+        """Remove selected track files from the list"""
+        selected_items = self.lst_tracks_files.selectedItems()
+        for item in selected_items:
+            file_path = item.text()
+            # Remove from internal list
+            if file_path in self._chosen_tracks_files:
+                self._chosen_tracks_files.remove(file_path)
+            # Remove from list widget
+            self.lst_tracks_files.takeItem(self.lst_tracks_files.row(item))
+
+    def _clear_tracks_files(self):
+        """Clear all track files from the list"""
+        self._chosen_tracks_files.clear()
+        self.lst_tracks_files.clear()
+
+    def _get_data_files_for_backend(self):
+        """Get the combined list of data files to send to backend"""
+        all_files = self._chosen_flights_files + self._chosen_tracks_files
+        if not all_files:
+            return "AUTO"  # Fallback to AUTO if no files selected
+        # Use pipe separator to avoid issues with commas and spaces
+        return "|".join(all_files)
+
 
     def _emit_jitter_if_needed(self):
         if not hasattr(self, "j_on"):
@@ -668,7 +796,12 @@ class RLTab(QWidget):
         dist = self.j_dist.currentText() if hasattr(self, "j_dist") else "normal"
 
         # Use zeros for unset numeric fields so the parser is happy and backend treats them as no-noise.
-        seed = int(self.j_seed.value()) if hasattr(self, "j_seed") else 0
+        # Use scenario seed if jitter seed is 0 and scenario seed is set
+        jitter_seed = int(self.j_seed.value()) if hasattr(self, "j_seed") else 0
+        if jitter_seed == 0 and hasattr(self, "rl_seed"):
+            jitter_seed = int(self.rl_seed.value())
+        
+        seed = jitter_seed
         dt   = float(self.j_dt.value())   if hasattr(self, "j_dt")   else 0.0
         dlat = float(self.j_dlat.value()) if hasattr(self, "j_dlat") else 0.0
         dlon = float(self.j_dlon.value()) if hasattr(self, "j_dlon") else 0.0
@@ -684,23 +817,68 @@ class RLTab(QWidget):
         """Emit SATG_RL_AUTODEL based on the checkbox state."""
         _emit("SATG_RL_AUTODEL " + ("on" if self.autodel_chk.isChecked() else "off"))
 
+    def _validate_files(self):
+        """Check if both flight and track files are selected and show warnings if not"""
+        has_flights = len(self._chosen_flights_files) > 0
+        has_tracks = len(self._chosen_tracks_files) > 0
+        
+        if not has_flights and not has_tracks:
+            # No files selected, will use AUTO
+            return True
+        elif not has_flights:
+            # Only track files selected
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(self, "Missing Flight Data", 
+                                       "No flight data files selected. Realistic replay typically requires both flight data and track data files.\n\nContinue anyway?",
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            return reply == QMessageBox.StandardButton.Yes
+        elif not has_tracks:
+            # Only flight files selected
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(self, "Missing Track Data", 
+                                       "No track data files selected. Realistic replay typically requires both flight data and track data files.\n\nContinue anyway?",
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            return reply == QMessageBox.StandardButton.Yes
+        else:
+            # Both types selected, all good
+            return True
+
     def _make(self):
         name = self.scn_name.text().strip()
         if not name:
             return
+        
+        if not self._validate_files():
+            return
+            
         self._emit_autodel_from_toggle()
         self._emit_jitter_if_needed()
         ow = 1 if self.rl_overwrite.isChecked() else 0
-        _emit(f"SATG_RL_MAKE {name} {ow}")   # positional overwrite flag
+        data_files = self._get_data_files_for_backend()
+        _emit(f"SATG_RL_MAKE {name} {ow} {data_files}")
+
+    def _run_only(self):
+        """Run an existing scenario without creating it"""
+        name = self.scn_name.text().strip()
+        if not name:
+            return
+        
+        # Just load the existing scenario file
+        _emit(f"IC scenario/{name}.scn")
 
     def _run(self):
         name = self.scn_name.text().strip()
         if not name:
             return
+        
+        if not self._validate_files():
+            return
+            
         self._emit_autodel_from_toggle()
         self._emit_jitter_if_needed()
         ow = 1 if self.rl_overwrite.isChecked() else 0
-        _emit(f"SATG_RL_RUN {name} {ow}")    # positional overwrite flag
+        data_files = self._get_data_files_for_backend()
+        _emit(f"SATG_RL_RUN {name} {ow} {data_files}")
 
 
 # --- GC tab (Geometric Conflicts) ------------------------------------------

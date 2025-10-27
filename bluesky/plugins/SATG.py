@@ -1368,7 +1368,7 @@ def SATG_DIR(base: str=None):
     return True, ""
 
 @command
-def SATG_RL_LOAD(files: str="AUTO"):
+def SATG_RL_LOAD(*args):
     """SATG_RL_LOAD [files]
     Load pre-filtered flights + flights_points by headers. Use 'AUTO' to scan <base>/data.
     Examples:
@@ -1376,11 +1376,26 @@ def SATG_RL_LOAD(files: str="AUTO"):
       SATG_RL_LOAD AUTO
       SATG_RL_LOAD files=C:/data/case1
       SATG_RL_LOAD files=C:/data/flights.csv,C:/data/flights_points.csv
+      SATG_RL_LOAD C:/data/flights.csv,C:/data/flights_points.csv
     """
+    if len(args) == 0:
+        files = "AUTO"
+    else:
+        # Join all arguments back together to reconstruct the original parameter
+        files = " ".join(str(arg) for arg in args)
+    
+    # Process the files parameter
     arg = files.strip()
     if "=" in arg:
         k, v = arg.split("=", 1)
-        if k.strip().lower() in ("files",): arg = v.strip().strip('"').strip("'")
+        if k.strip().lower() in ("files",): 
+            arg = v.strip().strip('"').strip("'")
+    
+    # Handle pipe-separated files (from GUI) or comma-separated files
+    if "|" in arg:
+        # Convert pipe-separated to comma-separated for _load_files
+        arg = arg.replace("|", ",")
+    
     ok, msg = _load_files(arg)
     if ok:
         _echo_ok(msg, nxt="Now: SATG_RL_JITTER [on|off] … (optional), then SATG_RL_RUN [SCNNAME]")
@@ -1468,10 +1483,32 @@ def SATG_RL_AUTODEL(mode: str):
     return True, ""
 
 @command
-def SATG_RL_MAKE(name: str, overwrite: int = 0):
-    """SATG_RL_MAKE name
+def SATG_RL_MAKE(*args):
+    """SATG_RL_MAKE name [overwrite] [files]
     Write <base>/scenarios/<name>.scn (scenario starts paused; ASAS ON at 0).
+    If files provided, automatically load them first.
     """
+    if len(args) < 1:
+        _echo_err("Usage: SATG_RL_MAKE name [overwrite] [files]")
+        return False, ""
+    
+    name = str(args[0]).strip()
+    overwrite = int(args[1]) if len(args) > 1 else 0
+    
+    # Handle files parameter (all remaining arguments joined)
+    files = ""
+    if len(args) > 2:
+        files = " ".join(str(arg) for arg in args[2:])
+        # Handle pipe-separated files (from GUI)
+        if "|" in files:
+            files = files.replace("|", ",")
+    
+    # Auto-load files if provided and not already loaded
+    if files and not STATE.loaded_ok:
+        result, _ = SATG_RL_LOAD(files)
+        if not result:
+            return False, ""
+    
     if not STATE.loaded_ok:
         _echo_err("No data loaded. Run SATG_RL_LOAD first."); return False, ""
     if not os.path.isdir(STATE.scn_dir): os.makedirs(STATE.scn_dir, exist_ok=True)
@@ -1486,10 +1523,32 @@ def SATG_RL_MAKE(name: str, overwrite: int = 0):
     return True, ""
 
 @command
-def SATG_RL_RUN(name: str, overwrite: int = 0):
-    """SATG_RL_RUN name
+def SATG_RL_RUN(*args):
+    """SATG_RL_RUN name [overwrite] [files]
     Write + immediately load <base>/scenarios/<name>.scn (paused; ASAS ON at 0).
+    If files provided, automatically load them first.
     """
+    if len(args) < 1:
+        _echo_err("Usage: SATG_RL_RUN name [overwrite] [files]")
+        return False, ""
+    
+    name = str(args[0]).strip()
+    overwrite = int(args[1]) if len(args) > 1 else 0
+    
+    # Handle files parameter (all remaining arguments joined)
+    files = ""
+    if len(args) > 2:
+        files = " ".join(str(arg) for arg in args[2:])
+        # Handle pipe-separated files (from GUI)
+        if "|" in files:
+            files = files.replace("|", ",")
+    
+    # Auto-load files if provided and not already loaded
+    if files and not STATE.loaded_ok:
+        result, _ = SATG_RL_LOAD(files)
+        if not result:
+            return False, ""
+    
     if not STATE.loaded_ok:
         _echo_err("No data loaded. Run SATG_RL_LOAD first."); return False, ""
     if not os.path.isdir(STATE.scn_dir): os.makedirs(STATE.scn_dir, exist_ok=True)
