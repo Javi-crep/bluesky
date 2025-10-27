@@ -1,0 +1,23 @@
+{
+  "flights_files": [
+    "C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/data/flights.csv"
+  ],
+  "tracks_files": [
+    "C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/data/flights_points.csv"
+  ],
+  "j_on": true,
+  "j_dist": 0,
+  "j_seed": 5,
+  "j_dt": 4.0,
+  "j_dlat": 6.0,
+  "j_dlon": 3.0,
+  "j_dfl": 5,
+  "j_nsig": 0.0,
+  "j_pct": 100,
+  "autodel_chk": true,
+  "scn_name": "replay",
+  "rl_seed": 0,
+  "rl_overwrite": true,
+  "saved_at": "2025-10-27T20:25:20.314400",
+  "tab_type": "Realistic Replay"
+}

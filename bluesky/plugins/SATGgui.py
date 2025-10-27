@@ -4,13 +4,17 @@
 # PyQt6; lazy window creation to avoid QApplication race.
 
 from typing import Dict, List, Optional, Tuple
+import os
+import json
+from datetime import datetime
 
 from PyQt6.QtCore import Qt, QTime
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
-    QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup
+    QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup,
+    QInputDialog, QMessageBox
 )
 from PyQt6 import sip
 from bluesky import stack
@@ -484,29 +488,963 @@ class TopStrip(QWidget):
     """Top strip with base dir controls and a single RESET button."""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.main_window = parent  # Store reference to main window for config access
         lay = QHBoxLayout(self)
 
         btn_browse = QPushButton("Browse Base Folder", self)
         btn_show = QPushButton("Show Paths", self)
         btn_help = QPushButton("SATG_HELP", self)
+        btn_save_config = QPushButton("Save Config", self)
+        btn_load_config = QPushButton("Load Config", self)
+        btn_edit_configs = QPushButton("Edit Configs", self)
         btn_reset = QPushButton("Reset", self)
         btn_reset.setToolTip("Full BlueSky reset")
+        btn_save_config.setToolTip("Save current tab configuration")
+        btn_load_config.setToolTip("Load saved tab configuration")
+        btn_edit_configs.setToolTip("Manage saved configurations")
 
         lay.addWidget(btn_browse)
         lay.addWidget(btn_show)
         lay.addWidget(btn_help)
         lay.addStretch(1)
+        lay.addWidget(btn_save_config)
+        lay.addWidget(btn_load_config)
+        lay.addWidget(btn_edit_configs)
         lay.addWidget(btn_reset)
 
         btn_browse.clicked.connect(self._choose_base)
         btn_show.clicked.connect(lambda: _emit("SATG_DIR"))
         btn_help.clicked.connect(lambda: _emit("SATG_HELP"))
+        btn_save_config.clicked.connect(self._save_config)
+        btn_load_config.clicked.connect(self._load_config)
+        btn_edit_configs.clicked.connect(self._edit_configs)
         btn_reset.clicked.connect(lambda: _emit("RESET"))
 
     def _choose_base(self):
         path = QFileDialog.getExistingDirectory(self, "Choose SATG base directory")
         if path:
             _emit(_join_tokens("SATG_DIR", _qpath(path)))
+    
+    def _save_config(self):
+        """Save current tab configuration to a file."""
+        if not self.main_window:
+            QMessageBox.warning(self, "Error", "Cannot access main window")
+            return
+            
+        # Get current tab
+        current_tab = self.main_window.tabs.currentWidget()
+        tab_name = self.main_window.tabs.tabText(self.main_window.tabs.currentIndex())
+        
+        # Get save name from user
+        name, ok = QInputDialog.getText(self, "Save Configuration", 
+                                       f"Enter name for {tab_name} configuration:")
+        if not ok or not name.strip():
+            return
+            
+        name = name.strip()
+        
+        # Create configSaves directory if it doesn't exist
+        config_dir = os.path.join("satg_data", "configSaves")
+        os.makedirs(config_dir, exist_ok=True)
+        
+        # Extract configuration from current tab
+        config_data = self._extract_tab_config(current_tab, tab_name)
+        if not config_data:
+            QMessageBox.warning(self, "Error", f"Cannot save configuration for {tab_name} tab")
+            return
+            
+        # Save to file
+        filename = f"{name}_{tab_name.replace(' ', '_').lower()}.json"
+        filepath = os.path.join(config_dir, filename)
+        
+        try:
+            config_data['saved_at'] = datetime.now().isoformat()
+            config_data['tab_type'] = tab_name
+            
+            with open(filepath, 'w') as f:
+                json.dump(config_data, f, indent=2)
+                
+            QMessageBox.information(self, "Success", f"Configuration saved as:\n{filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
+    
+    def _load_config(self):
+        """Load a saved configuration into the current tab."""
+        if not self.main_window:
+            QMessageBox.warning(self, "Error", "Cannot access main window")
+            return
+            
+        # Get current tab
+        current_tab = self.main_window.tabs.currentWidget()
+        tab_name = self.main_window.tabs.tabText(self.main_window.tabs.currentIndex())
+        
+        # Check if configSaves directory exists
+        config_dir = os.path.join("satg_data", "configSaves")
+        if not os.path.exists(config_dir):
+            QMessageBox.information(self, "No Configurations", "No saved configurations found.\nSave a configuration first.")
+            return
+            
+        # Find config files for this tab type
+        tab_suffix = f"_{tab_name.replace(' ', '_').lower()}.json"
+        config_files = [f for f in os.listdir(config_dir) if f.endswith(tab_suffix)]
+        
+        if not config_files:
+            QMessageBox.information(self, "No Configurations", f"No saved configurations found for {tab_name} tab.")
+            return
+            
+        # Let user choose which config to load
+        config_names = [f.replace(tab_suffix, '') for f in config_files]
+        name, ok = QInputDialog.getItem(self, "Load Configuration", 
+                                       f"Select {tab_name} configuration to load:", 
+                                       config_names, 0, False)
+        if not ok:
+            return
+            
+        # Load the selected configuration
+        filename = f"{name}{tab_suffix}"
+        filepath = os.path.join(config_dir, filename)
+        
+        try:
+            with open(filepath, 'r') as f:
+                config_data = json.load(f)
+                
+            if config_data.get('tab_type') != tab_name:
+                QMessageBox.warning(self, "Error", "Configuration is for a different tab type")
+                return
+                
+            # Apply configuration to current tab
+            success = self._apply_tab_config(current_tab, tab_name, config_data)
+            if success:
+                QMessageBox.information(self, "Success", f"Configuration '{name}' loaded successfully")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to apply some configuration settings")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
+    
+    def _extract_tab_config(self, tab_widget, tab_name: str) -> Optional[Dict]:
+        """Extract configuration data from a tab widget."""
+        config = {}
+        
+        if tab_name == "Realistic Replay":
+            config.update(self._extract_rl_config(tab_widget))
+        elif tab_name == "Geometric Conflicts":
+            config.update(self._extract_gc_config(tab_widget))
+        elif tab_name == "Random Conflicts":
+            config.update(self._extract_rc_config(tab_widget))
+        elif tab_name == "Procedures":
+            config.update(self._extract_proc_config(tab_widget))
+        else:
+            return None
+            
+        return config
+    
+    def _apply_tab_config(self, tab_widget, tab_name: str, config_data: Dict) -> bool:
+        """Apply configuration data to a tab widget."""
+        try:
+            if tab_name == "Realistic Replay":
+                return self._apply_rl_config(tab_widget, config_data)
+            elif tab_name == "Geometric Conflicts":
+                return self._apply_gc_config(tab_widget, config_data)
+            elif tab_name == "Random Conflicts":
+                return self._apply_rc_config(tab_widget, config_data)
+            elif tab_name == "Procedures":
+                return self._apply_proc_config(tab_widget, config_data)
+            else:
+                return False
+        except Exception:
+            return False
+    
+    def _extract_proc_config(self, tab_widget) -> Dict:
+        """Extract Procedures tab configuration."""
+        config = {}
+        
+        # Files loaded
+        config['proc_files'] = getattr(tab_widget, '_proc_files', [])
+        config['wpt_files'] = getattr(tab_widget, '_wpt_files', [])
+        
+        # Origins and destinations
+        config['origins'] = getattr(tab_widget, '_origins', {})
+        config['destinations'] = getattr(tab_widget, '_destinations', {})
+        
+        # Generic parameters
+        config['gen_flights'] = tab_widget.gen_flights.value()
+        config['gen_minsep'] = tab_widget.gen_minsep.value()
+        config['spawn_r'] = tab_widget.spawn_r.value()
+        config['spawn_env'] = tab_widget.spawn_env.value()
+        
+        # SID parameters
+        config['sid_flights'] = tab_widget.sid_flights.value()
+        config['sid_alt'] = tab_widget.sid_alt.value()
+        config['sid_spd'] = tab_widget.sid_spd.value()
+        config['sid_mode'] = tab_widget.sid_mode.currentIndex()
+        
+        # STAR parameters
+        config['star_flights'] = tab_widget.star_flights.value()
+        config['star_alt_fl'] = tab_widget.star_alt_fl.value()
+        config['star_mach'] = tab_widget.star_mach.value()
+        config['star_mode'] = tab_widget.star_mode.currentIndex()
+        config['star_rate_basis'] = tab_widget.star_rate_basis.currentIndex()
+        config['star_final_alt_fl'] = tab_widget.star_final_alt_fl.value()
+        config['star_final_spd'] = tab_widget.star_final_spd.value()
+        
+        # Scenario parameters
+        config['scn_name'] = tab_widget.scn.text()
+        config['seed'] = tab_widget.seed.value()
+        config['overwrite'] = tab_widget.overwrite.isChecked()
+        config['dest_enable'] = tab_widget.dest_enable.isChecked()
+        
+        return config
+    
+    def _apply_proc_config(self, tab_widget, config_data: Dict) -> bool:
+        """Apply configuration to Procedures tab."""
+        try:
+            # Clear existing files from GUI lists and backend first
+            tab_widget.lst_wpt.clear()
+            tab_widget.lst_proc.clear()
+            tab_widget._wpt_files.clear()
+            tab_widget._proc_files.clear()
+            
+            # Apply generic parameters
+            if 'gen_flights' in config_data:
+                tab_widget.gen_flights.setValue(config_data['gen_flights'])
+            if 'gen_minsep' in config_data:
+                tab_widget.gen_minsep.setValue(config_data['gen_minsep'])
+            if 'spawn_r' in config_data:
+                tab_widget.spawn_r.setValue(config_data['spawn_r'])
+            if 'spawn_env' in config_data:
+                tab_widget.spawn_env.setValue(config_data['spawn_env'])
+                
+            # Apply SID parameters
+            if 'sid_flights' in config_data:
+                tab_widget.sid_flights.setValue(config_data['sid_flights'])
+            if 'sid_alt' in config_data:
+                tab_widget.sid_alt.setValue(config_data['sid_alt'])
+            if 'sid_spd' in config_data:
+                tab_widget.sid_spd.setValue(config_data['sid_spd'])
+            if 'sid_mode' in config_data:
+                tab_widget.sid_mode.setCurrentIndex(config_data['sid_mode'])
+                
+            # Apply STAR parameters
+            if 'star_flights' in config_data:
+                tab_widget.star_flights.setValue(config_data['star_flights'])
+            if 'star_alt_fl' in config_data:
+                tab_widget.star_alt_fl.setValue(config_data['star_alt_fl'])
+            if 'star_mach' in config_data:
+                tab_widget.star_mach.setValue(config_data['star_mach'])
+            if 'star_mode' in config_data:
+                tab_widget.star_mode.setCurrentIndex(config_data['star_mode'])
+            if 'star_rate_basis' in config_data:
+                tab_widget.star_rate_basis.setCurrentIndex(config_data['star_rate_basis'])
+            if 'star_final_alt_fl' in config_data:
+                tab_widget.star_final_alt_fl.setValue(config_data['star_final_alt_fl'])
+            if 'star_final_spd' in config_data:
+                tab_widget.star_final_spd.setValue(config_data['star_final_spd'])
+                
+            # Apply scenario parameters
+            if 'scn_name' in config_data:
+                tab_widget.scn.setText(config_data['scn_name'])
+            if 'seed' in config_data:
+                tab_widget.seed.setValue(config_data['seed'])
+            if 'overwrite' in config_data:
+                tab_widget.overwrite.setChecked(config_data['overwrite'])
+            if 'dest_enable' in config_data:
+                tab_widget.dest_enable.setChecked(config_data['dest_enable'])
+                
+            # Restore origins and destinations data BEFORE loading files
+            if 'origins' in config_data:
+                tab_widget._origins = dict(config_data['origins'])
+            if 'destinations' in config_data:
+                tab_widget._destinations = dict(config_data['destinations'])
+                
+            # Load files and let the normal GUI mechanism handle everything
+            files_loaded = []
+            files_failed = []
+            
+            # Load waypoint files
+            if 'wpt_files' in config_data and config_data['wpt_files']:
+                for file_path in config_data['wpt_files']:
+                    if os.path.exists(file_path):
+                        try:
+                            # Load the file via backend
+                            _emit(_join_tokens("SATG_PROC_LOAD_WPT", _qpath(file_path)))
+                            # Add to internal list 
+                            tab_widget._wpt_files.append(file_path)
+                            # Let the normal GUI method handle the rest
+                            tab_widget.lst_wpt.addItem(file_path)
+                            files_loaded.append(os.path.basename(file_path))
+                        except Exception:
+                            files_failed.append(os.path.basename(file_path))
+                    else:
+                        files_failed.append(f"{os.path.basename(file_path)} (not found)")
+                        
+            # Load procedure files using simple approach
+            if 'proc_files' in config_data and config_data['proc_files']:
+                for file_path in config_data['proc_files']:
+                    if file_path not in tab_widget._proc_files and os.path.exists(file_path):
+                        try:
+                            # Load the file via backend
+                            _emit(_join_tokens("SATG_PROC_LOAD_PROC", _qpath(file_path)))
+                            # Add to internal list
+                            tab_widget._proc_files.append(file_path)
+                            # Use the simple GUI creation method
+                            self._add_single_proc_file_to_gui(tab_widget, file_path)
+                            files_loaded.append(os.path.basename(file_path))
+                        except Exception:
+                            files_failed.append(os.path.basename(file_path))
+                    elif not os.path.exists(file_path):
+                        files_failed.append(f"{os.path.basename(file_path)} (not found)")
+            
+            # The origins and destinations are already set in the internal state (lines 754-757)
+            # and the _add_single_proc_file_to_gui method will use them automatically
+            # No need for additional field updates - this actually causes problems!
+            
+            # IMPORTANT: Call the sync methods like the original _add_proc does
+            if 'proc_files' in config_data and config_data['proc_files']:
+                tab_widget._refresh_sid_runway_rows()
+                tab_widget._refresh_star_rate_rows()
+                tab_widget._sync_destination_edits()
+                tab_widget._sync_origin_edits()
+                tab_widget._update_dest_state()
+            
+            # Show file loading results
+            if files_loaded or files_failed:
+                message_parts = []
+                if files_loaded:
+                    message_parts.append(f"Successfully loaded files:\n" + "\n".join(f"  • {f}" for f in files_loaded))
+                if files_failed:
+                    message_parts.append(f"Failed to load files:\n" + "\n".join(f"  • {f}" for f in files_failed))
+                    
+                QMessageBox.information(self, "File Loading Results", "\n\n".join(message_parts))
+                
+            return True
+        except Exception as e:
+            print(f"Error applying proc config: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _add_single_proc_file_to_gui(self, tab_widget, file_path: str):
+        """Add a single procedure file to GUI using the same logic as _add_proc."""
+        # This extracts the single-file GUI creation logic from _add_proc
+        item = QListWidgetItem(tab_widget.lst_proc)
+        item.setData(Qt.ItemDataRole.UserRole, file_path)
+        container = QWidget(tab_widget.lst_proc)
+        row_layout = QHBoxLayout(container)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        is_sid = tab_widget._is_sid_file(file_path)
+        is_star = tab_widget._is_star_file(file_path)
+
+        origin_edit: Optional[QLineEdit] = None
+        origin_all_btn: Optional[QPushButton] = None
+        if is_sid:
+            origin_edit = QLineEdit(container)
+            origin_edit.setPlaceholderText("Origin ICAO")
+            origin_edit.setMaxLength(4)
+            origin_edit.setMaximumWidth(90)
+            if tab_widget._origins.get(file_path):
+                origin_edit.setText(tab_widget._origins[file_path])
+                # Immediately call the backend to set the ICAO (needed for config loading)
+                tab_widget._update_origin_entry(file_path, tab_widget._origins[file_path])
+            origin_edit.editingFinished.connect(lambda path=file_path, ref=origin_edit: tab_widget._update_origin_entry(path, ref.text()))
+
+            origin_all_btn = QPushButton("Origin -> all", container)
+            origin_all_btn.setAutoDefault(False)
+            origin_all_btn.clicked.connect(lambda _, path=file_path: tab_widget._apply_origin_to_all(path))
+
+            row_layout.addWidget(origin_edit)
+            row_layout.addWidget(origin_all_btn)
+
+        label = QLabel(file_path, container)
+        label.setStyleSheet("color: #555;")
+        row_layout.addWidget(label, 2)
+
+        dest_edit = QLineEdit(container)
+        dest_edit.setPlaceholderText("Destinations (comma separated)")
+        existing = tab_widget._destinations.get(file_path, [])
+        if existing:
+            dest_edit.setText(", ".join(existing))
+            # Immediately call the backend to set the destinations (needed for config loading)
+            tab_widget._update_destination_entry(file_path, ", ".join(existing))
+        dest_edit.editingFinished.connect(lambda path=file_path, ref=dest_edit: tab_widget._update_destination_entry(path, ref.text()))
+
+        dest_all_btn = QPushButton("Dest -> all", container)
+        dest_all_btn.setAutoDefault(False)
+        dest_all_btn.clicked.connect(lambda _, path=file_path: tab_widget._apply_dest_to_all(path))
+
+        row_layout.addWidget(dest_edit, 1)
+        row_layout.addWidget(dest_all_btn)
+
+        item.setSizeHint(container.sizeHint())
+        tab_widget.lst_proc.setItemWidget(item, container)
+        
+        # CRITICAL: Populate the _proc_widgets dictionary (this was missing!)
+        tab_widget._proc_widgets[file_path] = {
+            "item": item,
+            "origin": origin_edit,
+            "origin_all": origin_all_btn,
+            "dest": dest_edit,
+            "dest_all": dest_all_btn,
+            "is_sid": is_sid,
+            "is_star": is_star,
+        }
+    
+    def _extract_rl_config(self, tab_widget) -> Dict:
+        """Extract Realistic Replay tab configuration."""
+        config = {}
+        
+        # File lists
+        config['flights_files'] = getattr(tab_widget, '_chosen_flights_files', []).copy()
+        config['tracks_files'] = getattr(tab_widget, '_chosen_tracks_files', []).copy()
+        
+        # Jitter settings
+        config['j_on'] = tab_widget.j_on.isChecked()
+        config['j_dist'] = tab_widget.j_dist.currentIndex()
+        config['j_seed'] = tab_widget.j_seed.value()
+        config['j_dt'] = tab_widget.j_dt.value()
+        config['j_dlat'] = tab_widget.j_dlat.value()
+        config['j_dlon'] = tab_widget.j_dlon.value()
+        config['j_dfl'] = tab_widget.j_dfl.value()
+        config['j_nsig'] = tab_widget.j_nsig.value()
+        config['j_pct'] = tab_widget.j_pct.value()
+        
+        # Options
+        config['autodel_chk'] = tab_widget.autodel_chk.isChecked()
+        
+        # Scenario settings
+        config['scn_name'] = tab_widget.scn_name.text()
+        config['rl_seed'] = tab_widget.rl_seed.value()
+        config['rl_overwrite'] = tab_widget.rl_overwrite.isChecked()
+        
+        return config
+    
+    def _apply_rl_config(self, tab_widget, config_data: Dict) -> bool:
+        """Apply configuration to Realistic Replay tab."""
+        try:
+            # Clear existing file lists
+            tab_widget._chosen_flights_files.clear()
+            tab_widget.lst_flights_files.clear()
+            tab_widget._chosen_tracks_files.clear()
+            tab_widget.lst_tracks_files.clear()
+            
+            # Restore file lists
+            if 'flights_files' in config_data:
+                tab_widget._chosen_flights_files.extend(config_data['flights_files'])
+                for file_path in config_data['flights_files']:
+                    tab_widget.lst_flights_files.addItem(file_path)
+            
+            if 'tracks_files' in config_data:
+                tab_widget._chosen_tracks_files.extend(config_data['tracks_files'])
+                for file_path in config_data['tracks_files']:
+                    tab_widget.lst_tracks_files.addItem(file_path)
+            
+            # Restore jitter settings
+            if 'j_on' in config_data:
+                tab_widget.j_on.setChecked(config_data['j_on'])
+            if 'j_dist' in config_data:
+                tab_widget.j_dist.setCurrentIndex(config_data['j_dist'])
+            if 'j_seed' in config_data:
+                tab_widget.j_seed.setValue(config_data['j_seed'])
+            if 'j_dt' in config_data:
+                tab_widget.j_dt.setValue(config_data['j_dt'])
+            if 'j_dlat' in config_data:
+                tab_widget.j_dlat.setValue(config_data['j_dlat'])
+            if 'j_dlon' in config_data:
+                tab_widget.j_dlon.setValue(config_data['j_dlon'])
+            if 'j_dfl' in config_data:
+                tab_widget.j_dfl.setValue(config_data['j_dfl'])
+            if 'j_nsig' in config_data:
+                tab_widget.j_nsig.setValue(config_data['j_nsig'])
+            if 'j_pct' in config_data:
+                tab_widget.j_pct.setValue(config_data['j_pct'])
+            
+            # Restore options
+            if 'autodel_chk' in config_data:
+                tab_widget.autodel_chk.setChecked(config_data['autodel_chk'])
+            
+            # Restore scenario settings
+            if 'scn_name' in config_data:
+                tab_widget.scn_name.setText(config_data['scn_name'])
+            if 'rl_seed' in config_data:
+                tab_widget.rl_seed.setValue(config_data['rl_seed'])
+            if 'rl_overwrite' in config_data:
+                tab_widget.rl_overwrite.setChecked(config_data['rl_overwrite'])
+            
+            return True
+        except Exception as e:
+            print(f"Error applying RL config: {e}")
+            return False
+    
+    def _extract_gc_config(self, tab_widget) -> Dict:
+        """Extract Geometric Conflicts tab configuration."""
+        config = {}
+        
+        # Minima panel settings
+        if hasattr(tab_widget, '_minima'):
+            minima = tab_widget._minima
+            config['hsep'] = minima._hsep.value()
+            config['vsep'] = minima._vsep.value()
+        
+        # Absolute page settings
+        if hasattr(tab_widget, '_absolute_page'):
+            abs_page = tab_widget._absolute_page
+            config['gc_actypes'] = abs_page.gc_actypes.text()
+            config['gc_lat'] = abs_page.gc_lat.text()
+            config['gc_lon'] = abs_page.gc_lon.text()
+            config['gc_wp'] = abs_page.gc_wp.text()
+            config['gc_use_coords_rb'] = abs_page.gc_use_coords_rb.isChecked()
+            config['gc_use_wp_rb'] = abs_page.gc_use_wp_rb.isChecked()
+            config['gc_fl_value'] = abs_page.gc_fl_value.text()
+            config['gc_fl_range'] = abs_page.gc_fl_range.text()
+            config['gc_cas_value'] = abs_page.gc_cas_value.text()
+            config['gc_cas_range'] = abs_page.gc_cas_range.text()
+            config['gc_tcpa_value'] = abs_page.gc_tcpa_value.text()
+            config['gc_tcpa_range'] = abs_page.gc_tcpa_range.text()
+            config['gc_angle_value'] = abs_page.gc_angle_value.text()
+            config['gc_angle_range'] = abs_page.gc_angle_range.text()
+            config['gc_alt_offset_value'] = abs_page.gc_alt_offset_value.text()
+            config['gc_alt_offset_range'] = abs_page.gc_alt_offset_range.text()
+            config['gc_name'] = abs_page.gc_name.text()
+            config['gc_seed'] = abs_page.gc_seed.value()
+            config['gc_overwrite_cb'] = abs_page.gc_overwrite_cb.isChecked()
+            config['show_cpa_cb'] = abs_page.show_cpa_cb.isChecked()
+        
+        return config
+    
+    def _apply_gc_config(self, tab_widget, config_data: Dict) -> bool:
+        """Apply configuration to Geometric Conflicts tab."""
+        try:
+            # Minima panel settings
+            if hasattr(tab_widget, '_minima'):
+                minima = tab_widget._minima
+                if 'hsep' in config_data:
+                    minima._hsep.setValue(config_data['hsep'])
+                if 'vsep' in config_data:
+                    minima._vsep.setValue(config_data['vsep'])
+            
+            # Absolute page settings
+            if hasattr(tab_widget, '_absolute_page'):
+                abs_page = tab_widget._absolute_page
+                if 'gc_actypes' in config_data:
+                    abs_page.gc_actypes.setText(config_data['gc_actypes'])
+                if 'gc_lat' in config_data:
+                    abs_page.gc_lat.setText(config_data['gc_lat'])
+                if 'gc_lon' in config_data:
+                    abs_page.gc_lon.setText(config_data['gc_lon'])
+                if 'gc_wp' in config_data:
+                    abs_page.gc_wp.setText(config_data['gc_wp'])
+                if 'gc_use_coords_rb' in config_data:
+                    abs_page.gc_use_coords_rb.setChecked(config_data['gc_use_coords_rb'])
+                if 'gc_use_wp_rb' in config_data:
+                    abs_page.gc_use_wp_rb.setChecked(config_data['gc_use_wp_rb'])
+                if 'gc_fl_value' in config_data:
+                    abs_page.gc_fl_value.setText(config_data['gc_fl_value'])
+                if 'gc_fl_range' in config_data:
+                    abs_page.gc_fl_range.setText(config_data['gc_fl_range'])
+                if 'gc_cas_value' in config_data:
+                    abs_page.gc_cas_value.setText(config_data['gc_cas_value'])
+                if 'gc_cas_range' in config_data:
+                    abs_page.gc_cas_range.setText(config_data['gc_cas_range'])
+                if 'gc_tcpa_value' in config_data:
+                    abs_page.gc_tcpa_value.setText(config_data['gc_tcpa_value'])
+                if 'gc_tcpa_range' in config_data:
+                    abs_page.gc_tcpa_range.setText(config_data['gc_tcpa_range'])
+                if 'gc_angle_value' in config_data:
+                    abs_page.gc_angle_value.setText(config_data['gc_angle_value'])
+                if 'gc_angle_range' in config_data:
+                    abs_page.gc_angle_range.setText(config_data['gc_angle_range'])
+                if 'gc_alt_offset_value' in config_data:
+                    abs_page.gc_alt_offset_value.setText(config_data['gc_alt_offset_value'])
+                if 'gc_alt_offset_range' in config_data:
+                    abs_page.gc_alt_offset_range.setText(config_data['gc_alt_offset_range'])
+                if 'gc_name' in config_data:
+                    abs_page.gc_name.setText(config_data['gc_name'])
+                if 'gc_seed' in config_data:
+                    abs_page.gc_seed.setValue(config_data['gc_seed'])
+                if 'gc_overwrite_cb' in config_data:
+                    abs_page.gc_overwrite_cb.setChecked(config_data['gc_overwrite_cb'])
+                if 'show_cpa_cb' in config_data:
+                    abs_page.show_cpa_cb.setChecked(config_data['show_cpa_cb'])
+            
+            return True
+        except Exception as e:
+            print(f"Error applying GC config: {e}")
+            return False
+    
+    def _extract_rc_config(self, tab_widget) -> Dict:
+        """Extract Random Conflicts tab configuration."""
+        config = {}
+        
+        # Common settings
+        config['n'] = tab_widget.n.value()
+        config['c_lat'] = tab_widget.c_lat.text()
+        config['c_lon'] = tab_widget.c_lon.text()
+        config['c_rad'] = tab_widget.c_rad.value()
+        config['hsep'] = tab_widget.hsep.value()
+        config['vsep'] = tab_widget.vsep.value()
+        
+        # Area type
+        config['circle_rb'] = tab_widget.circle_rb.isChecked()
+        config['polygon_rb'] = tab_widget.polygon_rb.isChecked()
+        config['polygon_name_input'] = tab_widget.polygon_name_input.text()
+        config['show_circle_cb'] = tab_widget.show_circle_cb.isChecked()
+        config['include_polygon_cb'] = tab_widget.include_polygon_cb.isChecked()
+        
+        # Absolute conflicts
+        config['abs_enabled'] = tab_widget.abs_enabled.isChecked()
+        config['abs_actypes'] = tab_widget.abs_actypes.text()
+        config['abs_fl_value'] = tab_widget.abs_fl_value.text()
+        config['abs_fl_range'] = tab_widget.abs_fl_range.text()
+        config['abs_cas_value'] = tab_widget.abs_cas_value.text()
+        config['abs_cas_range'] = tab_widget.abs_cas_range.text()
+        config['abs_tcpa_value'] = tab_widget.abs_tcpa_value.text()
+        config['abs_tcpa_range'] = tab_widget.abs_tcpa_range.text()
+        config['abs_angle_value'] = tab_widget.abs_angle_value.text()
+        config['abs_angle_range'] = tab_widget.abs_angle_range.text()
+        config['abs_alt_offset_value'] = tab_widget.abs_alt_offset_value.text()
+        config['abs_alt_offset_range'] = tab_widget.abs_alt_offset_range.text()
+        
+        # Relative conflicts
+        config['rel_enabled'] = tab_widget.rel_enabled.isChecked()
+        config['rel_type'] = tab_widget.rel_type.text()
+        config['rel_fl_value'] = tab_widget.rel_fl_value.text()
+        config['rel_fl_range'] = tab_widget.rel_fl_range.text()
+        config['rel_spd_value'] = tab_widget.rel_spd_value.text()
+        config['rel_spd_range'] = tab_widget.rel_spd_range.text()
+        config['rel_dcpa_value'] = tab_widget.rel_dcpa_value.text()
+        config['rel_dcpa_range'] = tab_widget.rel_dcpa_range.text()
+        config['rel_tlosh_value'] = tab_widget.rel_tlosh_value.text()
+        config['rel_tlosh_range'] = tab_widget.rel_tlosh_range.text()
+        config['rel_dh_value'] = tab_widget.rel_dh_value.text()
+        config['rel_dh_range'] = tab_widget.rel_dh_range.text()
+        config['rel_dpsi_value'] = tab_widget.rel_dpsi_value.text()
+        config['rel_dpsi_range'] = tab_widget.rel_dpsi_range.text()
+        config['rel_tlosv_value'] = tab_widget.rel_tlosv_value.text()
+        config['rel_tlosv_range'] = tab_widget.rel_tlosv_range.text()
+        
+        # Scenario settings
+        config['scn'] = tab_widget.scn.text()
+        config['seed'] = tab_widget.seed.value()
+        config['gc_overwrite_cb'] = tab_widget.gc_overwrite_cb.isChecked()
+        
+        return config
+    
+    def _apply_rc_config(self, tab_widget, config_data: Dict) -> bool:
+        """Apply configuration to Random Conflicts tab."""
+        try:
+            # Common settings
+            if 'n' in config_data:
+                tab_widget.n.setValue(config_data['n'])
+            if 'c_lat' in config_data:
+                tab_widget.c_lat.setText(config_data['c_lat'])
+            if 'c_lon' in config_data:
+                tab_widget.c_lon.setText(config_data['c_lon'])
+            if 'c_rad' in config_data:
+                tab_widget.c_rad.setValue(config_data['c_rad'])
+            if 'hsep' in config_data:
+                tab_widget.hsep.setValue(config_data['hsep'])
+            if 'vsep' in config_data:
+                tab_widget.vsep.setValue(config_data['vsep'])
+            
+            # Area type
+            if 'circle_rb' in config_data:
+                tab_widget.circle_rb.setChecked(config_data['circle_rb'])
+            if 'polygon_rb' in config_data:
+                tab_widget.polygon_rb.setChecked(config_data['polygon_rb'])
+            if 'polygon_name_input' in config_data:
+                tab_widget.polygon_name_input.setText(config_data['polygon_name_input'])
+            if 'show_circle_cb' in config_data:
+                tab_widget.show_circle_cb.setChecked(config_data['show_circle_cb'])
+            if 'include_polygon_cb' in config_data:
+                tab_widget.include_polygon_cb.setChecked(config_data['include_polygon_cb'])
+            
+            # Absolute conflicts
+            if 'abs_enabled' in config_data:
+                tab_widget.abs_enabled.setChecked(config_data['abs_enabled'])
+            if 'abs_actypes' in config_data:
+                tab_widget.abs_actypes.setText(config_data['abs_actypes'])
+            if 'abs_fl_value' in config_data:
+                tab_widget.abs_fl_value.setText(config_data['abs_fl_value'])
+            if 'abs_fl_range' in config_data:
+                tab_widget.abs_fl_range.setText(config_data['abs_fl_range'])
+            if 'abs_cas_value' in config_data:
+                tab_widget.abs_cas_value.setText(config_data['abs_cas_value'])
+            if 'abs_cas_range' in config_data:
+                tab_widget.abs_cas_range.setText(config_data['abs_cas_range'])
+            if 'abs_tcpa_value' in config_data:
+                tab_widget.abs_tcpa_value.setText(config_data['abs_tcpa_value'])
+            if 'abs_tcpa_range' in config_data:
+                tab_widget.abs_tcpa_range.setText(config_data['abs_tcpa_range'])
+            if 'abs_angle_value' in config_data:
+                tab_widget.abs_angle_value.setText(config_data['abs_angle_value'])
+            if 'abs_angle_range' in config_data:
+                tab_widget.abs_angle_range.setText(config_data['abs_angle_range'])
+            if 'abs_alt_offset_value' in config_data:
+                tab_widget.abs_alt_offset_value.setText(config_data['abs_alt_offset_value'])
+            if 'abs_alt_offset_range' in config_data:
+                tab_widget.abs_alt_offset_range.setText(config_data['abs_alt_offset_range'])
+            
+            # Relative conflicts
+            if 'rel_enabled' in config_data:
+                tab_widget.rel_enabled.setChecked(config_data['rel_enabled'])
+            if 'rel_type' in config_data:
+                tab_widget.rel_type.setText(config_data['rel_type'])
+            if 'rel_fl_value' in config_data:
+                tab_widget.rel_fl_value.setText(config_data['rel_fl_value'])
+            if 'rel_fl_range' in config_data:
+                tab_widget.rel_fl_range.setText(config_data['rel_fl_range'])
+            if 'rel_spd_value' in config_data:
+                tab_widget.rel_spd_value.setText(config_data['rel_spd_value'])
+            if 'rel_spd_range' in config_data:
+                tab_widget.rel_spd_range.setText(config_data['rel_spd_range'])
+            if 'rel_dcpa_value' in config_data:
+                tab_widget.rel_dcpa_value.setText(config_data['rel_dcpa_value'])
+            if 'rel_dcpa_range' in config_data:
+                tab_widget.rel_dcpa_range.setText(config_data['rel_dcpa_range'])
+            if 'rel_tlosh_value' in config_data:
+                tab_widget.rel_tlosh_value.setText(config_data['rel_tlosh_value'])
+            if 'rel_tlosh_range' in config_data:
+                tab_widget.rel_tlosh_range.setText(config_data['rel_tlosh_range'])
+            if 'rel_dh_value' in config_data:
+                tab_widget.rel_dh_value.setText(config_data['rel_dh_value'])
+            if 'rel_dh_range' in config_data:
+                tab_widget.rel_dh_range.setText(config_data['rel_dh_range'])
+            if 'rel_dpsi_value' in config_data:
+                tab_widget.rel_dpsi_value.setText(config_data['rel_dpsi_value'])
+            if 'rel_dpsi_range' in config_data:
+                tab_widget.rel_dpsi_range.setText(config_data['rel_dpsi_range'])
+            if 'rel_tlosv_value' in config_data:
+                tab_widget.rel_tlosv_value.setText(config_data['rel_tlosv_value'])
+            if 'rel_tlosv_range' in config_data:
+                tab_widget.rel_tlosv_range.setText(config_data['rel_tlosv_range'])
+            
+            # Scenario settings
+            if 'scn' in config_data:
+                tab_widget.scn.setText(config_data['scn'])
+            if 'seed' in config_data:
+                tab_widget.seed.setValue(config_data['seed'])
+            if 'gc_overwrite_cb' in config_data:
+                tab_widget.gc_overwrite_cb.setChecked(config_data['gc_overwrite_cb'])
+            
+            return True
+        except Exception as e:
+            print(f"Error applying RC config: {e}")
+            return False
+    
+    def _edit_configs(self):
+        """Open a dialog to manage saved configurations."""
+        config_dir = os.path.join("satg_data", "configSaves")
+        if not os.path.exists(config_dir):
+            QMessageBox.information(self, "No Configurations", "No saved configurations found.")
+            return
+        
+        # Get all config files
+        config_files = [f for f in os.listdir(config_dir) if f.endswith('.json')]
+        if not config_files:
+            QMessageBox.information(self, "No Configurations", "No saved configurations found.")
+            return
+        
+        # Create config management dialog
+        dialog = ConfigManagerDialog(config_dir, config_files, self)
+        dialog.exec()
+
+# Config Manager Dialog Class
+class ConfigManagerDialog(QDialog):
+    """Dialog for managing saved configurations."""
+    
+    def __init__(self, config_dir: str, config_files: List[str], parent=None):
+        super().__init__(parent)
+        self.config_dir = config_dir
+        self.config_files = config_files
+        self.setWindowTitle("Manage Saved Configurations")
+        self.setMinimumSize(600, 400)
+        
+        layout = QVBoxLayout(self)
+        
+        # Info label
+        info_label = QLabel("Manage your saved SATG configurations:")
+        layout.addWidget(info_label)
+        
+        # Config list
+        self.config_list = QListWidget()
+        self.refresh_list()
+        layout.addWidget(self.config_list)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        btn_rename = QPushButton("Rename")
+        btn_duplicate = QPushButton("Duplicate")
+        btn_delete = QPushButton("Delete")
+        btn_close = QPushButton("Close")
+        
+        btn_rename.clicked.connect(self._rename_config)
+        btn_duplicate.clicked.connect(self._duplicate_config)
+        btn_delete.clicked.connect(self._delete_config)
+        btn_close.clicked.connect(self.accept)
+        
+        button_layout.addWidget(btn_rename)
+        button_layout.addWidget(btn_duplicate)
+        button_layout.addWidget(btn_delete)
+        button_layout.addStretch()
+        button_layout.addWidget(btn_close)
+        
+        layout.addLayout(button_layout)
+    
+    def refresh_list(self):
+        """Refresh the configuration list."""
+        self.config_list.clear()
+        self.config_files = [f for f in os.listdir(self.config_dir) if f.endswith('.json')]
+        
+        for config_file in sorted(self.config_files):
+            # Parse config info
+            try:
+                with open(os.path.join(self.config_dir, config_file), 'r') as f:
+                    config_data = json.load(f)
+                
+                name = config_file.replace('.json', '')
+                tab_type = config_data.get('tab_type', 'Unknown')
+                saved_at = config_data.get('saved_at', 'Unknown')
+                
+                # Format datetime if available
+                if saved_at != 'Unknown':
+                    try:
+                        dt = datetime.fromisoformat(saved_at)
+                        saved_at = dt.strftime('%Y-%m-%d %H:%M')
+                    except:
+                        pass
+                
+                item_text = f"{name} ({tab_type}) - {saved_at}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, config_file)
+                self.config_list.addItem(item)
+                
+            except Exception:
+                # If config file is corrupted, still show it
+                item = QListWidgetItem(f"{config_file} (Error reading file)")
+                item.setData(Qt.ItemDataRole.UserRole, config_file)
+                self.config_list.addItem(item)
+    
+    def _get_selected_config(self):
+        """Get the selected configuration filename."""
+        current_item = self.config_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select a configuration.")
+            return None
+        return current_item.data(Qt.ItemDataRole.UserRole)
+    
+    def _rename_config(self):
+        """Rename the selected configuration."""
+        config_file = self._get_selected_config()
+        if not config_file:
+            return
+        
+        # Extract current name and tab type
+        current_name = config_file.replace('.json', '')
+        if '_' in current_name:
+            name_part = current_name.rsplit('_', 1)[0]
+            tab_part = current_name.rsplit('_', 1)[1]
+        else:
+            name_part = current_name
+            tab_part = ""
+        
+        new_name, ok = QInputDialog.getText(self, "Rename Configuration", 
+                                          f"Enter new name for '{name_part}':", text=name_part)
+        if not ok or not new_name.strip():
+            return
+        
+        new_name = new_name.strip()
+        if tab_part:
+            new_filename = f"{new_name}_{tab_part}.json"
+        else:
+            new_filename = f"{new_name}.json"
+        
+        old_path = os.path.join(self.config_dir, config_file)
+        new_path = os.path.join(self.config_dir, new_filename)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Name Exists", f"Configuration '{new_filename}' already exists.")
+            return
+        
+        try:
+            os.rename(old_path, new_path)
+            self.refresh_list()
+            QMessageBox.information(self, "Success", f"Configuration renamed to '{new_filename}'")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to rename configuration:\n{str(e)}")
+    
+    def _duplicate_config(self):
+        """Duplicate the selected configuration."""
+        config_file = self._get_selected_config()
+        if not config_file:
+            return
+        
+        # Extract current name and tab type
+        current_name = config_file.replace('.json', '')
+        if '_' in current_name:
+            name_part = current_name.rsplit('_', 1)[0]
+            tab_part = current_name.rsplit('_', 1)[1]
+        else:
+            name_part = current_name
+            tab_part = ""
+        
+        new_name, ok = QInputDialog.getText(self, "Duplicate Configuration", 
+                                          f"Enter name for duplicate of '{name_part}':", 
+                                          text=f"{name_part}_copy")
+        if not ok or not new_name.strip():
+            return
+        
+        new_name = new_name.strip()
+        if tab_part:
+            new_filename = f"{new_name}_{tab_part}.json"
+        else:
+            new_filename = f"{new_name}.json"
+        
+        old_path = os.path.join(self.config_dir, config_file)
+        new_path = os.path.join(self.config_dir, new_filename)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Name Exists", f"Configuration '{new_filename}' already exists.")
+            return
+        
+        try:
+            # Read and modify the configuration
+            with open(old_path, 'r') as f:
+                config_data = json.load(f)
+            
+            # Update metadata
+            config_data['saved_at'] = datetime.now().isoformat()
+            
+            # Save duplicate
+            with open(new_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            
+            self.refresh_list()
+            QMessageBox.information(self, "Success", f"Configuration duplicated as '{new_filename}'")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to duplicate configuration:\n{str(e)}")
+    
+    def _delete_config(self):
+        """Delete the selected configuration."""
+        config_file = self._get_selected_config()
+        if not config_file:
+            return
+        
+        # Confirm deletion
+        reply = QMessageBox.question(self, "Confirm Deletion", 
+                                   f"Are you sure you want to delete configuration '{config_file}'?\n\n"
+                                   f"This action cannot be undone.",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            os.remove(os.path.join(self.config_dir, config_file))
+            self.refresh_list()
+            QMessageBox.information(self, "Success", f"Configuration '{config_file}' deleted successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to delete configuration:\n{str(e)}")
 
 # --- RL tab (Realistic Replay) --------------------------------------------
 

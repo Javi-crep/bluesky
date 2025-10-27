@@ -1,0 +1,86 @@
+{
+  "proc_files": [
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ANDIK.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ARNEM.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-BERGI.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-GORLO.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-KUDAD.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-LOPIK.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK.scn",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK-1T.scn"
+  ],
+  "wpt_files": [
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/DEFFIX.scn"
+  ],
+  "origins": {
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ANDIK.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ARNEM.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-BERGI.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-GORLO.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-KUDAD.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-LOPIK.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK.scn": "EHAM",
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK-1T.scn": "EHAM"
+  },
+  "destinations": {
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ANDIK.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ARNEM.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-BERGI.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-GORLO.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-KUDAD.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-LOPIK.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK.scn": [
+      "EHAM",
+      "LEMD"
+    ],
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK-1T.scn": [
+      "EHAM",
+      "LEMD"
+    ]
+  },
+  "gen_flights": 20,
+  "gen_minsep": 90,
+  "spawn_r": 5.0,
+  "spawn_env": 40.0,
+  "sid_flights": 50,
+  "sid_alt": 3000,
+  "sid_spd": 300,
+  "sid_mode": 0,
+  "star_flights": 20,
+  "star_alt_fl": 360,
+  "star_mach": 0.79,
+  "star_mode": 0,
+  "star_rate_basis": 0,
+  "star_final_alt_fl": 100,
+  "star_final_spd": 240,
+  "scn_name": "proc_scn",
+  "seed": 0,
+  "overwrite": true,
+  "dest_enable": true,
+  "saved_at": "2025-10-27T19:24:19.597032",
+  "tab_type": "Procedures"
+}
