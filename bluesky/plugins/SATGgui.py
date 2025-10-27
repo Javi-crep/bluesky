@@ -8,7 +8,7 @@ import os
 import json
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QTime
+from PyQt6.QtCore import Qt, QTime, QLocale
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
@@ -26,6 +26,11 @@ except Exception:
 import os, re
 
 # --- helpers ---------------------------------------------------------------
+
+def _configure_decimal_separator(spinbox):
+    """Configure spinbox to use dot as decimal separator (C locale)"""
+    c_locale = QLocale(QLocale.Language.C)
+    spinbox.setLocale(c_locale)
 
 def _emit(cmd: str):
     """Send a BlueSky console command (no GUI echo here)."""
@@ -688,6 +693,27 @@ class TopStrip(QWidget):
         config['star_final_alt_fl'] = tab_widget.star_final_alt_fl.value()
         config['star_final_spd'] = tab_widget.star_final_spd.value()
         
+        # Save SID scheduling data
+        config['sid_rate_rows'] = {}
+        for runway, (label, spin) in tab_widget._sid_rate_rows.items():
+            config['sid_rate_rows'][runway] = spin.value()
+        config['sid_schedule_data'] = dict(tab_widget._sid_schedule_data)
+        
+        # Save STAR scheduling data
+        # IMPORTANT: Ensure state consistency before capturing current rates
+        gui_rate_basis = tab_widget.star_rate_basis.currentIndex()
+        if tab_widget._star_basis_index != gui_rate_basis:
+            # Sync internal state with GUI state
+            tab_widget._star_basis_index = gui_rate_basis
+            # Refresh to ensure correct waypoints are shown
+            tab_widget._refresh_star_rate_rows()
+        
+        # Capture current GUI state before saving to ensure accuracy
+        current_basis = tab_widget._current_star_basis()
+        tab_widget._capture_star_rates(current_basis)
+        config['star_rate_values'] = dict(tab_widget._star_rate_values)
+        config['star_schedule_data'] = dict(tab_widget._star_schedule_data)
+        
         # Scenario parameters
         config['scn_name'] = tab_widget.scn.text()
         config['seed'] = tab_widget.seed.value()
@@ -704,6 +730,10 @@ class TopStrip(QWidget):
             tab_widget.lst_proc.clear()
             tab_widget._wpt_files.clear()
             tab_widget._proc_files.clear()
+            
+            # IMPORTANT: Clear the backend SATG state to remove any previously loaded procedures
+            _emit("SATG_PROC_CLEAR_WPT")
+            _emit("SATG_PROC_CLEAR_PROC")
             
             # Apply generic parameters
             if 'gen_flights' in config_data:
@@ -735,7 +765,12 @@ class TopStrip(QWidget):
             if 'star_mode' in config_data:
                 tab_widget.star_mode.setCurrentIndex(config_data['star_mode'])
             if 'star_rate_basis' in config_data:
+                # Block signals to prevent premature refresh before rate values are restored
+                tab_widget.star_rate_basis.blockSignals(True)
                 tab_widget.star_rate_basis.setCurrentIndex(config_data['star_rate_basis'])
+                # IMPORTANT: Manually update the internal state since signals are blocked
+                tab_widget._star_basis_index = config_data['star_rate_basis']
+                tab_widget.star_rate_basis.blockSignals(False)
             if 'star_final_alt_fl' in config_data:
                 tab_widget.star_final_alt_fl.setValue(config_data['star_final_alt_fl'])
             if 'star_final_spd' in config_data:
@@ -756,6 +791,16 @@ class TopStrip(QWidget):
                 tab_widget._origins = dict(config_data['origins'])
             if 'destinations' in config_data:
                 tab_widget._destinations = dict(config_data['destinations'])
+                
+            # Restore SID scheduling data
+            if 'sid_schedule_data' in config_data:
+                tab_widget._sid_schedule_data = dict(config_data['sid_schedule_data'])
+                
+            # Restore STAR scheduling data
+            if 'star_rate_values' in config_data:
+                tab_widget._star_rate_values = dict(config_data['star_rate_values'])
+            if 'star_schedule_data' in config_data:
+                tab_widget._star_schedule_data = dict(config_data['star_schedule_data'])
                 
             # Load files and let the normal GUI mechanism handle everything
             files_loaded = []
@@ -806,6 +851,20 @@ class TopStrip(QWidget):
                 tab_widget._sync_destination_edits()
                 tab_widget._sync_origin_edits()
                 tab_widget._update_dest_state()
+                
+            # Restore SID rate rows after refresh (which rebuilds the GUI controls)
+            if 'sid_rate_rows' in config_data:
+                for runway, rate_value in config_data['sid_rate_rows'].items():
+                    if runway in tab_widget._sid_rate_rows:
+                        label, spin = tab_widget._sid_rate_rows[runway]
+                        spin.setValue(int(rate_value))
+            
+            # Force another STAR rate rows refresh to ensure rate basis change takes effect
+            # This handles the case where rate basis was set before rate values were restored
+            if 'star_rate_values' in config_data and 'star_rate_basis' in config_data:
+                # Manually trigger the rate basis change to ensure proper refresh
+                current_basis = tab_widget.star_rate_basis.currentIndex()
+                tab_widget._on_star_basis_changed(current_basis)
             
             # Show file loading results
             if files_loaded or files_failed:
@@ -1549,14 +1608,21 @@ class RLTab(QWidget):
 
         self.j_on = QCheckBox("Enable jitter"); self.j_on.setChecked(False)
         self.j_dist = QComboBox(); self.j_dist.addItems(["uniform", "normal"])
+        self.j_dist.setToolTip("Distribution type for random jitter: uniform (flat) or normal (bell curve)")
         self.j_seed = QSpinBox(); self.j_seed.setRange(-2**31, 2**31-1); self.j_seed.setSpecialValueText("")
         self.j_seed.setValue(0)
+        self.j_seed.setToolTip("Random seed for jitter generation (0 = use random seed)")
 
-        self.j_dt   = QDoubleSpinBox(); self.j_dt.setDecimals(3); self.j_dt.setRange(0.0, 1e6); self.j_dt.setValue(0.0)
-        self.j_dlat = QDoubleSpinBox(); self.j_dlat.setDecimals(6); self.j_dlat.setRange(0.0, 10.0); self.j_dlat.setValue(0.0)
-        self.j_dlon = QDoubleSpinBox(); self.j_dlon.setDecimals(6); self.j_dlon.setRange(0.0, 10.0); self.j_dlon.setValue(0.0)
+        self.j_dt   = QDoubleSpinBox(); self.j_dt.setDecimals(3); self.j_dt.setRange(0.0, 1e6); self.j_dt.setValue(0.0); _configure_decimal_separator(self.j_dt)
+        self.j_dt.setToolTip("Time jitter in seconds (0 = no time offset)")
+        self.j_dlat = QDoubleSpinBox(); self.j_dlat.setDecimals(6); self.j_dlat.setRange(0.0, 10.0); self.j_dlat.setValue(0.0); _configure_decimal_separator(self.j_dlat)
+        self.j_dlat.setToolTip("Latitude jitter in degrees (0 = no position offset)")
+        self.j_dlon = QDoubleSpinBox(); self.j_dlon.setDecimals(6); self.j_dlon.setRange(0.0, 10.0); self.j_dlon.setValue(0.0); _configure_decimal_separator(self.j_dlon)
+        self.j_dlon.setToolTip("Longitude jitter in degrees (0 = no position offset)")
         self.j_dfl  = QSpinBox();       self.j_dfl.setRange(0, 5000); self.j_dfl.setValue(0)
-        self.j_nsig = QDoubleSpinBox(); self.j_nsig.setDecimals(2); self.j_nsig.setRange(0.0, 10.0); self.j_nsig.setValue(0.0)
+        self.j_dfl.setToolTip("Flight level jitter in feet (0 = no altitude offset)")
+        self.j_nsig = QDoubleSpinBox(); self.j_nsig.setDecimals(2); self.j_nsig.setRange(0.0, 10.0); self.j_nsig.setValue(0.0); _configure_decimal_separator(self.j_nsig)
+        self.j_nsig.setToolTip("Standard deviation for normal distribution (only used when dist=normal)")
 
         self.j_pct = QSlider(Qt.Orientation.Horizontal)
         self.j_pct.setRange(0, 100)
@@ -1609,6 +1675,7 @@ class RLTab(QWidget):
         
         self.scn_name = QLineEdit("replay")
         self.scn_name.setPlaceholderText("Scenario name, e.g. replay_01")
+        self.scn_name.setToolTip("Name for the generated scenario file (without .scn extension)")
         
         self.rl_seed = QSpinBox()
         self.rl_seed.setRange(0, 2**31-1)
@@ -1617,6 +1684,7 @@ class RLTab(QWidget):
         
         self.rl_overwrite = QCheckBox("Overwrite scenario if it exists")
         self.rl_overwrite.setChecked(False)
+        self.rl_overwrite.setToolTip("Replace existing scenario file if one exists with the same name")
         
         scenario_form.addRow("Scenario name:", self.scn_name)
         scenario_form.addRow("Seed (0=random):", self.rl_seed)
@@ -1834,12 +1902,15 @@ class GCMinimaPanel(QGroupBox):
         self._hsep.setDecimals(2)
         self._hsep.setSingleStep(0.1)
         self._hsep.setValue(5.0)
+        self._hsep.setToolTip("Horizontal separation at closest point of approach in nautical miles")
+        _configure_decimal_separator(self._hsep)
         layout.addRow("Horizontal [NM]:", self._hsep)
 
         self._vsep = QSpinBox(self)
         self._vsep.setRange(0, 5000)
         self._vsep.setSingleStep(50)
         self._vsep.setValue(1000)
+        self._vsep.setToolTip("Vertical separation for altitude crossing conflicts in feet")
         layout.addRow("Vertical [ft]:", self._vsep)
 
     def hsep_value(self) -> float:
@@ -1887,11 +1958,14 @@ class GCAbsolutePage(QWidget):
 
         self.gc_use_coords_rb = QRadioButton("Use coordinates")
         self.gc_use_coords_rb.setChecked(True)
+        self.gc_use_coords_rb.setToolTip("Define conflict location using latitude/longitude coordinates")
         coord_form.addRow(self.gc_use_coords_rb)
         self.gc_lat = QLineEdit("52.100")
         self.gc_lat.setClearButtonEnabled(True)
+        self.gc_lat.setToolTip("Latitude of the closest point of approach (CPA) in decimal degrees")
         self.gc_lon = QLineEdit("4.500")
         self.gc_lon.setClearButtonEnabled(True)
+        self.gc_lon.setToolTip("Longitude of the closest point of approach (CPA) in decimal degrees")
         coord_form.addRow("Latitude [deg]:", self.gc_lat)
         coord_form.addRow("Longitude [deg]:", self.gc_lon)
 
@@ -1900,10 +1974,12 @@ class GCAbsolutePage(QWidget):
         wp_form.setContentsMargins(6, 6, 6, 6)
         wp_form.setSpacing(6)
         self.gc_use_wp_rb = QRadioButton("Use waypoint")
+        self.gc_use_wp_rb.setToolTip("Define conflict location using an existing waypoint identifier")
         wp_form.addRow(self.gc_use_wp_rb)
         self.gc_wp = QLineEdit("")
         self.gc_wp.setPlaceholderText("e.g. SUGOL or EHAM")
         self.gc_wp.setClearButtonEnabled(True)
+        self.gc_wp.setToolTip("Waypoint identifier (navdata name) or airport ICAO code")
         wp_form.addRow("Identifier:", self.gc_wp)
 
         self.gc_cpa_mode = QButtonGroup(self)
@@ -1925,8 +2001,10 @@ class GCAbsolutePage(QWidget):
 
         self.gc_tcpa_value = QLineEdit("120.0")
         self.gc_tcpa_value.setClearButtonEnabled(True)
+        self.gc_tcpa_value.setToolTip("Time to closest point of approach in seconds")
         self.gc_tcpa_range = QLineEdit()
         self.gc_tcpa_range.setClearButtonEnabled(True)
+        self.gc_tcpa_range.setToolTip("Upper bound for TCPA range (leave empty for fixed value)")
         f1.addRow(
             "TCPA [s]:",
             self._make_value_range_row(self.gc_tcpa_value, self.gc_tcpa_range, "upper [s] (optional)"),
@@ -1934,8 +2012,10 @@ class GCAbsolutePage(QWidget):
 
         self.gc_angle_value = QLineEdit("90.0")
         self.gc_angle_value.setClearButtonEnabled(True)
+        self.gc_angle_value.setToolTip("Crossing angle in degrees (only used for crossing conflicts)")
         self.gc_angle_range = QLineEdit()
         self.gc_angle_range.setClearButtonEnabled(True)
+        self.gc_angle_range.setToolTip("Upper bound for angle range (leave empty for fixed value)")
         f1.addRow(
             "CPA angle [deg] (cross only):",
             self._make_value_range_row(self.gc_angle_value, self.gc_angle_range, "upper [deg] (optional)"),
@@ -1943,14 +2023,17 @@ class GCAbsolutePage(QWidget):
 
         self.gc_alt_offset_value = QLineEdit("0")
         self.gc_alt_offset_value.setClearButtonEnabled(True)
+        self.gc_alt_offset_value.setToolTip("Altitude difference between aircraft at CPA in feet (0 = same level)")
         self.gc_alt_offset_range = QLineEdit()
         self.gc_alt_offset_range.setClearButtonEnabled(True)
+        self.gc_alt_offset_range.setToolTip("Upper bound for altitude offset range")
         f1.addRow(
             "Altitude offset dH [ft] (optional):",
             self._make_value_range_row(self.gc_alt_offset_value, self.gc_alt_offset_range, "upper [ft] (optional)"),
         )
 
         self.gc_actypes = QLineEdit("A320,B738,A350,B78X")
+        self.gc_actypes.setToolTip("Aircraft types to use, comma-separated (e.g. A320,B738,A350)")
         f1.addRow("AC types:", self.gc_actypes)
 
         # CPA reference visualization option
@@ -2019,6 +2102,7 @@ class GCAbsolutePage(QWidget):
         name_layout.setSpacing(6)
         name_layout.addWidget(QLabel("Scenario name:"))
         self.gc_name = QLineEdit("gc_scn")
+        self.gc_name.setToolTip("Name for the generated geometric conflict scenario file (without .scn extension)")
         name_layout.addWidget(self.gc_name)
         f3.addRow(name_row)
 
@@ -2026,10 +2110,12 @@ class GCAbsolutePage(QWidget):
         self.gc_seed = QSpinBox()
         self.gc_seed.setRange(0, 2_000_000_000)
         self.gc_seed.setValue(0)
+        self.gc_seed.setToolTip("Random seed for conflict generation (0 = use random seed)")
         f3.addRow("Seed (0 = random):", self.gc_seed)
 
         self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
         self.gc_overwrite_cb.setChecked(True)
+        self.gc_overwrite_cb.setToolTip("Replace existing scenario file if one exists with the same name")
         f3.addRow(self.gc_overwrite_cb)
 
         btn_row = QWidget()
@@ -2500,12 +2586,14 @@ class GCRelativePage(QWidget):
         scen_box = QGroupBox("4) Scenario output (write mode)")
         scen_form = QFormLayout(scen_box)
         self.scn_name = QLineEdit("gc_relative")
+        self.scn_name.setToolTip("Name for the generated relative conflict scenario file (without .scn extension)")
         scen_form.addRow("Scenario name:", self.scn_name)
         
         # Add seed field like CPA has
         self.gc_rel_seed = QSpinBox()
         self.gc_rel_seed.setRange(0, 2_000_000_000)
         self.gc_rel_seed.setValue(0)
+        self.gc_rel_seed.setToolTip("Random seed for conflict generation (0 = use random seed)")
         scen_form.addRow("Seed (0 = random):", self.gc_rel_seed)
         
         self.overwrite_cb = QCheckBox("Overwrite scenario if it exists")
@@ -3031,15 +3119,21 @@ class RCTab(QWidget):
         common_form.setContentsMargins(5, 5, 5, 5)
 
         self.n = QSpinBox(); self.n.setRange(1, 100000); self.n.setValue(20)
+        self.n.setToolTip("Total number of conflict encounters to generate")
         
         # Circle region settings
         self.c_lat = QLineEdit("52.100")
+        self.c_lat.setToolTip("Center latitude of the conflict generation area in decimal degrees")
         self.c_lon = QLineEdit("4.500")
-        self.c_rad = QDoubleSpinBox(); self.c_rad.setRange(0.1, 1000.0); self.c_rad.setDecimals(2); self.c_rad.setValue(25.0)
+        self.c_lon.setToolTip("Center longitude of the conflict generation area in decimal degrees")
+        self.c_rad = QDoubleSpinBox(); self.c_rad.setRange(0.1, 1000.0); self.c_rad.setDecimals(2); self.c_rad.setValue(25.0); _configure_decimal_separator(self.c_rad)
+        self.c_rad.setToolTip("Radius of the circular conflict generation area in nautical miles")
         
         # Separation minima
-        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.0, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
+        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.0, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0); _configure_decimal_separator(self.hsep)
+        self.hsep.setToolTip("Horizontal separation at closest point of approach in nautical miles")
         self.vsep = QSpinBox(); self.vsep.setRange(0, 5000); self.vsep.setValue(1000)
+        self.vsep.setToolTip("Vertical separation for altitude crossing conflicts in feet")
 
         common_form.addRow("Number of conflicts:", self.n)
         
@@ -3302,10 +3396,13 @@ class RCTab(QWidget):
         
         # Add the scenario controls that were moved from batch settings
         self.scn = QLineEdit("rc_circle")
+        self.scn.setToolTip("Name for the generated random conflict scenario file (without .scn extension)")
         self.scn.textChanged.connect(self._update_circle_if_visible)  # Update circle name when scenario name changes
         self.seed = QSpinBox(); self.seed.setRange(0, 2**31-1); self.seed.setValue(0)
+        self.seed.setToolTip("Random seed for conflict generation (0 = use random seed)")
         self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
         self.gc_overwrite_cb.setChecked(False)
+        self.gc_overwrite_cb.setToolTip("Replace existing scenario file if one exists with the same name")
         
         self.include_polygon_cb = QCheckBox("Include polygon in scenario file")
         self.include_polygon_cb.setChecked(True)
@@ -3951,12 +4048,16 @@ class ProcTab(QWidget):
         generic_box = QGroupBox("Generic")
         fg = QFormLayout(generic_box)
         self.gen_flights = QSpinBox(); self.gen_flights.setRange(0, 100000); self.gen_flights.setValue(20)
+        self.gen_flights.setToolTip("Number of aircraft to spawn for generic procedures")
         fg.addRow("Flights:", self.gen_flights)
         self.gen_minsep = QSpinBox(); self.gen_minsep.setRange(0, 3600); self.gen_minsep.setValue(90)
+        self.gen_minsep.setToolTip("Minimum time separation between aircraft spawns in seconds")
         fg.addRow("Min separation [s]:", self.gen_minsep)
-        self.spawn_r = QDoubleSpinBox(); self.spawn_r.setDecimals(1); self.spawn_r.setRange(0.1, 100.0); self.spawn_r.setValue(5.0)
+        self.spawn_r = QDoubleSpinBox(); self.spawn_r.setDecimals(1); self.spawn_r.setRange(0.1, 100.0); self.spawn_r.setValue(5.0); _configure_decimal_separator(self.spawn_r)
+        self.spawn_r.setToolTip("Radius around procedure entry point for aircraft spawning in nautical miles")
         fg.addRow("Spawn radius [NM]:", self.spawn_r)
-        self.spawn_env = QDoubleSpinBox(); self.spawn_env.setDecimals(0); self.spawn_env.setRange(5, 180); self.spawn_env.setValue(40)
+        self.spawn_env = QDoubleSpinBox(); self.spawn_env.setDecimals(0); self.spawn_env.setRange(5, 180); self.spawn_env.setValue(40); _configure_decimal_separator(self.spawn_env)
+        self.spawn_env.setToolTip("Angular range for inbound heading to procedure entry point in degrees")
         fg.addRow("Angular envelope [deg]:", self.spawn_env)
         hb2.addWidget(generic_box, 1)
 
@@ -3970,15 +4071,19 @@ class ProcTab(QWidget):
         mode_row.addWidget(QLabel("Scheduling mode:", sid_box))
         self.sid_mode = QComboBox(sid_box)
         self.sid_mode.addItems(["Hourly rate", "15-min schedule"])
+        self.sid_mode.setToolTip("Choose between constant hourly rates or detailed 15-minute schedules")
         mode_row.addWidget(self.sid_mode)
         mode_row.addStretch(1)
         fs.addRow(mode_row)
 
         self.sid_flights = QSpinBox(); self.sid_flights.setRange(0, 100000); self.sid_flights.setValue(20)
+        self.sid_flights.setToolTip("Total number of SID procedure flights to generate")
         fs.addRow("Flights:", self.sid_flights)
         self.sid_alt = QSpinBox(); self.sid_alt.setRange(0, 50000); self.sid_alt.setValue(3000)
+        self.sid_alt.setToolTip("Initial altitude for SID departures in feet")
         fs.addRow("Initial ALT [ft]:", self.sid_alt)
         self.sid_spd = QSpinBox(); self.sid_spd.setRange(0, 600); self.sid_spd.setValue(210)
+        self.sid_spd.setToolTip("Initial speed for SID departures in knots")
         fs.addRow("Initial SPD [kt]:", self.sid_spd)
         self.sid_sched_btn = QPushButton("Configure schedule…")
         self.sid_sched_btn.clicked.connect(self._configure_sid_schedule)
@@ -3996,15 +4101,18 @@ class ProcTab(QWidget):
         mode_row_star.addWidget(QLabel("Scheduling mode:", star_box))
         self.star_mode = QComboBox(star_box)
         self.star_mode.addItems(["Hourly rate", "15-min schedule"])
+        self.star_mode.setToolTip("Choose between constant hourly rates or detailed 15-minute schedules")
         mode_row_star.addWidget(self.star_mode)
         mode_row_star.addSpacing(12)
         mode_row_star.addWidget(QLabel("Rate basis:", star_box))
         self.star_rate_basis = QComboBox(star_box)
         self.star_rate_basis.addItems(["Initial waypoint", "Final waypoint"])
+        self.star_rate_basis.setToolTip("Base rates on initial waypoint (entry) or final waypoint (destination)")
         mode_row_star.addWidget(self.star_rate_basis)
         mode_row_star.addStretch(1)
         ft.addRow(mode_row_star)
         self.star_flights = QSpinBox(); self.star_flights.setRange(0, 100000); self.star_flights.setValue(20)
+        self.star_flights.setToolTip("Total number of STAR procedure flights to generate")
         ft.addRow("Flights:", self.star_flights)
         alt_row = QWidget(star_box)
         alt_layout = QHBoxLayout(alt_row); alt_layout.setContentsMargins(0, 0, 0, 0)
@@ -4013,6 +4121,7 @@ class ProcTab(QWidget):
         self.star_alt_fl.setRange(0, 600)
         self.star_alt_fl.setSingleStep(10)
         self.star_alt_fl.setValue(360)
+        self.star_alt_fl.setToolTip("Initial flight level for STAR arrivals")
         alt_layout.addWidget(self.star_alt_fl)
         alt_layout.addSpacing(12)
         alt_layout.addWidget(QLabel("Final ALT [FL]:", star_box))
@@ -4020,6 +4129,7 @@ class ProcTab(QWidget):
         self.star_final_alt_fl.setRange(0, 600)
         self.star_final_alt_fl.setSingleStep(10)
         self.star_final_alt_fl.setValue(100)
+        self.star_final_alt_fl.setToolTip("Target flight level for STAR procedure completion")
         alt_layout.addWidget(self.star_final_alt_fl)
         alt_layout.addStretch(1)
         ft.addRow(alt_row)
@@ -4031,12 +4141,15 @@ class ProcTab(QWidget):
         self.star_mach.setRange(0.40, 0.92)
         self.star_mach.setSingleStep(0.01)
         self.star_mach.setValue(0.79)
+        self.star_mach.setToolTip("Initial Mach number for STAR arrivals at cruise altitude")
+        _configure_decimal_separator(self.star_mach)
         spd_layout.addWidget(self.star_mach)
         spd_layout.addSpacing(12)
         spd_layout.addWidget(QLabel("Final SPD [kt]:", star_box))
         self.star_final_spd = QSpinBox()
         self.star_final_spd.setRange(0, 600)
         self.star_final_spd.setValue(240)
+        self.star_final_spd.setToolTip("Target airspeed for STAR procedure completion in knots")
         spd_layout.addWidget(self.star_final_spd)
         spd_layout.addStretch(1)
         ft.addRow(spd_row)
@@ -4071,6 +4184,7 @@ class ProcTab(QWidget):
         f3.setContentsMargins(5, 5, 5, 5)
 
         self.scn = QLineEdit("proc_scn")
+        self.scn.setToolTip("Name for the generated procedural traffic scenario file (without .scn extension)")
         f3.addRow("Scenario name:", self.scn)
 
         self.seed = QSpinBox(); self.seed.setRange(0, 2_000_000_000); self.seed.setValue(0)
@@ -4260,7 +4374,7 @@ class ProcTab(QWidget):
 
     def _refresh_star_rate_rows(self):
         basis = self._current_star_basis()
-        self._capture_star_rates(basis)
+        # NOTE: Do NOT capture rates here - that should be done BEFORE calling this function
         groups = self._build_star_groups(basis)
         self._star_rate_groups = groups
         for key in list(self._star_rate_rows.keys()):
@@ -4821,8 +4935,13 @@ class ProcTab(QWidget):
             _emit(f"SATG_PROC_CFG_SIDRATE RW{rw} {rate}")
 
         basis_name = self._basis_name(star_rate_basis_idx)
+        # IMPORTANT: Ensure state is synchronized before capturing
+        if self._star_basis_index != star_rate_basis_idx:
+            # State mismatch detected - sync the internal state with the GUI state
+            self._star_basis_index = star_rate_basis_idx
+            # Refresh the rows to match the correct basis before capturing
+            self._refresh_star_rate_rows()
         self._capture_star_rates(basis_name)
-        self._star_basis_index = star_rate_basis_idx
 
         _emit(
             f"SATG_PROC_CFG_STAR {star_n} {star_minsep} {star_alt_fl} {star_mach:.2f} "
@@ -4898,125 +5017,63 @@ class HelpTab(QWidget):
         txt.setMinimumHeight(300)
 
         help_text = (
-            "SATG Help\n"
-            "=========\n"
+            "SATG - Synthetic Air Traffic Generator\n"
+            "======================================\n"
             "\n"
-            "Overview\n"
-            "--------\n"
-            "SATG is a scenario generator for BlueSky. It can create random conflicts,\n"
-            "geometric conflicts, realistic replays, and procedure based traffic. You can\n"
-            "use the GUI tabs or the console commands described below.\n"
+            "SATG generates air traffic scenarios for BlueSky simulation. The tool supports\n"
+            "realistic conflict generation, historical traffic replay, and procedural operations.\n"
             "\n"
-            "Paths and scenario files\n"
-            "------------------------\n"
-            "- Use the Set Base button to choose where scenarios are written.\n"
-            "- When loading other .scn files inside a scenario, SATG writes PCALL lines\n"
-            "  with absolute paths so BlueSky can resolve them reliably.\n"
-            "\n"
-            "Random conflicts in a circle (GUI tab: Random Conflicts)\n"
-            "--------------------------------------------------------\n"
-            "The Random Conflicts tab has been modernized to use the geometric conflicts\n"
-            "architecture. It provides separate configuration for absolute (CPA-based)\n"
-            "and relative (target-intruder) conflict generation within a circular region.\n"
-            "\n"
-            "Batch Settings:\n"
-            "- Scenario name, number of conflicts, seed, circle location and radius\n"
-            "- Separation minima (HSEP/VSEP) that apply to all generated conflicts\n"
-            "\n"
-            "Absolute Conflicts Column:\n"
-            "- Enable/disable absolute conflict generation\n"
-            "- Encounter types: head-on, crossing, overtake\n"
-            "- TCPA range [s]: time to closest point of approach\n"
-            "- Cross angle range [deg]: relative bearing for crossing encounters\n"
-            "- Flight level and CAS ranges for aircraft generation\n"
-            "- Aircraft types list\n"
-            "\n"
-            "Relative Conflicts Column:\n"
-            "- Enable/disable relative conflict generation\n"
-            "- Time to loss of separation [s]: when conflicts will occur\n"
-            "- Relative bearing change [deg]: how tracks converge\n"
-            "- Altitude and speed ranges for target and intruder aircraft\n"
-            "- Aircraft types list\n"
-            "\n"
-            "Backend Commands:\n"
-            "Uses SATG_RC_CIRCLE with mode=abs|rel|mix parameter\n"
-            "Command: SATG_RC_CIRCLE name N types center_lat center_lon radius_nm mode altmode tcpa fl cas actypes overwrite [angle]\n"
-            "  mode: abs|rel|mix (abs=absolute CPA-based, rel=relative target+intruder, mix=random selection)\n"
-            "\n"
-            "Required\n"
-            "- name: scenario name (file will be name.scn)\n"
-            "- N: number of conflicts\n"
-            "- types: comma list from headon,cross,overtake\n"
-            "- center_lat, center_lon: circle center in degrees\n"
-            "- radius_nm: circle radius in nautical miles\n"
-            "- altmode: level, altcross, or mix\n"
-            "- tcpa: seconds as lo:hi (all aircraft spawn at t=0; tcpa sets time to CPA)\n"
-            "- fl: flight level range lo:hi\n"
-            "- cas: calibrated airspeed range lo:hi in kt\n"
-            "- actypes: comma list of aircraft types to sample uniformly (for example A320,B738,E190)\n"
-            "- overwrite: 1 overwrite the scenario file, 0 append to existing\n"
-            "Optional\n"
-            "- angle: crossing angle range lo:hi in degrees. Only used if cross is in types.\n"
-            "\n"
-            "Behavior\n"
-            "- All aircraft are created at t=0. Larger tcpa means farther initial distance to the CPA point.\n"
-            "- HSEP and VSEP for conflicts are set through the GUI before creation.\n"
-            "- When appending, aircraft callsigns are auto-renamed to avoid duplicates.\n"
-            "\n"
-            "Geometric conflicts (GUI tab: Geometric Conflicts)\n"
-            "--------------------------------------------------\n"
-            "Flow in the GUI Create button:\n"
-            "- First sets separation minima: SATG_GC_CONF HSEP VSEP\n"
-            "- Then sets ranges: SATG_GC_RANGE fl=lo:hi cas=lo:hi\n"
-            "- Then creates encounters: SATG_GC_CRE name=<...> typ=<...> altmode=<...> lat=<...> lon=<...> tcpa=<...> [angle=<...>] overwrite=0|1\n"
-            "Run with: SATG_GC_RUN name\n"
-            "\n"
-            "Notes\n"
-            "- Types are checkboxes for headon, crossing, overtake. Angle is only used for crossing.\n"
-            "- Alt mode is Level, Alt-cross, or Mix when both are selected.\n"
-            "- Overwrite checkbox controls whether to overwrite or append.\n"
-            "\n"
-            "Realistic replay (GUI tab: Realistic Replay)\n"
-            "--------------------------------------------\n"
-            "Create: SATG_RL_MAKE name overwrite\n"
-            "Run:    SATG_RL_RUN name overwrite\n"
-            "\n"
-            "Options in the GUI\n"
-            "- Jitter: if enabled, applies time jitter to only a selected percentage of flights.\n"
-            "- Auto-delete at last waypoint: if enabled, the aircraft is deleted when it reaches the last waypoint.\n"
-            "- Overwrite checkbox: when off, new flights are appended to the same scenario; callsigns are auto-renamed.\n"
-            "- The scenario file is sorted by time after writing to avoid odd spawn timing.\n"
-            "\n"
-            "Procedures mode (GUI tab: Procedures)\n"
-            "-------------------------------------\n"
-            "Files\n"
-            "- Load waypoint .scn that define DEFWPT fixes (for example DEFFIX.scn).\n"
-            "- Load procedure .scn that contain a procedure name with %0 placeholder (for example SID-04-GORLO.scn).\n"
-            "- For SID-XX-NAME.scn files, map the airport with SATG_PROC_SET_ICAO SID-XX-NAME ICAO.\n"
-            "- Waypoint files are PCALLed once at time 0; each aircraft PCALLs its procedure right after creation.\n"
-            "\n"
-            "Create\n"
-            "Command: SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite\n"
-            "Meaning\n"
-            "- N: number of flights to spawn.\n"
-            "- radius_nm: spawn radius around the first fix of the chosen procedure (ignored for SID files).\n"
-            "- envelope_deg: angular envelope around the inbound direction to the first fix (ignored for SID files).\n"
-            "  For generic procedures, the program samples a bearing inside that envelope so the aircraft arrives at the first fix,\n"
-            "  not past it. Distance is sampled for uniform area inside the circle.\n"
-            "- minsep: minimum time separation in seconds between successive spawns on the same procedure.\n"
-            "- seed: 0 means random; a positive integer will produce repeatable results.\n"
-            "- overwrite: 1 overwrites the scenario; 0 appends to it.\n"
-            "\n"
-            "Run\n"
-            "Command: SATG_PROC_RUN name\n"
-            "\n"
-            "General tips\n"
+            "Capabilities\n"
             "------------\n"
-            "- If you append to an existing scenario, the generator avoids callsign collisions by renaming.\n"
-            "- Use Create & Run in the GUI to write the scenario and immediately load it in BlueSky.\n"
-            "- SID procedures spawn from runway thresholds and auto-add TAKEOFF before the procedure call.\n"
-            "- If a command says an argument is lo:hi, it means two numbers separated by a colon, for example 60:240.\n"
-            "- If you see path errors during PCALL, verify the base folder and that the referenced .scn files exist.\n"
+            "- Random conflict generation within defined areas\n"
+            "- Geometric conflict creation at specific locations\n"
+            "- Historical traffic replay with optional variations\n"
+            "- Procedural traffic using SID/STAR definitions\n"
+            "\n"
+            "Setup\n"
+            "-----\n"
+            "1. Click 'Set Base' to specify scenario file output directory\n"
+            "2. Select scenario type using the available tabs\n"
+            "3. Configure parameters using the interface controls\n"
+            "4. Generate scenarios using 'Create' or 'Create & Run' buttons\n"
+            "\n"
+            "Realistic Replay\n"
+            "----------------\n"
+            "Recreates traffic patterns from CSV data files:\n"
+            "- Requires flight data and track data CSV files\n"
+            "- Optional jitter adds realistic variations to trajectories\n"
+            "- Aircraft can be automatically deleted at route completion\n"
+            "\n"
+            "Geometric Conflicts\n"
+            "-------------------\n"
+            "Creates precise conflicts at specified coordinates:\n"
+            "- Conflict types: head-on, crossing, overtaking\n"
+            "- TCPA (Time to Closest Point of Approach) configuration\n"
+            "- Location specified by coordinates or waypoint reference\n"
+            "- Configurable altitude and speed parameters\n"
+            "\n"
+            "Random Conflicts\n"
+            "----------------\n"
+            "Generates multiple conflicts within defined areas:\n"
+            "- Circular or polygon-based conflict areas\n"
+            "- Absolute and relative conflict generation modes\n"
+            "- Configurable encounter types and timing parameters\n"
+            "- Aircraft performance and type specifications\n"
+            "\n"
+            "Procedures\n"
+            "----------\n"
+            "Creates traffic following SID/STAR procedures:\n"
+            "- Requires waypoint definition files\n"
+            "- Uses procedure files with callsign placeholders\n"
+            "- Supports traffic rate and schedule configuration\n"
+            "- Handles both departure (SID) and arrival (STAR) procedures\n"
+            "\n"
+            "Configuration\n"
+            "-------------\n"
+            "- Save and load configuration files for repeated use\n"
+            "- Overwrite mode controls file replacement or appending\n"
+            "- Seed values enable reproducible random generation\n"
+            "- All scenarios include descriptive headers with parameters\n"
         )
 
         txt.setPlainText(help_text)

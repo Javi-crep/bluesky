@@ -123,7 +123,8 @@ def _echo_lines(lines: List[str]):
 
 def _echo_ok(msg: str, nxt: Optional[str]=None):
     for line in str(msg).splitlines(): _echo_lines([f"[SATG] {line}"])
-    if nxt: _echo_lines([f"[NEXT] {nxt}"])
+    # Command hints disabled - GUI provides the interface
+    # if nxt: _echo_lines([f"[NEXT] {nxt}"])
 
 def _echo_err(msg: str):
     for line in str(msg).splitlines(): _echo_lines([f"[SATG][ERR] {line}"])
@@ -135,6 +136,60 @@ def _sanitize_name(name: str) -> str:
     s = re.sub(r'[^A-Za-z0-9_]', '_', name)
     if not s or not s[0].isalpha(): s = "WPT_" + s
     return s[:32]
+
+def _generate_scenario_header(scenario_type: str, **params) -> List[str]:
+    """Generate commented header lines for scenario files"""
+    from datetime import datetime
+    
+    header = [
+        f"# SATG Generated Scenario - {scenario_type}",
+        f"# Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Generator: BlueSky SATG Plugin",
+        "#"
+    ]
+    
+    # Add type-specific parameters
+    if scenario_type == "Random Conflicts":
+        header.extend([
+            f"# Scenario Type: {scenario_type}",
+            f"# Aircraft Count: {params.get('n', 'N/A')}",
+            f"# Center: {params.get('center_lat', 'N/A')}°, {params.get('center_lon', 'N/A')}°",
+            f"# Radius: {params.get('radius_nm', 'N/A')} NM",
+            f"# Conflict Types: {params.get('types', 'N/A')}",
+            f"# Altitude Mode: {params.get('altmode', 'N/A')}",
+            f"# Time to CPA: {params.get('tcpa', 'N/A')} seconds",
+            f"# Flight Levels: {params.get('fl_range', 'N/A')}",
+            f"# CAS Range: {params.get('cas_range', 'N/A')} kt"
+        ])
+    elif scenario_type == "Geometric Conflicts":
+        header.extend([
+            f"# Scenario Type: {scenario_type}",
+            f"# Position: {params.get('lat', 'N/A')}°, {params.get('lon', 'N/A')}°",
+            f"# Time to CPA: {params.get('tcpa', 'N/A')} seconds",
+            f"# Conflict Angle: {params.get('angle', 'N/A')}°",
+            f"# Aircraft Types: {params.get('actypes', 'N/A')}",
+            f"# Altitude Mode: {params.get('altmode', 'N/A')}"
+        ])
+    elif scenario_type == "Realistic Replay":
+        header.extend([
+            f"# Scenario Type: {scenario_type}",
+            f"# Data Source: Historical traffic data",
+            f"# Jitter Applied: {params.get('jitter_enabled', 'N/A')}",
+            f"# Auto-delete: {params.get('autodel_enabled', 'N/A')}"
+        ])
+    elif scenario_type == "Procedural Traffic":
+        header.extend([
+            f"# Scenario Type: {scenario_type}",
+            f"# Aircraft Count: {params.get('n', 'N/A')}",
+            f"# Spawn Radius: {params.get('radius_nm', 'N/A')} NM",
+            f"# Angular Envelope: {params.get('envelope_deg', 'N/A')}°",
+            f"# Min Separation: {params.get('minsep', 'N/A')} seconds",
+            f"# SID Procedures: {params.get('sid_enabled', 'No')}",
+            f"# STAR Procedures: {params.get('star_enabled', 'No')}"
+        ])
+    
+    header.append("#")
+    return header
 
 # ---------------- Math helpers (bearing/destination) ---------------- #
 def _bearing_nm(lat1, lon1, lat2, lon2):
@@ -707,6 +762,14 @@ def _write_rl_scn(out_path: str, append: bool = False):
     mode = "a" if append else "w"
     with open(out_path, mode, encoding="utf-8") as f:
         if not append:
+            # Write scenario header
+            header = _generate_scenario_header("Realistic Replay",
+                jitter_enabled="Yes" if STATE.rl_jitter_on else "No",
+                autodel_enabled="Yes" if STATE.rl_autodel_on else "No"
+            )
+            for line in header:
+                f.write(f"{line}\n")
+            
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
         points = _get_points_for_run()
@@ -1023,6 +1086,18 @@ def _write_gc_scn(out_path: str, *,
     mode = "a" if append else "w"
     with open(out_path, mode, encoding="utf-8") as f:
         if not append:
+            # Write scenario header
+            header = _generate_scenario_header("Geometric Conflicts",
+                lat=cpa_lat,
+                lon=cpa_lon,
+                tcpa=tcpa_value or f"{tcpa_range[0]}-{tcpa_range[1]}" if tcpa_range else "N/A",
+                angle=angle_in or f"{angle_range[0]}-{angle_range[1]}" if angle_range else "N/A",
+                actypes=", ".join(ac_types) if ac_types else f"{ac1}, {ac2}",
+                altmode="Mixed" if alt_offset_value or alt_offset_range else "Level"
+            )
+            for line in header:
+                f.write(f"{line}\n")
+            
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
             
@@ -1235,11 +1310,18 @@ def _gc_rel_cre_block(state: Dict[str, float]) -> List[str]:
     ]
 
 
-def _gc_rel_write_scn(path: str, *, append: bool, lines: List[str]) -> None:
+def _gc_rel_write_scn(path: str, *, append: bool, lines: List[str], **header_params) -> None:
     stamp0 = _stamp(timedelta(seconds=0.0))
     mode = "a" if append else "w"
     with open(path, mode, encoding="utf-8") as f:
         if not append:
+            # Write scenario header
+            header = _generate_scenario_header("Geometric Conflicts",
+                **header_params
+            )
+            for line in header:
+                f.write(f"{line}\n")
+            
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
         for line in lines:
@@ -1901,7 +1983,12 @@ def SATG_GC_REL(*argv):
     
     # Join with commas as CRECONFS expects comma-separated parameters
     lines.append(",".join(creconfs_parts))
-    _gc_rel_write_scn(path, append=append, lines=lines)
+    _gc_rel_write_scn(path, append=append, lines=lines,
+        tcpa=params.get("tlosh", "N/A"),
+        angle=params.get("dpsi", "N/A"),
+        actypes=params.get("actype", "A320"),
+        altmode="Mixed" if params.get("dh") else "Level"
+    )
     act = "appended to" if append else "written to"
     _echo_ok(
         f"GC relative scenario {act} {path}",
@@ -2310,6 +2397,24 @@ def _write_gc_rel_scn(out_path: str, *,
     mode = "a" if append else "w"
     try:
         with open(out_path, mode, encoding="utf-8") as f:
+            if not append:
+                # Write scenario header
+                header = _generate_scenario_header("Random Conflicts",
+                    n="Mixed mode" if conflict_params.get("mode") == "mix" else "Relative conflicts",
+                    center_lat=target_data.get("lat", "Variable"),
+                    center_lon=target_data.get("lon", "Variable"), 
+                    radius_nm="N/A (Relative mode)",
+                    types="Relative conflicts",
+                    altmode="Mixed" if conflict_params.get("dh", 0) != 0 else "Level",
+                    tcpa=conflict_params.get("tlosh", "N/A"),
+                    fl_range="Variable",
+                    cas_range="Variable"
+                )
+                for line in header:
+                    f.write(f"{line}\n")
+                f.write("0:00:00.00>HOLD\n")
+                f.write("0:00:00.00>ASAS ON\n")
+                
             f.write("\n".join(content_lines))
             if not content_lines[-1]:  # If last line is empty, don't add extra newline
                 pass
@@ -3159,6 +3264,18 @@ def SATG_PROC_MAKE(name: str,
     mode = "a" if append else "w"
     with open(out_path, mode, encoding="utf-8") as f:
         if not append:
+            # Write scenario header
+            header = _generate_scenario_header("Procedural Traffic",
+                n=n,
+                radius_nm=radius_nm,
+                envelope_deg=envelope_deg,
+                minsep=minsep,
+                sid_enabled="Yes" if STATE.proc_sid_info else "No",
+                star_enabled="Yes" if STATE.proc_star_info else "No"
+            )
+            for line in header:
+                f.write(f"{line}\n")
+            
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
             for w in STATE.proc_wpt_files:
@@ -3528,76 +3645,110 @@ def SATG_HELP(topic: str = ""):
       SATG_HELP proc
     """
     lines = [
-        "SATG Help",
-        "=========",
+        "SATG - Synthetic Air Traffic Generator",
+        "======================================",
         "",
-        "Random conflicts in a circle or polygon:",
-        "  SATG_RC_CIRCLE name N types center_lat center_lon radius_nm mode altmode tcpa fl cas actypes overwrite [angle] [area_type] [polygon_name]",
-        "  - types: headon,cross,overtake (comma separated)",
-        "  - altmode: level | altcross | mix",
-        "  - tcpa: seconds lo:hi, all aircraft spawn at t=0 (tcpa is time to CPA)",
-        "  - fl: flight level lo:hi",
-        "  - cas: kt lo:hi",
-        "  - angle: lo:hi degrees, only for crossing",
-        "  - overwrite: 1 overwrite file, 0 append",
-        "  - area_type: circle | polygon (default: circle)",
-        "  - polygon_name: name of polygon when area_type=polygon (requires geopandas)",
+        "SATG generates synthetic air traffic scenarios for BlueSky simulation.",
+        "Supports conflict generation, historical traffic replay, and procedural operations.",
         "",
-        "Geometric conflicts:",
-        "  SATG_GC_CONF HSEP VSEP",
-        "  SATG_GC_RANGE fl=lo:hi cas=lo:hi",
-    "  SATG_GC_CRE name=<...> typ=<headon,cross,overtake> altmode=<level|altcross|mix> (lat=<deg> lon=<deg> | wp=<ident>) tcpa=<s> [angle=<deg>] [actypes=<csv>] overwrite=<0|1>",
-        "  SATG_GC_RUN name",
+        "Random Conflicts (in circles or custom polygons)",
+        "================================================",
+        "SATG_RC_CIRCLE name N types lat lon radius mode altmode tcpa fl cas actypes [overwrite] [angle] [area_type] [polygon_name]",
         "",
-        "Realistic replay:",
-        "  SATG_RL_MAKE name overwrite",
-        "  SATG_RL_RUN  name overwrite",
-        "  Notes: jitter and auto-delete are set via the GUI and applied just-in-time.",
+        "Parameters:",
+        "  - name: scenario filename (creates name.scn)",
+        "  - N: number of conflicts to generate", 
+        "  - types: headon,cross,overtake (comma-separated encounter types)",
+        "  - lat,lon: center coordinates in decimal degrees",
+        "  - radius: area radius in nautical miles",
+        "  - mode: abs|rel|mix (absolute CPA/relative target-intruder/mixed)",
+        "  - altmode: level|altcross|mix (same level/crossing altitudes/mixed)",
+        "  - tcpa: time to closest approach in seconds (lo:hi range)",
+        "  - fl: flight level range (lo:hi, e.g., 100:400)",
+        "  - cas: calibrated airspeed in knots (lo:hi range)",
+        "  - actypes: aircraft types (A320,B738,E190 - comma-separated)",
+        "  - overwrite: 1=replace existing file, 0=append to existing",
+        "  - angle: crossing angle range in degrees (lo:hi, only for crossing)",
+        "  - area_type: circle|polygon (default: circle)",
+        "  - polygon_name: name of custom polygon (requires geopandas)",
         "",
-        "Polygon management:",
-        "  SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]",
-        "  SATG_POLY_LIST",
-        "  SATG_POLY_INFO name",
-        "  SATG_POLY_COORDS name",
-        "  SATG_POLY_TEST polygon_name lat lon",
-        "  Create custom polygon areas and use them in random conflicts",
-        "  💡 TIP: Create polygons with native POLY command, then enter name in GUI",
+        "Geometric Conflicts",
+        "===================",
+        "SATG_GC_CONF HSEP VSEP",
+        "  Set horizontal separation (nm) and vertical separation (feet)",
         "",
-        "Procedures mode:",
-        "  Load waypoint files (DEFWPT) and procedure files (%0) first:",
-        "    SATG_PROC_LOAD_WPT path_to_fix_file.scn",
-        "    SATG_PROC_LOAD_PROC path_to_proc_file.scn",
-        "    SATG_PROC_SET_ICAO SID-XX-NAME ICAO",
-        "    SATG_PROC_CFG_GENERIC flights minsep",
-        "    SATG_PROC_CFG_SID flights alt_ft spd_kt",
-        "    SATG_PROC_CFG_SIDRATE runway rate_per_hour",
-        "    SATG_PROC_CFG_STAR flights minsep init_fl mach mode ratebasis final_fl final_spd",
-        "    SATG_PROC_CFG_STARRATE proc_name rate_per_hour",
-        "    SATG_PROC_CFG_STARSCHED proc_name start_min end_min cap1 cap2 ...",
-        "    SATG_PROC_CLEAR_STARSCHED [proc_name]",
-        "    SATG_PROC_USE_DEST 0|1",
-        "    SATG_PROC_SET_DEST proc_name ICAO1 ICAO2 ...",
-        "    SATG_PROC_CFG_SIDSCHED runway start_min end_min cap1 cap2 ...",
-        "    SATG_PROC_CLEAR_SIDSCHED [runway]",
-        "    SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite",
-        "    SATG_PROC_RUN  name",
-        "  Behavior: generic procedures spawn near the first fix inside a sector pointing inbound to it,",
-        "            SID-*-*.scn spawn from runway thresholds once mapped to an ICAO and follow configured runway rates or schedules.",
-        "            Min separation applies to generic procedures only.",
+        "SATG_GC_RANGE fl=lo:hi cas=lo:hi", 
+        "  Set flight level and airspeed ranges for aircraft generation",
         "",
-        "Polygon management:",
-        "    SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]",
-        "    SATG_POLY_LIST",
-        "    SATG_POLY_INFO name",
-        "    SATG_POLY_COORDS name",
-        "    SATG_POLY_TEST polygon_name lat lon",
-        "  Create custom polygon areas and use them in random conflicts",
+        "SATG_GC_CRE name=scenario typ=types altmode=mode lat=lat lon=lon tcpa=seconds [options]",
+        "  Create conflicts at specific coordinates or waypoints:",
+        "  - typ: headon,cross,overtake (encounter types)",
+        "  - altmode: level|altcross|mix",
+        "  - lat=deg lon=deg OR wp=waypoint_name (conflict location)",
+        "  - tcpa: time to closest point of approach in seconds",
+        "  - angle: crossing angle in degrees (for crossing conflicts)",
+        "  - actypes: aircraft type list (optional)",
+        "  - overwrite: 0=append, 1=replace file",
         "",
-        "General:",
-        "  - Use the GUI to set a base folder. Scenario files are written there.",
-        "  - When appending to an existing scenario, callsigns are auto-renamed to avoid duplicates.",
-        "  - Scenario files are sorted by time after writing.",
-        "  - If destination assignment is ON, DEST commands are sent with random airports from configured lists.",
+        "SATG_GC_RUN name",
+        "  Load and run the generated geometric conflict scenario",
+        "",
+        "Realistic Replay",
+        "================",
+        "SATG_RL_MAKE name overwrite",
+        "  Generate scenario from previously loaded flight/track data",
+        "",
+        "SATG_RL_RUN name",
+        "  Load and execute the realistic replay scenario",
+        "",
+        "Notes:",
+        "  - Load CSV data using the GUI (flight data + track data files)",
+        "  - Jitter and auto-delete settings configured via GUI interface",
+        "  - Scenarios include realistic timing and route variations",
+        "",
+        "Procedural Traffic",
+        "==================",
+        "Setup Commands:",
+        "  SATG_PROC_LOAD_WPT path_to_waypoints.scn",
+        "",
+        "  SATG_PROC_LOAD_PROC path_to_procedure.scn", 
+        "",
+        "  SATG_PROC_SET_ICAO SID-XX-NAME AIRPORT_ICAO",
+        "",
+        "Configuration Commands:",
+        "  SATG_PROC_CFG_GENERIC flights minsep",
+        "  SATG_PROC_CFG_SID flights altitude_ft speed_kt",
+        "  SATG_PROC_CFG_SIDRATE runway rate_per_hour",
+        "  SATG_PROC_CFG_STAR flights minsep init_fl mach mode ratebasis final_fl final_spd",
+        "  SATG_PROC_CFG_STARRATE proc_name rate_per_hour",
+        "",
+        "Traffic Scheduling:",
+        "  SATG_PROC_CFG_STARSCHED proc_name start_min end_min cap1 cap2 ...",
+        "  SATG_PROC_CFG_SIDSCHED runway start_min end_min cap1 cap2 ...",
+        "  SATG_PROC_CLEAR_STARSCHED [proc_name]",
+        "  SATG_PROC_CLEAR_SIDSCHED [runway]",
+        "",
+        "Generation:",
+        "  SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite",
+        "  SATG_PROC_RUN name",
+        "",
+        "Custom Polygon Areas",
+        "====================",
+        "SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]",
+        "SATG_POLY_LIST",
+        "SATG_POLY_INFO name",
+        "SATG_POLY_COORDS name", 
+        "SATG_POLY_TEST polygon_name lat lon",
+        "",
+        "General",
+        "=======",
+        "- Scenario files written with .scn extension in base directory",
+        "- PCALL commands use absolute paths for reliable file resolution",
+        "- Callsigns auto-renamed when appending to prevent conflicts",
+        "- Scenarios automatically sorted by time for proper execution",
+        "- Seed values enable reproducible random generation",
+        "",
+        "Use SATG_HELP [topic] for focused help on specific commands.",
     ]
 
     t = topic.strip().lower()
