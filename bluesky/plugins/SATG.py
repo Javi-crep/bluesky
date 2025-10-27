@@ -7,13 +7,22 @@ from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 import re
 
+# Import geopandas for polygon sampling
+try:
+    import geopandas as gpd
+    from shapely.geometry import Point, Polygon
+    HAS_GEOPANDAS = True
+except ImportError:
+    HAS_GEOPANDAS = False
+    gpd = None
+
 from bluesky import stack
 try:
     import bluesky as bs
 except Exception:
     bs = None
 from bluesky.stack import command
-from bluesky.tools import geo
+from bluesky.tools import geo, areafilter
 from bluesky.tools import misc as _misc
 from bluesky.tools.aero import ft, kts, casormach2tas, tas2cas, nm
 import bluesky.traffic.traffic as _traf_mod
@@ -173,6 +182,81 @@ def _dest_nm(lat, lon, brg_deg, dist_nm):
     lat2 = math.degrees(phi2)
     lon2 = (math.degrees(lam2) + 540.0) % 360.0 - 180.0  # wrap to [-180, 180)
     return (lat2, lon2)
+
+def _sample_point_in_polygon(polygon_name: str, rng: random.Random) -> Optional[Tuple[float, float]]:
+    """Sample a random point within the specified polygon using geopandas.
+    
+    Args:
+        polygon_name: Name of the polygon in BlueSky's basic_shapes
+        rng: Random number generator for reproducible sampling
+        
+    Returns:
+        (lat, lon) tuple if successful, None if polygon not found or geopandas unavailable
+    """
+    if not HAS_GEOPANDAS:
+        _echo_err("geopandas not available for polygon sampling. Install with: pip install geopandas")
+        return None
+        
+    # Get polygon coordinates from BlueSky's areafilter
+    coords = get_polygon_coordinates(polygon_name)
+    if not coords:
+        _echo_err(f"Polygon '{polygon_name}' not found. Use SATG_POLY_LIST to see available polygons.")
+        return None
+    
+    try:
+        # Convert coordinates to Shapely polygon
+        # Ensure polygon is closed
+        if coords[0] != coords[-1]:
+            coords.append(coords[0])
+        
+        polygon = Polygon([(lon, lat) for lat, lon in coords])  # Shapely uses (x,y) = (lon,lat)
+        
+        # Create GeoDataFrame
+        gdf = gpd.GeoDataFrame([1], geometry=[polygon])
+        
+        # Sample one point using the random number generator
+        # Note: Use numpy RandomState for geopandas compatibility
+        import numpy as np
+        np_rng = np.random.RandomState(rng.randint(0, 2**31 - 1))
+        
+        points = gdf.sample_points(1, rng=np_rng)
+        
+        if len(points) > 0:
+            point = points.iloc[0]
+            # Extract coordinates (Shapely Point has x=lon, y=lat)
+            return (point.y, point.x)  # Return as (lat, lon)
+        else:
+            _echo_err(f"Failed to sample point in polygon '{polygon_name}'")
+            return None
+            
+    except Exception as e:
+        _echo_err(f"Error sampling point in polygon '{polygon_name}': {e}")
+        return None
+
+def _notify_gui_polygon_update():
+    """Notify that polygons have been updated."""
+    print("[SATG] Polygon created - ready for use in GUI")
+
+def _get_polygon_creation_command(polygon_name: str) -> Optional[str]:
+    """Get the POLY command to recreate a polygon.
+    
+    Args:
+        polygon_name: Name of the polygon to get the creation command for
+        
+    Returns:
+        POLY command string if polygon exists, None otherwise
+    """
+    coords = get_polygon_coordinates(polygon_name)
+    if not coords:
+        return None
+        
+    # Format coordinates as lat,lon pairs for POLY command
+    coord_pairs = []
+    for lat, lon in coords:
+        coord_pairs.append(f"{lat:.6f},{lon:.6f}")
+    
+    # Create POLY command: POLY polygon_name lat1,lon1 lat2,lon2 ... 
+    return f"POLY {polygon_name} {' '.join(coord_pairs)}"
 
 # ---------------- State ---------------- #
 class _SATGState:
@@ -836,7 +920,8 @@ def _write_gc_scn(out_path: str, *,
                   angle_in: Optional[float] = None,
                   angle_range: Optional[Tuple[float, float]] = None,
                   alt_offset_value: Optional[float] = None,
-                  alt_offset_range: Optional[Tuple[float, float]] = None):
+                  alt_offset_range: Optional[Tuple[float, float]] = None,
+                  polygon_commands: Optional[List[str]] = None):
     
     # Sample speeds/levels/initial bearing and default crossing angle
     rng, cas1, cas2, fl1, fl2, brg1, angle = _gc_sample(seed)
@@ -940,6 +1025,11 @@ def _write_gc_scn(out_path: str, *,
         if not append:
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
+            
+            # Add polygon creation commands if provided
+            if polygon_commands:
+                for poly_cmd in polygon_commands:
+                    f.write(f"0:00:00.00>{poly_cmd}\n")
 
         # AC1
         f.write(f"{stamp0}CRE {acid1},{ac1},{lat1:.6f},{lon1:.6f},{hdg1:03d},{int(round(alt1_spawn_ft))},{cas1:.1f}\n")
@@ -2081,6 +2171,7 @@ def SATG_GC_CRE(*argv):
         angle_range=angle_range,
         alt_offset_value=alt_offset_value,
         alt_offset_range=alt_offset_range,
+        polygon_commands=None,
     )
 
     return True, ""
@@ -2233,8 +2324,8 @@ def _write_gc_rel_scn(out_path: str, *,
 
 @command
 def SATG_RC_CIRCLE(*argv):
-    """SATG_RC_CIRCLE name n types center_lat center_lon radius_nm [mode] [altmode] [tcpa] [angle] [dh] [seed] [fl] [cas] [actypes] [overwrite]
-    Append n randomized 2-AC conflicts with CPA uniformly inside a circle.
+    """SATG_RC_CIRCLE name n types center_lat center_lon radius_nm [mode] [altmode] [tcpa] [angle] [dh] [seed] [fl] [cas] [actypes] [overwrite] [area_type] [polygon_name]
+    Append n randomized 2-AC conflicts with CPA uniformly inside a circle or polygon.
     - Args can be positional (in that order) or key=value (mix ok).
     - All aircraft spawn at t=0; CPA time equals tcpa (no tspan).
 
@@ -2245,10 +2336,14 @@ def SATG_RC_CIRCLE(*argv):
         - mix: Randomly alternate between abs and rel
     altmode: level | altcross | mix
     dh: altitude offset in feet (can be value or range like "0:2000")
+    area_type: circle | polygon (default: circle)
+        - circle: Use center_lat, center_lon, radius_nm for circular area
+        - polygon: Use polygon_name for polygon area (requires geopandas)
+    polygon_name: Name of polygon when area_type=polygon
     """
     # parse argv
     order = ["name","n","types","center_lat","center_lon","radius_nm",
-         "mode","altmode","tcpa","angle","seed","fl","cas","actypes","overwrite"]
+         "mode","altmode","tcpa","angle","seed","fl","cas","actypes","overwrite","area_type","polygon_name","include_polygon"]
     kv, pos = {}, []
     for tok in argv:
         s = str(tok).strip()
@@ -2295,6 +2390,28 @@ def SATG_RC_CIRCLE(*argv):
     altmode = str(_get("altmode","level")).lower()
     if altmode not in ("level","altcross","mix"):
         _echo_err("SATG_RC_CIRCLE: altmode must be level|altcross|mix"); return False, ""
+
+    # New area type parameter for circle vs polygon
+    area_type = str(_get("area_type","circle")).lower()
+    if area_type not in ("circle","polygon"):
+        _echo_err("SATG_RC_CIRCLE: area_type must be circle|polygon"); return False, ""
+    
+    polygon_name = str(_get("polygon_name","")).strip() if area_type == "polygon" else ""
+    
+    # Validate polygon requirements
+    if area_type == "polygon":
+        if not polygon_name:
+            _echo_err("SATG_RC_CIRCLE: polygon_name required when area_type=polygon"); return False, ""
+        if not HAS_GEOPANDAS:
+            _echo_err("SATG_RC_CIRCLE: geopandas required for polygon areas. Install with: pip install geopandas"); return False, ""
+        # Check if polygon exists
+        coords = get_polygon_coordinates(polygon_name)
+        if not coords:
+            _echo_err(f"SATG_RC_CIRCLE: polygon '{polygon_name}' not found. Use SATG_POLY_LIST to see available polygons."); return False, ""
+
+    # Parse include_polygon parameter (default True for backward compatibility)
+    include_polygon_str = str(_get("include_polygon", "1")).strip()
+    include_polygon = include_polygon_str in ("1", "true", "yes", "on")
 
     tcpa_rng = _rng("tcpa", (60.0,240.0))
     angle_str = _get("angle", None)
@@ -2346,6 +2463,15 @@ def SATG_RC_CIRCLE(*argv):
         aircraft_counter = _scan_max_gcr_index(out_path)
         gca_counter = _scan_max_sc_index(out_path)
     
+    # Prepare polygon commands for scenario file if using polygon area and include_polygon is enabled
+    polygon_commands = []
+    if area_type == "polygon" and include_polygon:
+        poly_cmd = _get_polygon_creation_command(polygon_name)
+        if poly_cmd:
+            polygon_commands.append(poly_cmd)
+        else:
+            _echo_err(f"SATG_RC_CIRCLE: Cannot get creation command for polygon '{polygon_name}'"); return False, ""
+    
     try:
         STATE.gc_ranges["cas1"] = cas_rng
         STATE.gc_ranges["cas2"] = cas_rng
@@ -2365,10 +2491,18 @@ def SATG_RC_CIRCLE(*argv):
             am_i = rng.choice(["level","altcross"]) if altmode == "mix" else altmode
             tcpa_i = _rand_in(rng, tcpa_rng[0], tcpa_rng[1])
 
-            # CPA uniformly by area: r = R*sqrt(u), theta ~ U(0,360)
-            r = radius_nm * math.sqrt(rng.random())
-            theta = rng.uniform(0.0, 360.0)
-            cpa_lat, cpa_lon = _dest_nm(center_lat, center_lon, theta, r)
+            # Sample CPA position based on area type
+            if area_type == "circle":
+                # CPA uniformly by area: r = R*sqrt(u), theta ~ U(0,360)
+                r = radius_nm * math.sqrt(rng.random())
+                theta = rng.uniform(0.0, 360.0)
+                cpa_lat, cpa_lon = _dest_nm(center_lat, center_lon, theta, r)
+            else:  # area_type == "polygon"
+                # Sample point within polygon using geopandas
+                sampled_point = _sample_point_in_polygon(polygon_name, rng)
+                if sampled_point is None:
+                    _echo_err(f"Failed to sample point in polygon '{polygon_name}'"); return False, ""
+                cpa_lat, cpa_lon = sampled_point
 
             if current_mode == "abs":
                 # ABSOLUTE MODE: Use existing absolute geometric conflicts logic
@@ -2425,11 +2559,12 @@ def SATG_RC_CIRCLE(*argv):
                     ac1=ac1,
                     ac2=ac2,
                     ac_types=None,
-                    seed=None,
+                    seed=rng.randint(0, 2**31-1),
                     angle_in=angle_i,
                     angle_range=None,
                     alt_offset_value=dh_ft,
                     alt_offset_range=None,
+                    polygon_commands=polygon_commands if not append else None,
                 )
                 
             else:
@@ -2511,9 +2646,14 @@ def SATG_RC_CIRCLE(*argv):
             
             append = True
 
+        if area_type == "circle":
+            area_info = f"center=({center_lat:.4f},{center_lon:.4f}) R={radius_nm:.2f}NM"
+        else:  # polygon
+            area_info = f"polygon='{polygon_name}'"
+            
         _echo_ok(
             f"RC-CIRCLE wrote {n} conflicts to {out_path}\n"
-            f" center=({center_lat:.4f},{center_lon:.4f}) R={radius_nm:.2f}NM mode={mode} altmode={altmode} types={','.join(types)}\n"
+            f" {area_info} mode={mode} altmode={altmode} types={','.join(types)}\n"
             f" tcpa={tcpa_rng[0]:.0f}:{tcpa_rng[1]:.0f}s  spawn_t0=0  seed={seed}\n"
             f" FL={fl_rng[0]}:{fl_rng[1]}  CAS={cas_rng[0]:.0f}:{cas_rng[1]:.0f} kt",
             nxt="Load: SATG_GC_RUN [SCNNAME]"
@@ -3391,8 +3531,8 @@ def SATG_HELP(topic: str = ""):
         "SATG Help",
         "=========",
         "",
-        "Random conflicts in a circle:",
-        "  SATG_RC_CIRCLE name N types center_lat center_lon radius_nm mode altmode tcpa fl cas actypes overwrite [angle]",
+        "Random conflicts in a circle or polygon:",
+        "  SATG_RC_CIRCLE name N types center_lat center_lon radius_nm mode altmode tcpa fl cas actypes overwrite [angle] [area_type] [polygon_name]",
         "  - types: headon,cross,overtake (comma separated)",
         "  - altmode: level | altcross | mix",
         "  - tcpa: seconds lo:hi, all aircraft spawn at t=0 (tcpa is time to CPA)",
@@ -3400,6 +3540,8 @@ def SATG_HELP(topic: str = ""):
         "  - cas: kt lo:hi",
         "  - angle: lo:hi degrees, only for crossing",
         "  - overwrite: 1 overwrite file, 0 append",
+        "  - area_type: circle | polygon (default: circle)",
+        "  - polygon_name: name of polygon when area_type=polygon (requires geopandas)",
         "",
         "Geometric conflicts:",
         "  SATG_GC_CONF HSEP VSEP",
@@ -3411,6 +3553,15 @@ def SATG_HELP(topic: str = ""):
         "  SATG_RL_MAKE name overwrite",
         "  SATG_RL_RUN  name overwrite",
         "  Notes: jitter and auto-delete are set via the GUI and applied just-in-time.",
+        "",
+        "Polygon management:",
+        "  SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]",
+        "  SATG_POLY_LIST",
+        "  SATG_POLY_INFO name",
+        "  SATG_POLY_COORDS name",
+        "  SATG_POLY_TEST polygon_name lat lon",
+        "  Create custom polygon areas and use them in random conflicts",
+        "  💡 TIP: Create polygons with native POLY command, then enter name in GUI",
         "",
         "Procedures mode:",
         "  Load waypoint files (DEFWPT) and procedure files (%0) first:",
@@ -3433,6 +3584,14 @@ def SATG_HELP(topic: str = ""):
         "  Behavior: generic procedures spawn near the first fix inside a sector pointing inbound to it,",
         "            SID-*-*.scn spawn from runway thresholds once mapped to an ICAO and follow configured runway rates or schedules.",
         "            Min separation applies to generic procedures only.",
+        "",
+        "Polygon management:",
+        "    SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]",
+        "    SATG_POLY_LIST",
+        "    SATG_POLY_INFO name",
+        "    SATG_POLY_COORDS name",
+        "    SATG_POLY_TEST polygon_name lat lon",
+        "  Create custom polygon areas and use them in random conflicts",
         "",
         "General:",
         "  - Use the GUI to set a base folder. Scenario files are written there.",
@@ -3460,3 +3619,178 @@ def reset():
     # Clear tracked aircraft lists so they don't carry over to the new scenario
     STATE.gc_last_acids.clear()
     STATE.gc_rel_seq = 1
+
+
+# ================= POLYGON INTEGRATION COMMANDS ================= #
+
+@command
+def SATG_POLY_CREATE(name: str, *coordinates):
+    """SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]
+    Create a polygon area and make it available for SATG operations.
+    This is a convenience wrapper around BlueSky's POLY command.
+    """
+    if len(coordinates) < 6:  # Need at least 3 points (6 coordinates)
+        _echo_err("Usage: SATG_POLY_CREATE name lat1 lon1 lat2 lon2 lat3 lon3 [...]")
+        return False, ""
+    
+    # Convert coordinates to the format expected by BlueSky's POLY command
+    coord_list = [float(c) for c in coordinates]
+    
+    # Call BlueSky's native POLY command
+    result = areafilter.defineArea(name, "POLY", coord_list)
+    
+    if result:
+        _echo_ok(f"Created polygon '{name}' with {len(coord_list)//2} vertices")
+        _echo_ok(f"Polygon '{name}' is now available for Random Conflicts")
+        # Trigger GUI refresh if possible
+        _notify_gui_polygon_update()
+        return True, ""
+    else:
+        _echo_err(f"Failed to create polygon '{name}'")
+        return False, ""
+
+@command
+def SATG_POLY_LIST():
+    """SATG_POLY_LIST
+    List all available polygon areas.
+    """
+    if not areafilter.basic_shapes:
+        stack.stack("ECHO No polygons currently defined.")
+        return True, ""
+    
+    poly_info = []
+    for name, shape in areafilter.basic_shapes.items():
+        if hasattr(shape, 'coordinates'):
+            num_vertices = len(shape.coordinates) // 2
+            poly_info.append(f"{name}: {num_vertices} vertices")
+    
+    if poly_info:
+        stack.stack("ECHO Available polygons:")
+        for info in poly_info:
+            stack.stack(f"ECHO {info}")
+    else:
+        stack.stack("ECHO No polygon areas found.")
+    
+    return True, ""
+
+@command 
+def SATG_POLY_INFO(name: str):
+    """SATG_POLY_INFO name
+    Display detailed information about a specific polygon.
+    """
+    poly = areafilter.getArea(name)
+    if poly is None:
+        _echo_err(f"Polygon '{name}' not found. Use SATG_POLY_LIST to see available polygons.")
+        return False, ""
+    
+    if not hasattr(poly, 'coordinates'):
+        _echo_err(f"'{name}' is not a polygon area.")
+        return False, ""
+    
+    coords = poly.coordinates
+    num_vertices = len(coords) // 2
+    
+    # Format coordinate pairs
+    vertex_list = []
+    for i in range(0, len(coords), 2):
+        lat, lon = coords[i], coords[i+1]
+        vertex_list.append(f"  {i//2 + 1}: {lat:.6f}, {lon:.6f}")
+    
+    info = [
+        f"Polygon '{name}':",
+        f"  Vertices: {num_vertices}",
+        f"  Altitude range: {poly.bottom:.0f} - {poly.top:.0f} ft",
+        "  Coordinates:"
+    ] + vertex_list
+    
+    for line in info:
+        stack.stack(f"ECHO {line}")
+    
+    return True, ""
+
+@command
+def SATG_POLY_COORDS(name: str):
+    """SATG_POLY_COORDS name
+    Get the coordinates of a polygon as a comma-separated list.
+    """
+    poly = areafilter.getArea(name)
+    if poly is None:
+        _echo_err(f"Polygon '{name}' not found.")
+        return False, ""
+    
+    if not hasattr(poly, 'coordinates'):
+        _echo_err(f"'{name}' is not a polygon area.")
+        return False, ""
+    
+    # Format coordinates as comma-separated string
+    coord_str = ",".join(f"{c:.6f}" for c in poly.coordinates)
+    stack.stack(f"ECHO Coordinates for '{name}': {coord_str}")
+    return True, coord_str
+
+def get_polygon_coordinates(name: str) -> Optional[List[Tuple[float, float]]]:
+    """Helper function to get polygon coordinates as list of (lat, lon) tuples.
+    
+    Returns:
+        List of (lat, lon) tuples if polygon exists, None otherwise
+    """
+    # Try exact name first
+    poly = areafilter.getArea(name)
+    
+    # If not found, try case-insensitive search
+    if poly is None and areafilter.basic_shapes:
+        for area_name, shape in areafilter.basic_shapes.items():
+            if area_name.lower() == name.lower():
+                poly = shape
+                break
+    
+    if poly is None or not hasattr(poly, 'coordinates'):
+        return None
+    
+    coords = poly.coordinates
+    return [(coords[i], coords[i+1]) for i in range(0, len(coords), 2)]
+
+def is_point_in_polygon(lat: float, lon: float, polygon_name: str) -> bool:
+    """Check if a point is inside a named polygon.
+    
+    Args:
+        lat: Latitude of the point
+        lon: Longitude of the point  
+        polygon_name: Name of the polygon area
+        
+    Returns:
+        True if point is inside polygon, False otherwise
+    """
+    # Try exact name first
+    poly = areafilter.getArea(polygon_name)
+    actual_name = polygon_name
+    
+    # If not found, try case-insensitive search
+    if poly is None and areafilter.basic_shapes:
+        for area_name, shape in areafilter.basic_shapes.items():
+            if area_name.lower() == polygon_name.lower():
+                poly = shape
+                actual_name = area_name
+                break
+    
+    if poly is None:
+        return False
+    
+    # Use BlueSky's built-in point-in-polygon check with the actual name
+    result = areafilter.checkInside(actual_name, [lat], [lon], [0])
+    return bool(result[0]) if len(result) > 0 else False
+
+@command
+def SATG_POLY_TEST(polygon_name: str, lat: float, lon: float):
+    """SATG_POLY_TEST polygon_name lat lon
+    Test if a specific point is inside the named polygon.
+    """
+    if not areafilter.getArea(polygon_name):
+        _echo_err(f"Polygon '{polygon_name}' not found.")
+        return False, ""
+    
+    inside = is_point_in_polygon(lat, lon, polygon_name)
+    status = "INSIDE" if inside else "OUTSIDE"
+    stack.stack(f"ECHO Point ({lat:.6f}, {lon:.6f}) is {status} polygon '{polygon_name}'")
+    return True, ""
+
+# ------------------- Plugin init -------------------- #

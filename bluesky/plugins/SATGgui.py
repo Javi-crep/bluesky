@@ -891,14 +891,14 @@ class GCMinimaPanel(QGroupBox):
         layout.setSpacing(6)
 
         self._hsep = QDoubleSpinBox(self)
-        self._hsep.setRange(0.1, 50.0)
+        self._hsep.setRange(0.0, 50.0)
         self._hsep.setDecimals(2)
         self._hsep.setSingleStep(0.1)
         self._hsep.setValue(5.0)
         layout.addRow("Horizontal [NM]:", self._hsep)
 
         self._vsep = QSpinBox(self)
-        self._vsep.setRange(100, 5000)
+        self._vsep.setRange(0, 5000)
         self._vsep.setSingleStep(50)
         self._vsep.setValue(1000)
         layout.addRow("Vertical [ft]:", self._vsep)
@@ -2099,13 +2099,51 @@ class RCTab(QWidget):
         self.c_rad = QDoubleSpinBox(); self.c_rad.setRange(0.1, 1000.0); self.c_rad.setDecimals(2); self.c_rad.setValue(25.0)
         
         # Separation minima
-        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.1, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
-        self.vsep = QSpinBox(); self.vsep.setRange(100, 5000); self.vsep.setValue(1000)
+        self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.0, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
+        self.vsep = QSpinBox(); self.vsep.setRange(0, 5000); self.vsep.setValue(1000)
 
         common_form.addRow("Number of conflicts:", self.n)
-        common_form.addRow("Circle center lat [deg]:", self.c_lat)
-        common_form.addRow("Circle center lon [deg]:", self.c_lon)
-        common_form.addRow("Circle radius [NM]:", self.c_rad)
+        
+        # Area type selection
+        self.area_type_group = QGroupBox("Conflict Area")
+        area_type_layout = QVBoxLayout(self.area_type_group)
+        
+        # Radio buttons for area type
+        self.circle_rb = QRadioButton("Circle")
+        self.polygon_rb = QRadioButton("Polygon")
+        self.circle_rb.setChecked(True)  # Default to circle
+        
+        area_type_layout.addWidget(self.circle_rb)
+        area_type_layout.addWidget(self.polygon_rb)
+        
+        # Connect radio buttons to update visibility
+        self.circle_rb.toggled.connect(self._update_area_controls)
+        self.polygon_rb.toggled.connect(self._update_area_controls)
+        
+        common_form.addRow(self.area_type_group)
+        
+        # Circle controls (initially visible)
+        self.circle_controls = QWidget()
+        circle_layout = QFormLayout(self.circle_controls)
+        circle_layout.setContentsMargins(0, 0, 0, 0)
+        circle_layout.addRow("Circle center lat [deg]:", self.c_lat)
+        circle_layout.addRow("Circle center lon [deg]:", self.c_lon)
+        circle_layout.addRow("Circle radius [NM]:", self.c_rad)
+        common_form.addRow(self.circle_controls)
+        
+        # Polygon controls (initially hidden)
+        self.polygon_controls = QWidget()
+        polygon_layout = QFormLayout(self.polygon_controls)
+        polygon_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Polygon name text input
+        self.polygon_name_input = QLineEdit()
+        self.polygon_name_input.setPlaceholderText("Enter polygon name (e.g., myarea)")
+        self.polygon_name_input.setToolTip("Enter the name of the polygon you created with POLY command")
+        polygon_layout.addRow("Polygon Name:", self.polygon_name_input)
+        
+        common_form.addRow(self.polygon_controls)
+        self.polygon_controls.hide()  # Initially hidden
         
         # Circle visualization option
         self.show_circle_cb = QCheckBox("Show circle on screen")
@@ -2329,9 +2367,15 @@ class RCTab(QWidget):
         self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
         self.gc_overwrite_cb.setChecked(False)
         
+        self.include_polygon_cb = QCheckBox("Include polygon in scenario file")
+        self.include_polygon_cb.setChecked(True)
+        self.include_polygon_cb.setToolTip("When using polygon areas, automatically include POLY command in scenario file")
+        self.include_polygon_cb.hide()  # Initially hidden since circle is selected by default
+        
         scenario_form.addRow("Scenario name:", self.scn)
         scenario_form.addRow("Seed (0=random):", self.seed)
         scenario_form.addRow(self.gc_overwrite_cb)
+        scenario_form.addRow(self.include_polygon_cb)
         
         actions_main_layout.addLayout(scenario_form)
         
@@ -2360,6 +2404,9 @@ class RCTab(QWidget):
         self.c_lat.textChanged.connect(self._update_circle_if_visible)
         self.c_lon.textChanged.connect(self._update_circle_if_visible)
         self.c_rad.valueChanged.connect(self._update_circle_if_visible)
+        
+        # Set initial visibility state for area controls (must be after all widgets are created)
+        self._update_area_controls()
 
     def _toggle_circle_display(self):
         """Show or hide the circle on the BlueSky screen."""
@@ -2402,6 +2449,19 @@ class RCTab(QWidget):
             circle_name = f"RC_CIRCLE_{self.scn.text()}"
             _emit(f"CIRCLE {circle_name} 0 0 0")
 
+    def _update_area_controls(self):
+        """Show/hide area controls based on selected area type."""
+        if self.circle_rb.isChecked():
+            self.circle_controls.show()
+            self.polygon_controls.hide()
+            self.show_circle_cb.show()  # Show circle visualization option for circle mode
+            self.include_polygon_cb.hide()  # Hide polygon checkbox for circle mode
+        else:  # polygon selected
+            self.polygon_controls.show()
+            self.circle_controls.hide()
+            self.show_circle_cb.hide()  # Hide circle visualization option for polygon mode
+            self.include_polygon_cb.show()  # Show polygon checkbox for polygon mode
+
     def _create(self):
         """Create random conflicts using modern geometric conflicts commands."""
         # Validate inputs
@@ -2417,12 +2477,24 @@ class RCTab(QWidget):
             _emit("ECHO SATGGUI: Enter a scenario name.")
             return
             
-        try:
-            center_lat = float(self.c_lat.text())
-            center_lon = float(self.c_lon.text())
-        except ValueError:
-            _emit("ECHO SATGGUI: Invalid latitude/longitude values.")
-            return
+        # Validate area parameters based on selected type
+        if self.circle_rb.isChecked():
+            # Circle mode - validate coordinates and radius
+            try:
+                center_lat = float(self.c_lat.text())
+                center_lon = float(self.c_lon.text())
+                radius = float(self.c_rad.value())
+            except ValueError:
+                _emit("ECHO SATGGUI: Invalid circle parameters.")
+                return
+            area_params = {"area_type": "circle", "center_lat": center_lat, "center_lon": center_lon, "radius": radius}
+        else:
+            # Polygon mode - validate polygon name input
+            polygon_name = self.polygon_name_input.text().strip()
+            if not polygon_name:
+                _emit("ECHO SATGGUI: Enter a polygon name. Create polygon first with POLY command.")
+                return
+            area_params = {"area_type": "polygon", "polygon_name": polygon_name}
 
         # Set separation minima
         _emit(f"SATG_GC_CONF {self.hsep.value()} {self.vsep.value()}")
@@ -2433,19 +2505,19 @@ class RCTab(QWidget):
         
         if self.abs_enabled.isChecked() and self.rel_enabled.isChecked():
             # Use random mode like backend - let SATG_RC_CIRCLE decide randomly for each conflict
-            self._create_mixed_conflicts(name, total_conflicts, center_lat, center_lon, overwrite)
+            self._create_mixed_conflicts(name, total_conflicts, area_params, overwrite)
         elif self.abs_enabled.isChecked():
-            self._create_absolute_conflicts(name, total_conflicts, center_lat, center_lon, overwrite)
+            self._create_absolute_conflicts(name, total_conflicts, area_params, overwrite)
         elif self.rel_enabled.isChecked():
-            self._create_relative_conflicts(name, total_conflicts, center_lat, center_lon, overwrite)
+            self._create_relative_conflicts(name, total_conflicts, area_params, overwrite)
 
     def _validate_abs_settings(self) -> bool:
         """Check if absolute conflict settings are valid."""
         # For modern geometric conflicts, no specific validation needed beyond enabled state
         return True
 
-    def _create_absolute_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
-        """Generate absolute (CPA-based) conflicts in the circle."""
+    def _create_absolute_conflicts(self, name: str, count: int, area_params: dict, overwrite: int):
+        """Generate absolute (CPA-based) conflicts in the specified area."""
         
         # Extract and validate TCPA field
         tcpa_field = self._extract_numeric_field("TCPA [s]", self.abs_tcpa_value, self.abs_tcpa_range, allow_float=True, allow_negative=False)
@@ -2482,15 +2554,15 @@ class RCTab(QWidget):
         # Set FL and CAS ranges for backward compatibility with SATG_GC_RANGE
         _emit(f"SATG_GC_RANGE fl={fl_txt} cas={cas_txt}")
         
+        # Get seed from parent widget
+        seed_value = self.parent().rl_seed.value() if hasattr(self.parent(), 'rl_seed') else 0
+        
         # Build command parts
         cmd_parts = [
             "SATG_RC_CIRCLE",
             f"name={name}",
             f"n={count}",
             "types=headon,cross,overtake",  # Use all types for modern geometric conflicts
-            f"center_lat={lat}",
-            f"center_lon={lon}",
-            f"radius_nm={self.c_rad.value()}",
             "mode=abs",
             "altmode=level",
             f"tcpa={tcpa_txt}",
@@ -2500,6 +2572,28 @@ class RCTab(QWidget):
             f"overwrite={overwrite}",
             f"angle={angle_txt}",
         ]
+        
+        # Add seed if not 0 (0 means random)
+        if seed_value != 0:
+            cmd_parts.append(f"seed={seed_value}")
+        
+        # Add area-specific parameters
+        if area_params["area_type"] == "circle":
+            cmd_parts.extend([
+                f"center_lat={area_params['center_lat']}",
+                f"center_lon={area_params['center_lon']}",
+                f"radius_nm={area_params['radius']}",
+                "area_type=circle"
+            ])
+        else:  # polygon
+            cmd_parts.extend([
+                f"area_type=polygon",
+                f"polygon_name={area_params['polygon_name']}",
+                "center_lat=0",  # Dummy values required by command parsing
+                "center_lon=0",
+                "radius_nm=1",
+                f"include_polygon={1 if self.include_polygon_cb.isChecked() else 0}"
+            ])
         
         # Add altitude offset if specified
         if alt_offset_txt:
@@ -2511,8 +2605,8 @@ class RCTab(QWidget):
             
         _emit(" ".join(cmd_parts))
 
-    def _create_relative_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
-        """Generate relative (target-intruder) conflicts in the circle."""
+    def _create_relative_conflicts(self, name: str, count: int, area_params: dict, overwrite: int):
+        """Generate relative (target-intruder) conflicts in the specified area."""
         # Extract parameters using the two-field format like geometric conflicts
         
         # Extract dpsi (conflict angle)
@@ -2566,15 +2660,15 @@ class RCTab(QWidget):
             else:
                 spd_str = spd_val
         
+        # Get seed from parent widget
+        seed_value = self.parent().rl_seed.value() if hasattr(self.parent(), 'rl_seed') else 0
+        
         # Build SATG_RC_CIRCLE command
         cmd_parts = [
             "SATG_RC_CIRCLE",
             f"name={name}",
             f"n={count}",
             "types=cross",  # Relative conflicts are typically crossing encounters
-            f"center_lat={lat}",
-            f"center_lon={lon}",
-            f"radius_nm={self.c_rad.value()}",
             "mode=rel",
             "altmode=level",
             f"tcpa={tlosh_str}",  # tcpa parameter will be interpreted as tlosh in rel mode
@@ -2585,6 +2679,27 @@ class RCTab(QWidget):
             f"dcpa={dcpa_str}",
         ]
         
+        # Add area-specific parameters
+        if area_params["area_type"] == "circle":
+            cmd_parts.extend([
+                f"center_lat={area_params['center_lat']}",
+                f"center_lon={area_params['center_lon']}",
+                f"radius_nm={area_params['radius']}",
+                "area_type=circle"
+            ])
+        else:  # polygon
+            cmd_parts.extend([
+                f"area_type=polygon",
+                f"polygon_name={area_params['polygon_name']}",
+                "center_lat=0",  # Dummy values required by command parsing
+                "center_lon=0",
+                "radius_nm=1"
+            ])
+        
+        # Add polygon inclusion parameter for polygon areas
+        if area_params["area_type"] == "polygon":
+            cmd_parts.append(f"include_polygon={1 if self.include_polygon_cb.isChecked() else 0}")
+        
         # Add optional parameters
         if dh_str:
             cmd_parts.append(f"dh={dh_str}")
@@ -2592,12 +2707,14 @@ class RCTab(QWidget):
             cmd_parts.append(f"tlosv={tlosv_str}")
         if spd_str:
             cmd_parts.append(f"cas={spd_str}")
-        if self.seed.value() != 0:
-            cmd_parts.append(f"seed={self.seed.value()}")
+        
+        # Add seed if not 0 (0 means random)
+        if seed_value != 0:
+            cmd_parts.append(f"seed={seed_value}")
             
         _emit(" ".join(cmd_parts))
 
-    def _create_mixed_conflicts(self, name: str, count: int, lat: float, lon: float, overwrite: int):
+    def _create_mixed_conflicts(self, name: str, count: int, area_params: dict, overwrite: int):
         """Generate mixed conflicts using SATG_RC_CIRCLE mode=mix (random for each conflict)."""
         
         # We need to determine which parameters to use for the mixed mode
@@ -2650,15 +2767,15 @@ class RCTab(QWidget):
                 return
             dh_str = f"{int(dh_field[2])}" if not dh_field[1] else f"{int(dh_field[2])}:{int(dh_field[3])}"
         
+        # Get seed from parent widget
+        seed_value = self.parent().rl_seed.value() if hasattr(self.parent(), 'rl_seed') else 0
+        
         # Build SATG_RC_CIRCLE command with mode=mix
         cmd_parts = [
             "SATG_RC_CIRCLE",
             f"name={name}",
             f"n={count}",
             "types=cross",  # Use cross as default type
-            f"center_lat={lat}",
-            f"center_lon={lon}",
-            f"radius_nm={self.c_rad.value()}",
             "mode=mix",     # This is the key - random mode like backend
             "altmode=level",
             f"tcpa={tcpa_str}",
@@ -2669,11 +2786,34 @@ class RCTab(QWidget):
             f"overwrite={overwrite}",
         ]
         
+        # Add area-specific parameters
+        if area_params["area_type"] == "circle":
+            cmd_parts.extend([
+                f"center_lat={area_params['center_lat']}",
+                f"center_lon={area_params['center_lon']}",
+                f"radius_nm={area_params['radius']}",
+                "area_type=circle"
+            ])
+        else:  # polygon
+            cmd_parts.extend([
+                f"area_type=polygon",
+                f"polygon_name={area_params['polygon_name']}",
+                "center_lat=0",  # Dummy values required by command parsing
+                "center_lon=0",
+                "radius_nm=1"
+            ])
+        
+        # Add polygon inclusion parameter for polygon areas
+        if area_params["area_type"] == "polygon":
+            cmd_parts.append(f"include_polygon={1 if self.include_polygon_cb.isChecked() else 0}")
+        
         # Add optional parameters
         if dh_str:
             cmd_parts.append(f"dh={dh_str}")
-        if self.seed.value() != 0:
-            cmd_parts.append(f"seed={self.seed.value()}")
+        
+        # Add seed if not 0 (0 means random)
+        if seed_value != 0:
+            cmd_parts.append(f"seed={seed_value}")
         
         _emit(" ".join(cmd_parts))
 
