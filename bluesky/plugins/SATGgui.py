@@ -3020,8 +3020,6 @@ class ProcTab(QWidget):
         fg.addRow("Spawn radius [NM]:", self.spawn_r)
         self.spawn_env = QDoubleSpinBox(); self.spawn_env.setDecimals(0); self.spawn_env.setRange(5, 180); self.spawn_env.setValue(40)
         fg.addRow("Angular envelope [deg]:", self.spawn_env)
-        self.seed = QSpinBox(); self.seed.setRange(0, 2_000_000_000); self.seed.setValue(0)
-        fg.addRow("Seed (0 = random):", self.seed)
         hb2.addWidget(generic_box, 1)
 
         # SID-specific column
@@ -3136,6 +3134,9 @@ class ProcTab(QWidget):
 
         self.scn = QLineEdit("proc_scn")
         f3.addRow("Scenario name:", self.scn)
+
+        self.seed = QSpinBox(); self.seed.setRange(0, 2_000_000_000); self.seed.setValue(0)
+        f3.addRow("Seed (0 = random):", self.seed)
 
         self.overwrite = QCheckBox("Overwrite scenario if it exists")
         self.overwrite.setChecked(True)
@@ -3769,10 +3770,7 @@ class ProcTab(QWidget):
         star_minsep = 90
 
         star_procs = self._current_star_procs()
-        if star_mode_schedule:
-            if not star_procs:
-                _emit("ECHO Load STAR-*.scn procedure files before configuring STAR flights.")
-                return False
+        if star_mode_schedule and star_n > 0 and star_procs:
             total_caps = 0
             for path in star_procs:
                 cfg = self._star_schedule_data.get(path)
@@ -3787,10 +3785,6 @@ class ProcTab(QWidget):
             self.star_flights.blockSignals(True)
             self.star_flights.setValue(star_n)
             self.star_flights.blockSignals(False)
-        else:
-            if star_n > 0 and not star_procs:
-                _emit("ECHO Load STAR-*.scn procedure files before configuring STAR flights.")
-                return False
 
         if not self._ensure_origin_ready():
             return False
