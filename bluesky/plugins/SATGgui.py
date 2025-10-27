@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6 import sip
 from bluesky import stack
+from bluesky.ui.qtgl.console import process_cmdline
 try:
     import bluesky as bs
 except Exception:
@@ -2139,7 +2140,8 @@ class RCTab(QWidget):
         # Polygon name text input
         self.polygon_name_input = QLineEdit()
         self.polygon_name_input.setPlaceholderText("Enter polygon name (e.g., myarea)")
-        self.polygon_name_input.setToolTip("Enter the name of the polygon you created with POLY command")
+        self.polygon_name_input.setToolTip("Enter the name of the polygon you created with POLY command\nPress Enter to start creating polygon on screen")
+        self.polygon_name_input.returnPressed.connect(self._start_polygon_creation)
         polygon_layout.addRow("Polygon Name:", self.polygon_name_input)
         
         common_form.addRow(self.polygon_controls)
@@ -2407,6 +2409,15 @@ class RCTab(QWidget):
         
         # Set initial visibility state for area controls (must be after all widgets are created)
         self._update_area_controls()
+
+    def _start_polygon_creation(self):
+        """Start polygon creation by pre-filling the command line with POLY command."""
+        polygon_name = self.polygon_name_input.text().strip()
+        if polygon_name:
+            # Pre-fill the command line with "POLY polygonname " (note the trailing space)
+            process_cmdline(f"POLY {polygon_name} ")
+        else:
+            _emit("ECHO Please enter a polygon name first")
 
     def _toggle_circle_display(self):
         """Show or hide the circle on the BlueSky screen."""
