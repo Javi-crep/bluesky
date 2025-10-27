@@ -801,6 +801,11 @@ class GCAbsolutePage(QWidget):
         self.gc_use_wp_rb.toggled.connect(self._update_cpa_reference_mode)
         self._update_cpa_reference_mode()
 
+        # Connect parameter change signals to update CPA reference display
+        self.gc_lat.textChanged.connect(self._update_cpa_if_visible)
+        self.gc_lon.textChanged.connect(self._update_cpa_if_visible)
+        self.gc_wp.textChanged.connect(self._update_cpa_if_visible)
+
         self.gc_tcpa_value = QLineEdit("120.0")
         self.gc_tcpa_value.setClearButtonEnabled(True)
         self.gc_tcpa_range = QLineEdit()
@@ -830,6 +835,13 @@ class GCAbsolutePage(QWidget):
 
         self.gc_actypes = QLineEdit("A320,B738,A350,B78X")
         f1.addRow("AC types:", self.gc_actypes)
+
+        # CPA reference visualization option
+        self.show_cpa_cb = QCheckBox("Show CPA reference on screen")
+        self.show_cpa_cb.setChecked(False)
+        self.show_cpa_cb.setToolTip("Draw the CPA reference point on BlueSky screen (coordinates mode only)")
+        self.show_cpa_cb.toggled.connect(self._toggle_cpa_display)
+        f1.addRow(self.show_cpa_cb)
 
         # Set the form widget as the scroll area's widget
         cpa_scroll.setWidget(cpa_form_widget)
@@ -1133,6 +1145,51 @@ class GCAbsolutePage(QWidget):
         self.gc_lat.setEnabled(use_coords)
         self.gc_lon.setEnabled(use_coords)
         self.gc_wp.setEnabled(not use_coords)
+        
+        # Enable/disable CPA visualization checkbox based on mode
+        if hasattr(self, 'show_cpa_cb'):
+            self.show_cpa_cb.setEnabled(use_coords)
+            if not use_coords:
+                # Hide CPA reference when switching to waypoint mode
+                self._hide_cpa_reference()
+        
+        # Update CPA display if visible
+        self._update_cpa_if_visible()
+
+    def _toggle_cpa_display(self):
+        """Show or hide the CPA reference point on the BlueSky screen."""
+        if self.show_cpa_cb.isChecked():
+            self._show_cpa_reference()
+        else:
+            self._hide_cpa_reference()
+            
+    def _update_cpa_if_visible(self):
+        """Update CPA reference display if it's currently visible."""
+        if hasattr(self, 'show_cpa_cb') and self.show_cpa_cb.isChecked():
+            self._show_cpa_reference()
+            
+    def _show_cpa_reference(self):
+        """Draw the CPA reference point on the BlueSky screen."""
+        try:
+            if self.gc_use_coords_rb.isChecked():
+                # Use coordinate mode - show visual indicator
+                lat = float(self.gc_lat.text())
+                lon = float(self.gc_lon.text())
+                ref_name = "GC_CPA_REF_COORD"
+                # Draw a small circle to mark the CPA reference point
+                _emit(f"CIRCLE {ref_name} {lat} {lon} 0.5")  # 0.5 NM radius for visibility
+            else:
+                # Use waypoint mode - don't show visual indicator, just hide coordinate marker
+                _emit(f"CIRCLE GC_CPA_REF_COORD 0 0 0")  # Hide coordinate marker
+            
+        except (ValueError, AttributeError):
+            # Invalid coordinates, don't draw anything
+            pass
+            
+    def _hide_cpa_reference(self):
+        """Remove the CPA reference point from the BlueSky screen."""
+        # Hide both coordinate and waypoint reference markers
+        _emit(f"CIRCLE GC_CPA_REF_COORD 0 0 0")  # Hide coordinate marker
 
 
 class GCRelativePage(QWidget):
@@ -1816,7 +1873,8 @@ class GCTab(QWidget):
         abs_box = QGroupBox("CPA (legacy)", self)
         abs_layout = QVBoxLayout(abs_box)
         abs_layout.setContentsMargins(8, 8, 8, 8)
-        abs_layout.addWidget(GCAbsolutePage(self._minima, abs_box))
+        self._absolute_page = GCAbsolutePage(self._minima, abs_box)  # Store reference
+        abs_layout.addWidget(self._absolute_page)
 
         rel_box = QGroupBox("Relative (creconfs)", self)
         rel_layout = QVBoxLayout(rel_box)
@@ -1855,9 +1913,7 @@ class RCTab(QWidget):
         common_form = QFormLayout(common_form_widget)
         common_form.setContentsMargins(5, 5, 5, 5)
 
-        self.scn = QLineEdit("rc_circle")
         self.n = QSpinBox(); self.n.setRange(1, 100000); self.n.setValue(20)
-        self.seed = QSpinBox(); self.seed.setRange(0, 2**31-1); self.seed.setValue(0)
         
         # Circle region settings
         self.c_lat = QLineEdit("52.100")
@@ -1867,20 +1923,21 @@ class RCTab(QWidget):
         # Separation minima
         self.hsep = QDoubleSpinBox(); self.hsep.setRange(0.1, 50.0); self.hsep.setDecimals(2); self.hsep.setValue(5.0)
         self.vsep = QSpinBox(); self.vsep.setRange(100, 5000); self.vsep.setValue(1000)
-        
-        # Overwrite toggle
-        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
-        self.gc_overwrite_cb.setChecked(False)
 
-        common_form.addRow("Scenario name:", self.scn)
         common_form.addRow("Number of conflicts:", self.n)
-        common_form.addRow("Seed (0=random):", self.seed)
         common_form.addRow("Circle center lat [deg]:", self.c_lat)
         common_form.addRow("Circle center lon [deg]:", self.c_lon)
         common_form.addRow("Circle radius [NM]:", self.c_rad)
+        
+        # Circle visualization option
+        self.show_circle_cb = QCheckBox("Show circle on screen")
+        self.show_circle_cb.setChecked(False)
+        self.show_circle_cb.setToolTip("Draw the circle region on BlueSky screen for visual reference")
+        self.show_circle_cb.toggled.connect(self._toggle_circle_display)
+        common_form.addRow(self.show_circle_cb)
+        
         common_form.addRow("HSEP [NM]:", self.hsep)
         common_form.addRow("VSEP [ft]:", self.vsep)
-        common_form.addRow(self.gc_overwrite_cb)
 
         common_scroll.setWidget(common_form_widget)
         common_layout.addWidget(common_scroll)
@@ -2054,21 +2111,95 @@ class RCTab(QWidget):
         main.addLayout(cols)
 
         # Actions
-        actions_gb = QGroupBox("4) Actions")
-        actions_layout = QHBoxLayout(actions_gb)
+        actions_gb = QGroupBox("4) Create Scenario")
+        actions_main_layout = QVBoxLayout(actions_gb)
+        actions_main_layout.setContentsMargins(8, 8, 8, 8)
+        actions_main_layout.setSpacing(10)
+        
+        # Scenario controls form
+        scenario_form = QFormLayout()
+        scenario_form.setContentsMargins(0, 0, 0, 0)
+        scenario_form.setSpacing(8)
+        
+        # Add the scenario controls that were moved from batch settings
+        self.scn = QLineEdit("rc_circle")
+        self.scn.textChanged.connect(self._update_circle_if_visible)  # Update circle name when scenario name changes
+        self.seed = QSpinBox(); self.seed.setRange(0, 2**31-1); self.seed.setValue(0)
+        self.gc_overwrite_cb = QCheckBox("Overwrite scenario if it exists")
+        self.gc_overwrite_cb.setChecked(False)
+        
+        scenario_form.addRow("Scenario name:", self.scn)
+        scenario_form.addRow("Seed (0=random):", self.seed)
+        scenario_form.addRow(self.gc_overwrite_cb)
+        
+        actions_main_layout.addLayout(scenario_form)
+        
+        # Action buttons
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(8)
+        
         self.btn_create = QPushButton("CREATE SCENARIO")
         self.btn_run = QPushButton("RUN SCENARIO")
         self.btn_both = QPushButton("CREATE & RUN SCENARIO")
         self.btn_create.clicked.connect(self._create)
         self.btn_run.clicked.connect(self._run)
         self.btn_both.clicked.connect(self._create_and_run)
-        actions_layout.addWidget(self.btn_create)
-        actions_layout.addWidget(self.btn_run)
-        actions_layout.addWidget(self.btn_both)
-        actions_layout.addStretch(1)
+        buttons_layout.addWidget(self.btn_create)
+        buttons_layout.addWidget(self.btn_run)
+        buttons_layout.addWidget(self.btn_both)
+        buttons_layout.addStretch(1)
+        
+        actions_main_layout.addLayout(buttons_layout)
 
         main.addWidget(actions_gb)
         main.addStretch(1)
+        
+        # Connect parameter change signals to update circle display
+        self.c_lat.textChanged.connect(self._update_circle_if_visible)
+        self.c_lon.textChanged.connect(self._update_circle_if_visible)
+        self.c_rad.valueChanged.connect(self._update_circle_if_visible)
+
+    def _toggle_circle_display(self):
+        """Show or hide the circle on the BlueSky screen."""
+        if self.show_circle_cb.isChecked():
+            self._show_circle()
+        else:
+            self._hide_circle()
+            
+    def _update_circle_if_visible(self):
+        """Update circle display if it's currently visible."""
+        if hasattr(self, 'show_circle_cb') and self.show_circle_cb.isChecked():
+            self._show_circle()
+            
+    def _show_circle(self):
+        """Draw the circle on the BlueSky screen."""
+        try:
+            lat = float(self.c_lat.text())
+            lon = float(self.c_lon.text())
+            radius = float(self.c_rad.value())
+            
+            # Use the CIRCLE command to draw the circle
+            # Format: CIRCLE name lat lon radius_nm
+            circle_name = f"RC_CIRCLE_{self.scn.text()}"
+            _emit(f"CIRCLE {circle_name} {lat} {lon} {radius}")
+            
+        except (ValueError, AttributeError):
+            # Invalid coordinates, don't draw anything
+            pass
+            
+    def _hide_circle(self):
+        """Remove the circle from the BlueSky screen."""
+        # Hide the circle by drawing it with radius 0 (invisible)
+        try:
+            lat = float(self.c_lat.text())
+            lon = float(self.c_lon.text())
+            circle_name = f"RC_CIRCLE_{self.scn.text()}"
+            _emit(f"CIRCLE {circle_name} {lat} {lon} 0")  # Radius 0 makes it invisible
+        except (ValueError, AttributeError):
+            # If we can't get coordinates, try with default coords
+            circle_name = f"RC_CIRCLE_{self.scn.text()}"
+            _emit(f"CIRCLE {circle_name} 0 0 0")
 
     def _create(self):
         """Create random conflicts using modern geometric conflicts commands."""
@@ -3402,16 +3533,71 @@ class SATGWindow(QWidget):
 
         tabs = QTabWidget(self)
         
-        tabs.addTab(HelpTab(self), "Help")
-        tabs.addTab(RLTab(self), "Realistic Replay")
-        tabs.addTab(GCTab(self), "Geometric Conflicts")
-        tabs.addTab(RCTab(self), "Random Conflicts")
-        tabs.addTab(ProcTab(self), "Procedures")
+        # Create tab instances and store references for visual indicator management
+        self.help_tab = HelpTab(self)
+        self.rl_tab = RLTab(self)
+        self.gc_tab = GCTab(self)  # Has CPA reference visualization
+        self.rc_tab = RCTab(self)  # Has circle visualization
+        self.proc_tab = ProcTab(self)
+        
+        tabs.addTab(self.help_tab, "Help")
+        tabs.addTab(self.rl_tab, "Realistic Replay")
+        tabs.addTab(self.gc_tab, "Geometric Conflicts")
+        tabs.addTab(self.rc_tab, "Random Conflicts")
+        tabs.addTab(self.proc_tab, "Procedures")
+
+        # Connect tab change event to manage visual indicators
+        tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs = tabs  # Store reference for later use
 
         self.top = TopStrip(self)
 
         layout.addWidget(self.top)
         layout.addWidget(tabs, 1)
+
+    def _on_tab_changed(self, index):
+        """Handle tab changes and manage visual indicators."""
+        current_tab = self.tabs.widget(index)
+        
+        # Hide all visual indicators first
+        self._hide_all_indicators()
+        
+        # Show indicators for the current tab if they should be visible
+        if current_tab == self.gc_tab:
+            # Geometric Conflicts tab - show CPA reference if enabled
+            self._show_gc_indicators()
+        elif current_tab == self.rc_tab:
+            # Random Conflicts tab - show circle if enabled
+            self._show_rc_indicators()
+            
+    def _hide_all_indicators(self):
+        """Hide all visual indicators from all tabs."""
+        # Hide Random Conflicts circle
+        if hasattr(self, 'rc_tab'):
+            self.rc_tab._hide_circle()
+            
+        # Hide Geometric Conflicts CPA reference (absolute mode)
+        if hasattr(self, 'gc_tab') and hasattr(self.gc_tab, '_minima'):
+            # Access the absolute page through the GCTab structure
+            gc_absolute_page = getattr(self.gc_tab, '_absolute_page', None)
+            if gc_absolute_page and hasattr(gc_absolute_page, '_hide_cpa_reference'):
+                gc_absolute_page._hide_cpa_reference()
+    
+    def _show_gc_indicators(self):
+        """Show Geometric Conflicts indicators if they should be visible."""
+        if hasattr(self, 'gc_tab') and hasattr(self.gc_tab, '_minima'):
+            gc_absolute_page = getattr(self.gc_tab, '_absolute_page', None)
+            if (gc_absolute_page and 
+                hasattr(gc_absolute_page, 'show_cpa_cb') and 
+                gc_absolute_page.show_cpa_cb.isChecked()):
+                gc_absolute_page._show_cpa_reference()
+    
+    def _show_rc_indicators(self):
+        """Show Random Conflicts indicators if they should be visible."""
+        if (hasattr(self, 'rc_tab') and 
+            hasattr(self.rc_tab, 'show_circle_cb') and 
+            self.rc_tab.show_circle_cb.isChecked()):
+            self.rc_tab._show_circle()
 
 # single instance + lazy creation
 _window = None
