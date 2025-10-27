@@ -181,9 +181,7 @@ def _generate_scenario_header(scenario_type: str, **params) -> List[str]:
         header.extend([
             f"# Scenario Type: {scenario_type}",
             f"# Aircraft Count: {params.get('n', 'N/A')}",
-            f"# Spawn Radius: {params.get('radius_nm', 'N/A')} NM",
-            f"# Angular Envelope: {params.get('envelope_deg', 'N/A')}°",
-            f"# Min Separation: {params.get('minsep', 'N/A')} seconds",
+            f"# Generic Procedures: Spawn at first waypoint",
             f"# SID Procedures: {params.get('sid_enabled', 'No')}",
             f"# STAR Procedures: {params.get('star_enabled', 'No')}"
         ])
@@ -362,7 +360,7 @@ class _SATGState:
         self.proc_sid_lookup: Dict[str, str] = {}
         self.proc_sid_schedules: Dict[str, Dict[str, object]] = {}
         self.proc_star_info: Dict[str, Dict[str, str]] = {}
-        self.proc_generic_cfg = {"flights": 20, "minsep": 90}
+        self.proc_generic_cfg = {"flights": 20}
         self.proc_sid_cfg = {"flights": 0, "alt_ft": 3000, "spd_kt": 210}
         self.proc_star_cfg = {
             "flights": 20,
@@ -376,6 +374,7 @@ class _SATGState:
         }
         self.proc_sid_rates: Dict[str, float] = {}
         self.proc_star_rates: Dict[str, Dict[str, float]] = {"initial": {}, "final": {}}
+        self.proc_generic_rates: Dict[str, Dict[str, float]] = {"initial": {}, "final": {}}
         self.proc_sid_usage: Dict[str, set] = {}
         self.proc_star_schedules: Dict[str, Dict[str, object]] = {}
         self.proc_star_initial_groups: Dict[str, set] = {}
@@ -692,16 +691,28 @@ def _sort_scn_file(path: str):
 
     header = []
     stamped = []
-    nonstamped = []
+    footer_comments = []
 
     for idx, ln in enumerate(lines):
+        # Keep scenario header comments at the top (comments that come before any timestamped commands)
+        if ln.strip().startswith("#"):
+            # If we haven't seen any timestamped commands yet, it's a header comment
+            if not stamped:
+                header.append(ln)
+                continue
+            else:
+                # Comments after timestamped commands go to footer
+                footer_comments.append((idx, ln))
+                continue
+        
         # Keep classic header lines (HOLD/ASAS) as-is at the top
         if ln.strip().startswith("0:") and (">HOLD" in ln or ">ASAS ON" in ln):
             header.append(ln)
             continue
+            
         t = _parse_ts(ln)
         if t is None:
-            nonstamped.append((idx, ln))  # comments / blanks / stray lines
+            footer_comments.append((idx, ln))  # blank lines / stray lines go to footer
         else:
             stamped.append((t, idx, ln))  # stable by (time, original order)
 
@@ -711,7 +722,7 @@ def _sort_scn_file(path: str):
     out.extend(header)
     out.extend([ln for _, _, ln in stamped])
     # Keep any non-timestamp lines at the very end in their original relative order
-    out.extend([ln for _, ln in nonstamped])
+    out.extend([ln for _, ln in footer_comments])
 
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -1396,6 +1407,73 @@ def _proc_last_fix(proc_path: str) -> Optional[str]:
     if not seq:
         return None
     return seq[-1]
+
+def _resolve_waypoint_pair(name1: str, name2: str, fix_db: Optional[Dict[str, Tuple[float, float]]]) -> tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+    """
+    Resolve a pair of waypoints trying to find geographically close matches.
+    Returns (coord1, coord2) for the best pair, or (None, None) if no good pair found.
+    """
+    if not name1 or not name2:
+        return None, None
+        
+    navdb = getattr(bs, "navdb", None) if bs else None
+    if not navdb:
+        return None, None
+    
+    try:
+        # Get all possible coordinates for both waypoints
+        coords1 = []
+        coords2 = []
+        
+        # Check fix_db first
+        key1 = name1.strip().upper()
+        key2 = name2.strip().upper()
+        if fix_db:
+            if key1 in fix_db:
+                coords1.append(fix_db[key1])
+            if key2 in fix_db:
+                coords2.append(fix_db[key2])
+        
+        # Get additional coordinates from navigation database
+        wpid_list = getattr(navdb, "wpid", None)
+        wplat_list = getattr(navdb, "wplat", None)
+        wplon_list = getattr(navdb, "wplon", None)
+        
+        if wpid_list is not None and wplat_list is not None and wplon_list is not None:
+            # Find all instances of name1
+            for i, wpid in enumerate(wpid_list):
+                if wpid == key1:
+                    coords1.append((float(wplat_list[i]), float(wplon_list[i])))
+                elif wpid == key2:
+                    coords2.append((float(wplat_list[i]), float(wplon_list[i])))
+        
+        if not coords1 or not coords2:
+            return None, None
+        
+        # Find the pair with minimum distance
+        best_pair = None
+        min_distance = float('inf')
+        
+        from bluesky.tools import geo
+        if hasattr(geo, "qdrdist"):
+            for coord1 in coords1:
+                for coord2 in coords2:
+                    _, dist_nm = geo.qdrdist(coord1[0], coord1[1], coord2[0], coord2[1])
+                    if dist_nm < min_distance:
+                        min_distance = dist_nm
+                        best_pair = (coord1, coord2)
+        
+        if best_pair and min_distance < 1000:  # Only accept pairs within 1000 NM
+            print(f"SATG DEBUG: Found close waypoint pair {name1}-{name2}: distance {min_distance:.1f}NM")
+            return best_pair
+        else:
+            print(f"SATG DEBUG: No close waypoint pair found for {name1}-{name2}, min distance {min_distance:.1f}NM")
+            return None, None
+            
+    except Exception as e:
+        print(f"SATG DEBUG: Error resolving waypoint pair {name1}-{name2}: {e}")
+        return None, None
+
 
 def _resolve_fix_coord(name: Optional[str],
                        fix_db: Optional[Dict[str, Tuple[float, float]]],
@@ -2825,6 +2903,7 @@ def SATG_PROC_CLEAR_PROC():
     STATE.proc_sid_schedules.clear()
     STATE.proc_star_info.clear()
     STATE.proc_star_rates = {"initial": {}, "final": {}}
+    STATE.proc_generic_rates = {"initial": {}, "final": {}}
     STATE.proc_star_initial_groups.clear()
     STATE.proc_star_final_groups.clear()
     STATE.proc_star_schedules.clear()
@@ -2866,12 +2945,28 @@ def SATG_PROC_SET_ICAO(proc_id: str, icao: str):
 
 
 @command
-def SATG_PROC_CFG_GENERIC(flights: int, minsep: int):
+def SATG_PROC_CFG_GENERIC(flights: int, alt_fl: int, mach: float, schedule_mode: int, rate_basis_idx: int, final_alt_fl: int, final_spd: int):
     flights = max(0, int(flights))
-    minsep = max(0, int(minsep))
-    STATE.proc_generic_cfg["flights"] = flights
-    STATE.proc_generic_cfg["minsep"] = minsep
-    _echo_ok(f"Generic procedures: flights={flights}, minsep={minsep}s")
+    alt_fl = max(0, int(alt_fl))
+    mach = max(0.40, min(0.92, float(mach)))
+    schedule_mode = int(schedule_mode)
+    rate_basis_idx = int(rate_basis_idx)
+    final_alt_fl = max(0, int(final_alt_fl))
+    final_spd = max(0, int(final_spd))
+    
+    STATE.proc_generic_cfg.update({
+        "flights": flights,
+        "alt_fl": alt_fl,
+        "mach": mach,
+        "schedule_mode": schedule_mode,
+        "rate_basis_idx": rate_basis_idx,
+        "final_alt_fl": final_alt_fl,
+        "final_spd": final_spd
+    })
+    
+    mode_str = "schedule" if schedule_mode else "hourly rate"
+    basis_str = "final waypoint" if rate_basis_idx else "initial waypoint"
+    _echo_ok(f"Generic procedures: flights={flights}, alt={alt_fl}FL, mach={mach:.2f}, mode={mode_str}, basis={basis_str}, final_alt={final_alt_fl}FL, final_spd={final_spd}kt")
     return True, ""
 
 
@@ -2984,6 +3079,29 @@ def SATG_PROC_CFG_STARRATE(proc_id: str, rate: float):
     STATE.proc_star_cfg["rate_basis"] = candidate_basis
     descriptor = "final waypoint" if candidate_basis == "final" else "initial waypoint"
     _echo_ok(f"STAR {descriptor} {label}: rate={rate_val:.1f} ac/h")
+    return True, ""
+
+
+@command
+def SATG_PROC_CFG_GENERICRATE(proc_id: str, rate: float):
+    """Configure Generic procedure spawn rate by waypoint identifier."""
+    rate_val = max(0.0, float(rate))
+    pid = proc_id.strip()
+    if not pid:
+        _echo_err("SATG_PROC_CFG_GENERICRATE: missing identifier")
+        return False, ""
+    
+    pid_upper = pid.upper()
+    current_basis = str(STATE.proc_generic_cfg.get("rate_basis", "initial")).lower()
+    if current_basis not in ("initial", "final"):
+        current_basis = "initial"
+    
+    # Store rate in the appropriate basis table
+    rate_table = STATE.proc_generic_rates.setdefault("final" if current_basis == "final" else "initial", {})
+    rate_table[pid_upper] = rate_val
+    
+    descriptor = "final waypoint" if current_basis == "final" else "initial waypoint"
+    _echo_ok(f"Generic {descriptor} {pid_upper}: rate={rate_val:.1f} ac/h")
     return True, ""
 
 
@@ -3146,9 +3264,6 @@ def SATG_PROC_SET_DEST(proc_id: str, *airports: str):
 @command
 def SATG_PROC_MAKE(name: str,
                    n: int,
-                   radius_nm: float,
-                   envelope_deg: float,
-                   minsep: int,
                    seed: int = 0,
                    overwrite: int = 0):
     if not STATE.proc_proc_files:
@@ -3174,7 +3289,6 @@ def SATG_PROC_MAKE(name: str,
     total_cfg = gen_cfg["flights"] + sid_cfg["flights"] + star_cfg["flights"]
     if total_cfg <= 0:
         gen_cfg["flights"] = int(n)
-        gen_cfg["minsep"] = max(0, int(minsep))
         sid_cfg["flights"] = 0
         total_cfg = gen_cfg["flights"]
 
@@ -3194,7 +3308,6 @@ def SATG_PROC_MAKE(name: str,
         base_n = int(n)
         if generic_paths:
             gen_cfg["flights"] = base_n
-            gen_cfg["minsep"] = max(0, int(minsep))
         elif sid_paths:
             sid_cfg["flights"] = base_n
         elif star_paths:
@@ -3216,8 +3329,6 @@ def SATG_PROC_MAKE(name: str,
     fix_keys = set(fix_db.keys())
 
     rng = random.Random(int(seed)) if int(seed) != 0 else random.Random()
-    R = max(0.01, float(radius_nm))
-    env = max(1.0, min(180.0, float(envelope_deg)))
 
     next_generic = {p: 0.0 for p in generic_paths}
     sid_by_runway: Dict[str, List[str]] = {}
@@ -3267,9 +3378,6 @@ def SATG_PROC_MAKE(name: str,
             # Write scenario header
             header = _generate_scenario_header("Procedural Traffic",
                 n=n,
-                radius_nm=radius_nm,
-                envelope_deg=envelope_deg,
-                minsep=minsep,
                 sid_enabled="Yes" if STATE.proc_sid_info else "No",
                 star_enabled="Yes" if STATE.proc_star_info else "No"
             )
@@ -3282,44 +3390,102 @@ def SATG_PROC_MAKE(name: str,
                 f.write(f"0:00:00.00>PCALL {_cmd_path(w)}\n")
 
         # Generic procedures
-        for _ in range(int(gen_cfg["flights"])):
-            proc_path = rng.choice(generic_paths)
+        gen_total_requested = max(0, int(gen_cfg.get("flights", 0)))
+        use_generic_schedule = bool(gen_cfg.get("schedule_mode"))
+        rate_basis_raw = str(gen_cfg.get("rate_basis_idx", 0))
+        generic_rate_basis = "final" if int(rate_basis_raw) == 1 else "initial"
+        generic_rate_table = {}
+        if isinstance(STATE.proc_generic_rates, dict):
+            generic_rate_table = STATE.proc_generic_rates.get(generic_rate_basis, {})
+        fallback_generic_minsep = 90
+        DEFAULT_GENERIC_RATE = 20  # 20 aircraft per hour default
+        
+        # Group generic procedures by waypoint (like STARs)
+        generic_groups: Dict[str, List[str]] = {}
+        path_to_group: Dict[str, str] = {}
+        for proc_path in generic_paths:
+            f1_name, _ = _proc_first_two_fixes(proc_path, set())
+            group_key = f1_name.upper() if f1_name else os.path.splitext(os.path.basename(proc_path))[0].upper()
+            path_to_group[proc_path] = group_key
+            generic_groups.setdefault(group_key, []).append(proc_path)
+        
+        # Calculate group rates
+        group_rates = {}
+        for group_key in generic_groups:
+            group_rates[group_key] = generic_rate_table.get(group_key, DEFAULT_GENERIC_RATE)
+        
+        group_next_time: Dict[str, float] = {}
+        
+        for i in range(gen_total_requested):
+            if not generic_groups:
+                break
+                
+            # Select procedure based on rates (like STAR logic)
+            keys = list(generic_groups.keys())
+            weights = [max(group_rates.get(key, DEFAULT_GENERIC_RATE), 0.0) for key in keys]
+            total_weight = sum(weights)
+            if total_weight <= 0.0:
+                group_key = rng.choice(keys)
+            else:
+                group_key = _weighted_choice(rng, keys, weights)
+            
+            proc_path = rng.choice(generic_groups[group_key])
             proc_name = os.path.splitext(os.path.basename(proc_path))[0]
+            print(f"SATG DEBUG: Processing generic procedure {proc_name} from {proc_path}")
 
-            t0 = next_generic[proc_path]; next_generic[proc_path] = t0 + gen_cfg["minsep"]
+            # Calculate timing based on rate (like STAR procedures)
+            rate = group_rates.get(group_key, DEFAULT_GENERIC_RATE)
+            interval = 3600.0 / rate if rate > 0.0 else fallback_generic_minsep
+            t0 = group_next_time.get(group_key, 0.0)
+            group_next_time[group_key] = t0 + interval
             ts = _fmt_ts(t0)
 
             acid = _next_pr_acid()
 
             f1_name, f2_name = _proc_first_two_fixes(proc_path, fix_keys)
-            coord1 = _resolve_fix_coord(f1_name, fix_db)
+            
+            # Resolve waypoints with geographic proximity logic
+            coord1, coord2 = _resolve_waypoint_pair(f1_name, f2_name, fix_db)
+            
             if not coord1:
-                _echo_err(f"{proc_name}: could not resolve first fix position."); return False, ""
-            latA, lonA = coord1
+                # Fallback to individual resolution for first waypoint
+                coord1 = _resolve_fix_coord(f1_name, fix_db)
+                if not coord1:
+                    _echo_err(f"{proc_name}: could not resolve first fix position."); return False, ""
+            
+            if not coord2 and f2_name:
+                # Try individual resolution for second waypoint
+                coord2 = _resolve_fix_coord(f2_name, fix_db, coord1[0], coord1[1])
+                    
             if f1_name:
                 fix_keys.add(f1_name.upper())
-            coord2 = _resolve_fix_coord(f2_name, fix_db, latA, lonA) if f2_name else None
+            
+            # Calculate heading
             if coord2:
+                latA, lonA = coord1
                 latB, lonB = coord2
                 if f2_name:
                     fix_keys.add(f2_name.upper())
-                brg_AB = _bearing_deg(latA, lonA, latB, lonB)
+                hdg0 = _bearing_deg(latA, lonA, latB, lonB)
+                print(f"SATG DEBUG: Heading from {f1_name} to {f2_name}: {hdg0:.1f}°")
             else:
-                brg_AB = 0.0
-            brg_BA = (brg_AB + 180.0) % 360.0
+                hdg0 = 0.0
+                print(f"SATG DEBUG: No second waypoint, using heading 0°")
 
-            half = env / 2.0
-            theta = (brg_BA - half) + rng.random() * (2.0 * half)
-            r = R * math.sqrt(rng.random())
-            lat0, lon0 = _dest_nm(latA, lonA, theta, r)
-            hdg0 = _bearing_deg(lat0, lon0, latA, lonA)
-
-            alt_ft0 = 3000
-            cas0 = 180.0
+            # Use STAR-like spawning: spawn directly at first waypoint
+            # hdg0 is already calculated above as heading toward second waypoint
+            
+            # Get generic procedure configuration
+            gen_alt_fl = max(0, int(gen_cfg.get("alt_fl", 360)))
+            gen_mach = float(gen_cfg.get("mach", 0.79))
+            gen_alt_ft = gen_alt_fl * 100
             actype = "A320"
 
             hdg_cmd = int(round(hdg0)) % 360
-            f.write(f"{ts}CRE {acid} {actype} {lat0:.6f} {lon0:.6f} {hdg_cmd:03d} {int(alt_ft0)} {float(cas0):.1f}\n")
+            print(f"SATG DEBUG: Final hdg_cmd for CRE command: {hdg_cmd:03d}")
+            mach_token = f"M{gen_mach:.2f}"
+            spawn_token = f1_name.upper() if f1_name else f"{latA:.6f},{lonA:.6f}"
+            f.write(f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {gen_alt_ft} {mach_token}\n")
             f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
@@ -3716,7 +3882,8 @@ def SATG_HELP(topic: str = ""):
         "  SATG_PROC_SET_ICAO SID-XX-NAME AIRPORT_ICAO",
         "",
         "Configuration Commands:",
-        "  SATG_PROC_CFG_GENERIC flights minsep",
+        "  SATG_PROC_CFG_GENERIC flights alt_fl mach schedule_mode rate_basis_idx final_alt_fl final_spd",
+        "  SATG_PROC_CFG_GENERICRATE proc_name rate_per_hour",
         "  SATG_PROC_CFG_SID flights altitude_ft speed_kt",
         "  SATG_PROC_CFG_SIDRATE runway rate_per_hour",
         "  SATG_PROC_CFG_STAR flights minsep init_fl mach mode ratebasis final_fl final_spd",
@@ -3729,7 +3896,7 @@ def SATG_HELP(topic: str = ""):
         "  SATG_PROC_CLEAR_SIDSCHED [runway]",
         "",
         "Generation:",
-        "  SATG_PROC_MAKE name N radius_nm envelope_deg minsep seed overwrite",
+        "  SATG_PROC_MAKE name N seed overwrite",
         "  SATG_PROC_RUN name",
         "",
         "Custom Polygon Areas",

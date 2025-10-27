@@ -674,9 +674,12 @@ class TopStrip(QWidget):
         
         # Generic parameters
         config['gen_flights'] = tab_widget.gen_flights.value()
-        config['gen_minsep'] = tab_widget.gen_minsep.value()
-        config['spawn_r'] = tab_widget.spawn_r.value()
-        config['spawn_env'] = tab_widget.spawn_env.value()
+        config['generic_alt_fl'] = tab_widget.generic_alt_fl.value()
+        config['generic_mach'] = tab_widget.generic_mach.value()
+        config['generic_mode'] = tab_widget.generic_mode.currentIndex()
+        config['generic_rate_basis'] = tab_widget.generic_rate_basis.currentIndex()
+        config['generic_final_alt_fl'] = tab_widget.generic_final_alt_fl.value()
+        config['generic_final_spd'] = tab_widget.generic_final_spd.value()
         
         # SID parameters
         config['sid_flights'] = tab_widget.sid_flights.value()
@@ -714,6 +717,15 @@ class TopStrip(QWidget):
         config['star_rate_values'] = dict(tab_widget._star_rate_values)
         config['star_schedule_data'] = dict(tab_widget._star_schedule_data)
         
+        # Save Generic scheduling data
+        # IMPORTANT: Ensure state consistency before capturing current rates
+        gui_generic_rate_basis = tab_widget.generic_rate_basis.currentIndex()
+        if tab_widget._generic_basis_index != gui_generic_rate_basis:
+            tab_widget._sync_generic_rates()
+            tab_widget._generic_basis_index = gui_generic_rate_basis
+        config['generic_rate_values'] = dict(tab_widget._generic_rate_values)
+        config['generic_schedule_data'] = dict(tab_widget._generic_schedule_data)
+        
         # Scenario parameters
         config['scn_name'] = tab_widget.scn.text()
         config['seed'] = tab_widget.seed.value()
@@ -738,12 +750,22 @@ class TopStrip(QWidget):
             # Apply generic parameters
             if 'gen_flights' in config_data:
                 tab_widget.gen_flights.setValue(config_data['gen_flights'])
-            if 'gen_minsep' in config_data:
-                tab_widget.gen_minsep.setValue(config_data['gen_minsep'])
-            if 'spawn_r' in config_data:
-                tab_widget.spawn_r.setValue(config_data['spawn_r'])
-            if 'spawn_env' in config_data:
-                tab_widget.spawn_env.setValue(config_data['spawn_env'])
+            if 'generic_alt_fl' in config_data:
+                tab_widget.generic_alt_fl.setValue(config_data['generic_alt_fl'])
+            if 'generic_mach' in config_data:
+                tab_widget.generic_mach.setValue(config_data['generic_mach'])
+            if 'generic_mode' in config_data:
+                tab_widget.generic_mode.setCurrentIndex(config_data['generic_mode'])
+            if 'generic_rate_basis' in config_data:
+                # Block signals to prevent premature refresh before rate values are restored
+                tab_widget.generic_rate_basis.blockSignals(True)
+                tab_widget.generic_rate_basis.setCurrentIndex(config_data['generic_rate_basis'])
+                tab_widget.generic_rate_basis.blockSignals(False)
+                tab_widget._generic_basis_index = config_data['generic_rate_basis']
+            if 'generic_final_alt_fl' in config_data:
+                tab_widget.generic_final_alt_fl.setValue(config_data['generic_final_alt_fl'])
+            if 'generic_final_spd' in config_data:
+                tab_widget.generic_final_spd.setValue(config_data['generic_final_spd'])
                 
             # Apply SID parameters
             if 'sid_flights' in config_data:
@@ -801,6 +823,12 @@ class TopStrip(QWidget):
                 tab_widget._star_rate_values = dict(config_data['star_rate_values'])
             if 'star_schedule_data' in config_data:
                 tab_widget._star_schedule_data = dict(config_data['star_schedule_data'])
+                
+            # Restore Generic scheduling data
+            if 'generic_rate_values' in config_data:
+                tab_widget._generic_rate_values = dict(config_data['generic_rate_values'])
+            if 'generic_schedule_data' in config_data:
+                tab_widget._generic_schedule_data = dict(config_data['generic_schedule_data'])
                 
             # Load files and let the normal GUI mechanism handle everything
             files_loaded = []
@@ -893,6 +921,7 @@ class TopStrip(QWidget):
         row_layout.setContentsMargins(0, 0, 0, 0)
         is_sid = tab_widget._is_sid_file(file_path)
         is_star = tab_widget._is_star_file(file_path)
+        is_generic = not is_sid and not is_star
 
         origin_edit: Optional[QLineEdit] = None
         origin_all_btn: Optional[QPushButton] = None
@@ -946,6 +975,7 @@ class TopStrip(QWidget):
             "dest_all": dest_all_btn,
             "is_sid": is_sid,
             "is_star": is_star,
+            "is_generic": is_generic,
         }
     
     def _extract_rl_config(self, tab_widget) -> Dict:
@@ -3965,11 +3995,17 @@ class ProcTab(QWidget):
         self._star_rate_values: Dict[str, Dict[str, int]] = {"initial": {}, "final": {}}
         self._star_rate_groups: Dict[str, List[str]] = {}
         self._star_basis_index: int = 0
+        self._generic_rate_rows = {}
+        self._generic_schedule_data: Dict[str, Dict[str, object]] = {}
+        self._generic_rate_values: Dict[str, Dict[str, int]] = {"initial": {}, "final": {}}
+        self._generic_rate_groups: Dict[str, List[str]] = {}
+        self._generic_basis_index: int = 0
         self._origins: Dict[str, str] = {}
         self._destinations: Dict[str, List[str]] = {}
         self._last_dest_sent: set[str] = set()
         self._proc_widgets: Dict[str, Dict[str, object]] = {}
         self._last_sid_sched_sent: set = set()
+        self._last_generic_sched_sent: set = set()
         self._last_star_sched_sent: set = set()
         main = QVBoxLayout(self)
 
@@ -4046,19 +4082,71 @@ class ProcTab(QWidget):
 
         # Generic procedures column
         generic_box = QGroupBox("Generic")
-        fg = QFormLayout(generic_box)
+        fg = QFormLayout(generic_box); self._generic_form = fg
+        generic_hint = QLabel("Generic procedures spawn at their first waypoint.\nLoad non-SID and non-STAR .scn files.")
+        generic_hint.setWordWrap(True)
+        fg.addRow(generic_hint)
+        mode_row_generic = QHBoxLayout()
+        mode_row_generic.addWidget(QLabel("Scheduling mode:", generic_box))
+        self.generic_mode = QComboBox(generic_box)
+        self.generic_mode.addItems(["Hourly rate", "15-min schedule"])
+        self.generic_mode.setToolTip("Choose between constant hourly rates or detailed 15-minute schedules")
+        mode_row_generic.addWidget(self.generic_mode)
+        mode_row_generic.addSpacing(12)
+        mode_row_generic.addWidget(QLabel("Rate basis:", generic_box))
+        self.generic_rate_basis = QComboBox(generic_box)
+        self.generic_rate_basis.addItems(["Initial waypoint", "Final waypoint"])
+        self.generic_rate_basis.setToolTip("Base rates on initial waypoint (entry) or final waypoint (destination)")
+        mode_row_generic.addWidget(self.generic_rate_basis)
+        mode_row_generic.addStretch(1)
+        fg.addRow(mode_row_generic)
         self.gen_flights = QSpinBox(); self.gen_flights.setRange(0, 100000); self.gen_flights.setValue(20)
-        self.gen_flights.setToolTip("Number of aircraft to spawn for generic procedures")
+        self.gen_flights.setToolTip("Total number of generic procedure flights to generate")
         fg.addRow("Flights:", self.gen_flights)
-        self.gen_minsep = QSpinBox(); self.gen_minsep.setRange(0, 3600); self.gen_minsep.setValue(90)
-        self.gen_minsep.setToolTip("Minimum time separation between aircraft spawns in seconds")
-        fg.addRow("Min separation [s]:", self.gen_minsep)
-        self.spawn_r = QDoubleSpinBox(); self.spawn_r.setDecimals(1); self.spawn_r.setRange(0.1, 100.0); self.spawn_r.setValue(5.0); _configure_decimal_separator(self.spawn_r)
-        self.spawn_r.setToolTip("Radius around procedure entry point for aircraft spawning in nautical miles")
-        fg.addRow("Spawn radius [NM]:", self.spawn_r)
-        self.spawn_env = QDoubleSpinBox(); self.spawn_env.setDecimals(0); self.spawn_env.setRange(5, 180); self.spawn_env.setValue(40); _configure_decimal_separator(self.spawn_env)
-        self.spawn_env.setToolTip("Angular range for inbound heading to procedure entry point in degrees")
-        fg.addRow("Angular envelope [deg]:", self.spawn_env)
+        alt_row_generic = QWidget(generic_box)
+        alt_layout_generic = QHBoxLayout(alt_row_generic); alt_layout_generic.setContentsMargins(0, 0, 0, 0)
+        alt_layout_generic.addWidget(QLabel("Initial ALT [FL]:", generic_box))
+        self.generic_alt_fl = QSpinBox()
+        self.generic_alt_fl.setRange(0, 600)
+        self.generic_alt_fl.setSingleStep(10)
+        self.generic_alt_fl.setValue(360)
+        self.generic_alt_fl.setToolTip("Initial flight level for generic procedure arrivals")
+        alt_layout_generic.addWidget(self.generic_alt_fl)
+        alt_layout_generic.addSpacing(12)
+        alt_layout_generic.addWidget(QLabel("Final ALT [FL]:", generic_box))
+        self.generic_final_alt_fl = QSpinBox()
+        self.generic_final_alt_fl.setRange(0, 600)
+        self.generic_final_alt_fl.setSingleStep(10)
+        self.generic_final_alt_fl.setValue(100)
+        self.generic_final_alt_fl.setToolTip("Target flight level for generic procedure completion")
+        alt_layout_generic.addWidget(self.generic_final_alt_fl)
+        alt_layout_generic.addStretch(1)
+        fg.addRow(alt_row_generic)
+        spd_row_generic = QWidget(generic_box)
+        spd_layout_generic = QHBoxLayout(spd_row_generic); spd_layout_generic.setContentsMargins(0, 0, 0, 0)
+        spd_layout_generic.addWidget(QLabel("Initial Mach:", generic_box))
+        self.generic_mach = QDoubleSpinBox()
+        self.generic_mach.setDecimals(2)
+        self.generic_mach.setRange(0.40, 0.92)
+        self.generic_mach.setSingleStep(0.01)
+        self.generic_mach.setValue(0.79)
+        self.generic_mach.setToolTip("Initial Mach number for generic arrivals at cruise altitude")
+        _configure_decimal_separator(self.generic_mach)
+        spd_layout_generic.addWidget(self.generic_mach)
+        spd_layout_generic.addSpacing(12)
+        spd_layout_generic.addWidget(QLabel("Final SPD [kt]:", generic_box))
+        self.generic_final_spd = QSpinBox()
+        self.generic_final_spd.setRange(0, 600)
+        self.generic_final_spd.setValue(240)
+        self.generic_final_spd.setToolTip("Target airspeed for generic procedure completion in knots")
+        spd_layout_generic.addWidget(self.generic_final_spd)
+        spd_layout_generic.addStretch(1)
+        fg.addRow(spd_row_generic)
+        self.generic_sched_btn = QPushButton("Configure schedule…")
+        self.generic_sched_btn.clicked.connect(self._configure_generic_schedule)
+        fg.addRow(self.generic_sched_btn)
+        self.generic_mode.currentIndexChanged.connect(self._on_generic_mode_changed)
+        self.generic_rate_basis.currentIndexChanged.connect(self._on_generic_basis_changed)
         hb2.addWidget(generic_box, 1)
 
         # SID-specific column
@@ -4218,6 +4306,7 @@ class ProcTab(QWidget):
         btn_both.clicked.connect(self._make_and_run)
         self._update_sid_mode_state()
         self._update_star_mode_state()
+        self._update_generic_mode_state()
         self._update_dest_state()
 
     # ---- file ops ----
@@ -4443,6 +4532,136 @@ class ProcTab(QWidget):
                     }
             self._star_schedule_data = cleaned
             self._update_star_mode_state()
+
+    # Generic procedure helper methods
+    def _current_generic_procs(self) -> List[str]:
+        return [path for path, data in self._proc_widgets.items() if data.get("is_generic")]
+
+    def _current_generic_basis(self) -> str:
+        return self._basis_name(self._generic_basis_index)
+
+    def _capture_generic_rates(self, basis: str):
+        store = self._generic_rate_values.setdefault(basis, {})
+        for key, (_, spin) in self._generic_rate_rows.items():
+            store[key] = int(spin.value())
+
+    def _build_generic_groups(self, basis: str) -> Dict[str, List[str]]:
+        groups: Dict[str, List[str]] = {}
+        for path in self._current_generic_procs():
+            widgets = self._proc_widgets.get(path, {})
+            key_raw = widgets.get("initial_fix") if basis == "initial" else widgets.get("final_fix")
+            if not key_raw:
+                key_raw = os.path.splitext(os.path.basename(path))[0]
+            key = str(key_raw).upper()
+            groups.setdefault(key, []).append(path)
+        return groups
+
+    def _ensure_generic_rate_row(self, key: str, basis: str):
+        store = self._generic_rate_values.setdefault(basis, {})
+        value = int(store.get(key, DEFAULT_STAR_RATE))  # Reuse same default rate
+        if key in self._generic_rate_rows:
+            label, spin = self._generic_rate_rows[key]
+            label.setText(f"{key} rate [ac/h]:")
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+            return
+        label = QLabel(f"{key} rate [ac/h]:")
+        spin = QSpinBox()
+        spin.setRange(0, 120)
+        spin.setValue(value)
+        spin.valueChanged.connect(lambda val, b=basis, g=key: self._on_generic_rate_changed(b, g, val))
+        self._generic_form.addRow(label, spin)
+        self._generic_rate_rows[key] = (label, spin)
+
+    def _on_generic_rate_changed(self, basis: str, key: str, val: int):
+        self._generic_rate_values.setdefault(basis, {})[key] = int(val)
+
+    def _remove_generic_rate_row(self, key: str):
+        row = self._generic_rate_rows.pop(key, None)
+        if not row:
+            return
+        label, spin = row
+        basis = self._current_generic_basis()
+        self._generic_rate_values.setdefault(basis, {})[key] = int(spin.value())
+        self._generic_form.removeRow(spin)
+        if label is not None and not sip.isdeleted(label):
+            label.deleteLater()
+        if spin is not None and not sip.isdeleted(spin):
+            spin.deleteLater()
+
+    def _clear_generic_rate_rows(self):
+        for key in list(self._generic_rate_rows.keys()):
+            self._remove_generic_rate_row(key)
+
+    def _refresh_generic_rate_rows(self):
+        basis = self._current_generic_basis()
+        # NOTE: Do NOT capture rates here - that should be done BEFORE calling this function
+        groups = self._build_generic_groups(basis)
+        self._generic_rate_groups = groups
+        for key in list(self._generic_rate_rows.keys()):
+            if key not in groups:
+                self._remove_generic_rate_row(key)
+        for key in groups.keys():
+            self._ensure_generic_rate_row(key, basis)
+        active_paths = set(self._current_generic_procs())
+        for path in list(self._generic_schedule_data.keys()):
+            if path not in active_paths:
+                self._generic_schedule_data.pop(path, None)
+        self._update_generic_mode_state()
+
+    def _sync_generic_rates(self):
+        """Synchronize generic rates from GUI to internal storage."""
+        basis = self._current_generic_basis()
+        self._capture_generic_rates(basis)
+
+    def _on_generic_mode_changed(self, idx):
+        self._update_generic_mode_state()
+
+    def _update_generic_mode_state(self):
+        use_schedule = self.generic_mode.currentIndex() == 1 if hasattr(self, "generic_mode") else False
+        if hasattr(self, "generic_sched_btn"):
+            self.generic_sched_btn.setEnabled(use_schedule)
+        if hasattr(self, "gen_flights"):
+            self.gen_flights.blockSignals(True)
+            if use_schedule:
+                total_caps = sum(sum(int(c) for c in cfg.get("caps", []))
+                                for cfg in self._generic_schedule_data.values())
+                if total_caps > 0:
+                    self.gen_flights.setValue(total_caps)
+                self.gen_flights.setEnabled(False)
+            else:
+                self.gen_flights.setEnabled(True)
+            self.gen_flights.blockSignals(False)
+        for _, spin in self._generic_rate_rows.values():
+            spin.setEnabled(not use_schedule)
+
+    def _on_generic_basis_changed(self, idx: int):
+        prev_basis = self._basis_name(self._generic_basis_index)
+        self._capture_generic_rates(prev_basis)
+        self._generic_basis_index = idx
+        self._refresh_generic_rate_rows()
+
+    def _configure_generic_schedule(self):
+        procs = [(path, os.path.splitext(os.path.basename(path))[0]) for path in self._current_generic_procs()]
+        if not procs:
+            _emit("ECHO Load generic procedures before configuring schedules.")
+            return
+        dialog = StarSchedDialog(procs, self._generic_schedule_data, self)
+        if dialog.exec():
+            result = dialog.result_data
+            cleaned: Dict[str, Dict[str, object]] = {}
+            for path, cfg in result.items():
+                caps = [int(c) for c in cfg.get("caps", [])]
+                if sum(caps) > 0:
+                    cleaned[path] = {
+                        "start": float(cfg.get("start", 0.0)),
+                        "end": float(cfg.get("end", 0.0)),
+                        "caps": caps,
+                        "slot": float(cfg.get("slot", StarSchedDialog.SLOT_MINUTES)),
+                    }
+            self._generic_schedule_data = cleaned
+            self._update_generic_mode_state()
 
     def _update_dest_state(self):
         has_procs = bool(self._proc_files)
@@ -4699,6 +4918,7 @@ class ProcTab(QWidget):
             row_layout.setContentsMargins(0, 0, 0, 0)
             is_sid = self._is_sid_file(p)
             is_star = self._is_star_file(p)
+            is_generic = not is_sid and not is_star
 
             origin_edit: Optional[QLineEdit] = None
             origin_all_btn: Optional[QPushButton] = None
@@ -4746,6 +4966,7 @@ class ProcTab(QWidget):
                 "dest_all": dest_all_btn,
                 "is_sid": is_sid,
                 "is_star": is_star,
+                "is_generic": is_generic,
             }
             if is_star:
                 fixes = self._proc_fix_sequence(p)
@@ -4753,8 +4974,15 @@ class ProcTab(QWidget):
                 final_fix = fixes[-1] if fixes else ""
                 self._proc_widgets[p]["initial_fix"] = initial_fix
                 self._proc_widgets[p]["final_fix"] = final_fix
+            elif is_generic:
+                fixes = self._proc_fix_sequence(p)
+                initial_fix = fixes[0] if fixes else ""
+                final_fix = fixes[-1] if fixes else ""
+                self._proc_widgets[p]["initial_fix"] = initial_fix
+                self._proc_widgets[p]["final_fix"] = final_fix
         self._refresh_sid_runway_rows()
         self._refresh_star_rate_rows()
+        self._refresh_generic_rate_rows()
         self._sync_destination_edits()
         self._sync_origin_edits()
         self._update_dest_state()
@@ -4770,6 +4998,7 @@ class ProcTab(QWidget):
             self._destinations.pop(p, None)
             self._origins.pop(p, None)
             self._star_schedule_data.pop(p, None)
+            self._generic_schedule_data.pop(p, None)
             self._proc_widgets.pop(p, None)
             row = self.lst_proc.row(item)
             self.lst_proc.takeItem(row)
@@ -4811,6 +5040,13 @@ class ProcTab(QWidget):
             return False
 
         gen_n = int(self.gen_flights.value())
+        gen_mode_schedule = self.generic_mode.currentIndex() == 1
+        gen_alt_fl = int(self.generic_alt_fl.value())
+        gen_mach = float(self.generic_mach.value())
+        gen_rate_basis_idx = self.generic_rate_basis.currentIndex()
+        gen_final_alt_fl = int(self.generic_final_alt_fl.value())
+        gen_final_spd = int(self.generic_final_spd.value())
+        
         sid_n = int(self.sid_flights.value())
         star_n = int(self.star_flights.value())
         star_mode_schedule = self.star_mode.currentIndex() == 1
@@ -4820,6 +5056,23 @@ class ProcTab(QWidget):
         star_final_alt_fl = int(self.star_final_alt_fl.value())
         star_final_spd = int(self.star_final_spd.value())
         star_minsep = 90
+
+        generic_procs = self._current_generic_procs()
+        if gen_mode_schedule and gen_n > 0 and generic_procs:
+            total_caps = 0
+            for path in generic_procs:
+                cfg = self._generic_schedule_data.get(path)
+                if not cfg:
+                    continue
+                caps = [int(c) for c in cfg.get("caps", [])]
+                total_caps += sum(caps)
+            if total_caps <= 0:
+                _emit("ECHO Configure Generic schedule slots before running.")
+                return False
+            gen_n = total_caps
+            self.gen_flights.blockSignals(True)
+            self.gen_flights.setValue(gen_n)
+            self.gen_flights.blockSignals(False)
 
         star_procs = self._current_star_procs()
         if star_mode_schedule and star_n > 0 and star_procs:
@@ -4862,17 +5115,27 @@ class ProcTab(QWidget):
             _emit("ECHO Configure at least one flight in Generic, SID, or STAR sections.")
             return False
 
-        rnm = float(self.spawn_r.value())
-        env = float(self.spawn_env.value())
-        gen_min = int(self.gen_minsep.value())
-        overall_min = max(gen_min, star_minsep)
         s   = int(self.seed.value())
         ow  = 1 if self.overwrite.isChecked() else 0
 
         sid_alt = int(self.sid_alt.value())
         sid_spd = int(self.sid_spd.value())
 
-        _emit(f"SATG_PROC_CFG_GENERIC {gen_n} {gen_min}")
+        # Configure Generic procedures with comprehensive parameters
+        gen_basis_name = self._basis_name(gen_rate_basis_idx)
+        # IMPORTANT: Ensure state is synchronized before capturing
+        if self._generic_basis_index != gen_rate_basis_idx:
+            # State mismatch detected - sync the internal state with the GUI state
+            self._generic_basis_index = gen_rate_basis_idx
+            # Refresh the rows to match the correct basis before capturing
+            self._refresh_generic_rate_rows()
+        self._capture_generic_rates(gen_basis_name)
+
+        _emit(
+            f"SATG_PROC_CFG_GENERIC {gen_n} {gen_alt_fl} {gen_mach:.2f} "
+            f"{1 if gen_mode_schedule else 0} {gen_rate_basis_idx} {gen_final_alt_fl} {gen_final_spd}"
+        )
+        
         _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_alt} {sid_spd}")
         _emit(f"SATG_PROC_USE_DEST {1 if self.dest_enable.isChecked() else 0}")
         active_runways = self._current_sid_runways()
@@ -4934,6 +5197,47 @@ class ProcTab(QWidget):
             rate = int(spin.value())
             _emit(f"SATG_PROC_CFG_SIDRATE RW{rw} {rate}")
 
+        # Configure Generic rates
+        gen_rate_store = self._generic_rate_values.setdefault(gen_basis_name, {})
+        for key in sorted(self._generic_rate_rows.keys()):
+            row = self._generic_rate_rows.get(key)
+            if not row:
+                continue
+            _, spin = row
+            rate = int(spin.value())
+            gen_rate_store[key] = rate
+            _emit(f"SATG_PROC_CFG_GENERICRATE {key} {rate}")
+
+        # Configure Generic schedules
+        current_generic_sched_sent = set()
+        if gen_mode_schedule:
+            for path in generic_procs:
+                cfg = self._generic_schedule_data.get(path)
+                if not cfg:
+                    continue
+                caps = [int(c) for c in cfg.get("caps", [])]
+                if sum(caps) <= 0:
+                    continue
+                start = int(round(float(cfg.get("start", 0.0))))
+                end = int(round(float(cfg.get("end", start + 15))))
+                if end <= start:
+                    end = start + 15 * len(caps)
+                caps_str = " ".join(str(int(c)) for c in caps)
+                if not caps_str:
+                    continue
+                label = os.path.splitext(os.path.basename(path))[0]
+                _emit(f"SATG_PROC_CFG_GENERICSCHED {label} {start} {end} {caps_str}")
+                current_generic_sched_sent.add(label)
+            to_clear_generic = self._last_generic_sched_sent - current_generic_sched_sent
+            for label in sorted(to_clear_generic):
+                _emit(f"SATG_PROC_CLEAR_GENERICSCHED {label}")
+            self._last_generic_sched_sent = current_generic_sched_sent
+        else:
+            if self._last_generic_sched_sent:
+                for label in sorted(self._last_generic_sched_sent):
+                    _emit(f"SATG_PROC_CLEAR_GENERICSCHED {label}")
+                self._last_generic_sched_sent.clear()
+
         basis_name = self._basis_name(star_rate_basis_idx)
         # IMPORTANT: Ensure state is synchronized before capturing
         if self._star_basis_index != star_rate_basis_idx:
@@ -4988,7 +5292,7 @@ class ProcTab(QWidget):
                 self._last_star_sched_sent.clear()
 
         # strictly positional to satisfy BlueSky argparser
-        cmd = f"SATG_PROC_MAKE {name} {total} {rnm} {env} {overall_min} {s} {ow}"
+        cmd = f"SATG_PROC_MAKE {name} {total} {s} {ow}"
         _emit(cmd)
         return True
 
