@@ -19,6 +19,26 @@ from PyQt6.QtWidgets import (
 from PyQt6 import sip
 from bluesky import stack
 from bluesky.ui.qtgl.console import process_cmdline
+from bluesky.ui.qtgl.console import Console
+
+
+def _clear_and_set_cmdline(text):
+    """Clear the command line and set new text.
+    
+    This function clears any existing text in the command line and replaces it
+    with the new command, preventing issues where existing text gets concatenated
+    with the new POLY command.
+    
+    Args:
+        text: The command line text to set (replacing any existing content)
+    """
+    if Console._instance is not None:
+        Console._instance.set_cmdline(text)
+    else:
+        # Fallback to standard process_cmdline if console not available
+        process_cmdline(text)
+
+
 try:
     import bluesky as bs
 except Exception:
@@ -580,9 +600,8 @@ class ProcedureCreatorDialog(QDialog):
         
         # Send command to BlueSky using the same method as random conflicts
         try:
-            # Execute the POLY command directly (not just pre-fill)
-            from bluesky.ui.qtgl.console import process_cmdline
-            process_cmdline(f"POLY {name}")
+            # Clear any existing text and execute the POLY command directly (not just append)
+            _clear_and_set_cmdline(f"POLY {name}")
             self.poly_status.setText(f"Command executed: \"POLY {name}\"\n\nINSTRUCTIONS:\n1. Click on the BlueSky map to draw waypoints\n2. Press ENTER to finish the polygon\n3. Then click \"Create Basic Procedure\" below")
             self.create_basic_btn.setEnabled(True)
         except Exception as e:
@@ -4104,8 +4123,8 @@ class RCTab(QWidget):
         """Start polygon creation by pre-filling the command line with POLY command."""
         polygon_name = self.polygon_name_input.text().strip()
         if polygon_name:
-            # Pre-fill the command line with "POLY polygonname " (note the trailing space)
-            process_cmdline(f"POLY {polygon_name} ")
+            # Clear any existing text and pre-fill the command line with "POLY polygonname " (note the trailing space)
+            _clear_and_set_cmdline(f"POLY {polygon_name} ")
         else:
             _emit("ECHO Please enter a polygon name first")
 
