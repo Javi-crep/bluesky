@@ -9,12 +9,14 @@ import json
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, QTime, QLocale
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
     QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup,
-    QInputDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView
+    QInputDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
+    QAbstractItemView
 )
 from PyQt6 import sip
 from bluesky import stack
@@ -660,16 +662,20 @@ class ProcedureEditorDialog(QDialog):
     
     def __init__(self, proc_name, parent=None):
         super().__init__(parent)
+        print(f"[DEBUG] ProcedureEditorDialog.__init__ called with proc_name: {proc_name}")
         self.proc_name = proc_name
         self.waypoints = []
         self.filepath = ""
         
         self.setWindowTitle(f"Edit Procedure: {proc_name}")
-        self.setModal(False)
+        self.setModal(True)  # Make it modal
         self.resize(800, 500)
         
+        print(f"[DEBUG] Initializing UI...")
         self._init_ui()
+        print(f"[DEBUG] Loading procedure data...")
         self._load_procedure_data()
+        print(f"[DEBUG] ProcedureEditorDialog initialization complete")
         
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -727,6 +733,8 @@ class ProcedureEditorDialog(QDialog):
             import json
             import time
             
+            print(f"[DEBUG] Loading procedure data for: {self.proc_name}")
+            
             # Use backend command to load procedure for editing
             from bluesky import stack
             stack.stack(f"SATG_PROC_LOAD_FOR_EDIT {self.proc_name}")
@@ -738,17 +746,30 @@ class ProcedureEditorDialog(QDialog):
             temp_dir = tempfile.gettempdir()
             temp_file = os.path.join(temp_dir, f"satg_proc_edit_{self.proc_name}.json")
             
+            print(f"[DEBUG] Looking for temp file: {temp_file}")
+            
             if os.path.exists(temp_file):
+                print(f"[DEBUG] Temp file found, loading data...")
                 with open(temp_file, 'r') as f:
                     data = json.load(f)
                 
                 self.waypoints = data.get("waypoints", [])
                 self.filepath = data.get("filepath", "")
                 
-                # Populate table
-                self._populate_table()
+                print(f"[DEBUG] Loaded {len(self.waypoints)} waypoints")
+                for i, wp in enumerate(self.waypoints):
+                    print(f"[DEBUG] Waypoint {i+1}: {wp}")
                 
-                self.status_label.setText(f"Loaded {len(self.waypoints)} waypoints for editing")
+                # Populate table
+                try:
+                    print(f"[DEBUG] Populating table...")
+                    self._populate_table()
+                    self.status_label.setText(f"Loaded {len(self.waypoints)} waypoints for editing")
+                    print(f"[DEBUG] Table populated successfully")
+                except Exception as table_error:
+                    self.status_label.setText(f"Error populating table: {table_error}")
+                    import traceback
+                    print(f"[DEBUG] Table population error: {traceback.format_exc()}")
                 
                 # Clean up temp file
                 try:
@@ -756,26 +777,66 @@ class ProcedureEditorDialog(QDialog):
                 except:
                     pass
             else:
+                print(f"[DEBUG] Temp file not found")
                 self.status_label.setText("Error: Could not load procedure data")
                 
         except Exception as e:
+            print(f"[DEBUG] Exception in _load_procedure_data: {e}")
+            import traceback
+            print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
             self.status_label.setText(f"Error loading procedure: {e}")
     
     def _populate_table(self):
         """Populate the table with waypoint data."""
         self.waypoints_table.setRowCount(len(self.waypoints))
         
+        # Define colors for different cell types
+        readonly_color = QColor(240, 240, 240)  # Light gray for read-only cells
+        editable_color = QColor(255, 255, 255)  # White for editable cells
+        
         for i, wp in enumerate(self.waypoints):
-            self.waypoints_table.setItem(i, 0, QTableWidgetItem(wp['name']))
-            self.waypoints_table.setItem(i, 1, QTableWidgetItem(f"{wp['lat']:.6f}"))
-            self.waypoints_table.setItem(i, 2, QTableWidgetItem(f"{wp['lon']:.6f}"))
-            self.waypoints_table.setItem(i, 3, QTableWidgetItem(wp['alt']))
-            self.waypoints_table.setItem(i, 4, QTableWidgetItem(wp['spd']))
+            # Create items for all columns
+            name_item = QTableWidgetItem(wp['name'])
+            alt_item = QTableWidgetItem(wp['alt'])
+            spd_item = QTableWidgetItem(wp['spd'])
             
-            # Make name/lat/lon read-only, alt/spd editable
-            self.waypoints_table.item(i, 0).setFlags(self.waypoints_table.item(i, 0).flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.waypoints_table.item(i, 1).setFlags(self.waypoints_table.item(i, 1).flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.waypoints_table.item(i, 2).setFlags(self.waypoints_table.item(i, 2).flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if wp.get('is_named', False):
+                # Named waypoint: name is editable, coordinates are read-only
+                lat_item = QTableWidgetItem("Named Waypoint")
+                lon_item = QTableWidgetItem("Named Waypoint")
+                
+                # Make coordinates read-only with gray background
+                lat_item.setFlags(lat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                lon_item.setFlags(lon_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                lat_item.setBackground(readonly_color)
+                lon_item.setBackground(readonly_color)
+                
+                # Name is editable with white background
+                name_item.setBackground(editable_color)
+                
+            else:
+                # Coordinate waypoint: coordinates are editable, name is read-only (auto-generated)
+                lat_item = QTableWidgetItem(f"{wp['lat']:.6f}")
+                lon_item = QTableWidgetItem(f"{wp['lon']:.6f}")
+                
+                # Make name read-only with gray background (auto-generated like WP01)
+                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                name_item.setBackground(readonly_color)
+                
+                # Coordinates are editable with white background
+                lat_item.setBackground(editable_color)
+                lon_item.setBackground(editable_color)
+            
+            # Altitude and speed are always editable for both types
+            alt_item.setBackground(editable_color)
+            spd_item.setBackground(editable_color)
+            
+            # Set items in table
+            self.waypoints_table.setItem(i, 0, name_item)
+            self.waypoints_table.setItem(i, 1, lat_item)
+            self.waypoints_table.setItem(i, 2, lon_item)
+            self.waypoints_table.setItem(i, 3, alt_item)
+            self.waypoints_table.setItem(i, 4, spd_item)
         
         # Connect changes to update data
         self.waypoints_table.itemChanged.connect(self._on_table_changed)
@@ -785,9 +846,29 @@ class ProcedureEditorDialog(QDialog):
         row = item.row()
         col = item.column()
         if row < len(self.waypoints):
-            if col == 3:  # Altitude
+            if col == 0:  # Name (only for named waypoints)
+                # Only update name if this is a named waypoint
+                if self.waypoints[row].get('is_named', False):
+                    self.waypoints[row]['name'] = item.text()
+            elif col == 1:  # Latitude (only for coordinate waypoints)
+                # Only update lat if this is a coordinate waypoint
+                if not self.waypoints[row].get('is_named', False):
+                    try:
+                        self.waypoints[row]['lat'] = float(item.text())
+                    except ValueError:
+                        # Reset to original value if invalid
+                        item.setText(f"{self.waypoints[row]['lat']:.6f}")
+            elif col == 2:  # Longitude (only for coordinate waypoints)
+                # Only update lon if this is a coordinate waypoint
+                if not self.waypoints[row].get('is_named', False):
+                    try:
+                        self.waypoints[row]['lon'] = float(item.text())
+                    except ValueError:
+                        # Reset to original value if invalid
+                        item.setText(f"{self.waypoints[row]['lon']:.6f}")
+            elif col == 3:  # Altitude (always editable)
                 self.waypoints[row]['alt'] = item.text()
-            elif col == 4:  # Speed
+            elif col == 4:  # Speed (always editable)
                 self.waypoints[row]['spd'] = item.text()
     
     def _save_procedure(self):
@@ -808,21 +889,43 @@ class ProcedureEditorDialog(QDialog):
             content.append("#")
             
             for wp in self.waypoints:
-                line = f"00:00:00.00>%0 ADDWPT {wp['lat']:.6f} {wp['lon']:.6f}"
-                
-                has_alt = wp['alt'].strip()
-                has_spd = wp['spd'].strip()
-                
-                if has_alt and has_spd:
-                    # Both altitude and speed
-                    line += f" {wp['alt']} {wp['spd']}"
-                elif has_alt and not has_spd:
-                    # Only altitude
-                    line += f" {wp['alt']}"
-                elif not has_alt and has_spd:
-                    # Only speed - use comma placeholders
-                    line += f" ,, {wp['spd']}"
-                # If neither, just leave as coordinates only
+                # Check if this is a named waypoint or coordinate waypoint
+                if wp.get('is_named', False):
+                    # Named waypoint: use waypoint name instead of coordinates
+                    line = f"00:00:00.00>%0 ADDWPT {wp['name']}"
+                    
+                    # Add constraints if present
+                    has_alt = wp['alt'].strip()
+                    has_spd = wp['spd'].strip()
+                    
+                    if has_alt and has_spd:
+                        # Both altitude and speed
+                        line += f" {wp['alt']} {wp['spd']}"
+                    elif has_alt and not has_spd:
+                        # Only altitude
+                        line += f" {wp['alt']}"
+                    elif not has_alt and has_spd:
+                        # Only speed - use comma placeholders
+                        line += f" ,, {wp['spd']}"
+                    # If neither, just leave as waypoint name only
+                    
+                else:
+                    # Coordinate waypoint: use lat/lon coordinates
+                    line = f"00:00:00.00>%0 ADDWPT {wp['lat']:.6f} {wp['lon']:.6f}"
+                    
+                    has_alt = wp['alt'].strip()
+                    has_spd = wp['spd'].strip()
+                    
+                    if has_alt and has_spd:
+                        # Both altitude and speed
+                        line += f" {wp['alt']} {wp['spd']}"
+                    elif has_alt and not has_spd:
+                        # Only altitude
+                        line += f" {wp['alt']}"
+                    elif not has_alt and has_spd:
+                        # Only speed - use comma placeholders
+                        line += f" ,, {wp['spd']}"
+                    # If neither, just leave as coordinates only
                 
                 content.append(line)
             
@@ -4693,9 +4796,19 @@ class ProcTab(QWidget):
         f1.addRow(self.lst_proc)
         f1.addRow(proc_btns)
 
-        # Create Procedure button
+        # Create Procedure buttons
+        proc_action_btns = QWidget()
+        proc_action_layout = QHBoxLayout(proc_action_btns)
+        proc_action_layout.setContentsMargins(0, 0, 0, 0)
+        
         create_proc_btn = QPushButton("Create New Procedure...")
-        f1.addRow(create_proc_btn)
+        edit_proc_btn = QPushButton("Edit Procedure...")
+        
+        proc_action_layout.addWidget(create_proc_btn)
+        proc_action_layout.addWidget(edit_proc_btn)
+        proc_action_layout.addStretch(1)
+        
+        f1.addRow(proc_action_btns)
 
         # Set the form widget as the scroll area's widget
         files_scroll.setWidget(files_form_widget)
@@ -4711,6 +4824,7 @@ class ProcTab(QWidget):
         btn_proc_rm.clicked.connect(self._rm_proc)
         btn_proc_clr.clicked.connect(self._clr_proc)
         create_proc_btn.clicked.connect(self._create_procedure)
+        edit_proc_btn.clicked.connect(self._edit_procedure)
 
         # 2) Batch options
         gb2 = QGroupBox("2) Batch options")
@@ -5479,9 +5593,16 @@ class ProcTab(QWidget):
             edit = widgets.get("dest")
             if not edit:
                 continue
-            edit.blockSignals(True)
-            edit.setText(", ".join(self._destinations.get(path, [])))
-            edit.blockSignals(False)
+            # Check if the widget is still valid (not deleted)
+            try:
+                if sip.isdeleted(edit):
+                    continue
+                edit.blockSignals(True)
+                edit.setText(", ".join(self._destinations.get(path, [])))
+                edit.blockSignals(False)
+            except RuntimeError:
+                # Widget has been deleted, skip it
+                continue
 
     def _sync_origin_edits(self):
         for path, widgets in self._proc_widgets.items():
@@ -5490,9 +5611,16 @@ class ProcTab(QWidget):
             origin_edit = widgets.get("origin")
             if not origin_edit:
                 continue
-            origin_edit.blockSignals(True)
-            origin_edit.setText(self._origins.get(path, ""))
-            origin_edit.blockSignals(False)
+            # Check if the widget is still valid (not deleted)
+            try:
+                if sip.isdeleted(origin_edit):
+                    continue
+                origin_edit.blockSignals(True)
+                origin_edit.setText(self._origins.get(path, ""))
+                origin_edit.blockSignals(False)
+            except RuntimeError:
+                # Widget has been deleted, skip it
+                continue
 
     def _apply_origin_to_all(self, path: str):
         widgets = self._proc_widgets.get(path, {})
@@ -5717,6 +5845,44 @@ class ProcTab(QWidget):
         """Open the procedure creation dialog."""
         dialog = ProcedureCreatorDialog(self)
         dialog.show()  # Use show() instead of exec() for non-modal dialog
+
+    def _edit_procedure(self):
+        """Open dialog to select and edit an existing procedure."""
+        if not self._proc_files:
+            QMessageBox.information(self, "No Procedures", 
+                                  "No procedure files are currently loaded.\n"
+                                  "Please add procedure files first or create a new procedure.")
+            return
+        
+        # Create a simple selection dialog for loaded procedures
+        from PyQt6.QtWidgets import QInputDialog
+        
+        # Get list of procedure names from loaded files
+        proc_names = [os.path.splitext(os.path.basename(filepath))[0] for filepath in self._proc_files]
+        
+        if not proc_names:
+            QMessageBox.information(self, "No Procedures", "No procedures available for editing.")
+            return
+        
+        # Let user select which procedure to edit
+        proc_name, ok = QInputDialog.getItem(self, "Select Procedure to Edit", 
+                                           "Choose a procedure to edit:", 
+                                           proc_names, 0, False)
+        
+        if ok and proc_name:
+            # Open the procedure editor dialog with the selected procedure name
+            # This follows the same pattern as the "Load for Editing" button
+            try:
+                print(f"[DEBUG] Creating ProcedureEditorDialog for: {proc_name}")
+                editor_dialog = ProcedureEditorDialog(proc_name, self)
+                print(f"[DEBUG] Dialog created, showing...")
+                editor_dialog.exec()  # Use exec() for modal dialog instead of show()
+                print(f"[DEBUG] Dialog closed")
+            except Exception as e:
+                print(f"[DEBUG] Error creating editor dialog: {e}")
+                import traceback
+                print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
+                QMessageBox.critical(self, "Error", f"Error opening editor: {e}")
 
     def _load_created_procedure(self, filepath):
         """Load a newly created procedure file into the GUI."""

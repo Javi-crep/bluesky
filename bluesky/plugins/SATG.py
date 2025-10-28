@@ -3365,17 +3365,30 @@ def SATG_PROC_LOAD_FOR_EDIT(proc_name: str):
             
             # Split the line and extract components
             parts = line.strip().split()
-            if len(parts) >= 4 and parts[0] == '00:00:00.00>%0' and parts[1] == 'ADDWPT':
+            if len(parts) >= 3 and parts[0] == '00:00:00.00>%0' and parts[1] == 'ADDWPT':
                 try:
-                    lat = float(parts[2])
-                    lon = float(parts[3])
-                    wp_name = f"WP{i+1:02d}"
+                    # Check if this is a coordinate-based waypoint (lat/lon numbers) or named waypoint
+                    waypoint_identifier = parts[2]
                     
-                    # Handle altitude and speed with comma placeholders
+                    # Try to parse as coordinates first
+                    try:
+                        lat = float(waypoint_identifier)
+                        lon = float(parts[3]) if len(parts) > 3 else 0.0
+                        wp_name = f"WP{i+1:02d}"
+                        is_coordinate_based = True
+                    except (ValueError, IndexError):
+                        # It's a named waypoint
+                        wp_name = waypoint_identifier
+                        lat = 0.0  # Placeholder - will be resolved by BlueSky
+                        lon = 0.0  # Placeholder - will be resolved by BlueSky
+                        is_coordinate_based = False
+                    
+                    # Handle altitude and speed parameters
                     wp_alt = ""
                     wp_spd = ""
                     
-                    if len(parts) > 4:
+                    if is_coordinate_based and len(parts) > 4:
+                        # For coordinate-based waypoints, altitude is at index 4
                         if parts[4] != ",,":  # Not a placeholder
                             wp_alt = parts[4]
                         
@@ -3384,15 +3397,26 @@ def SATG_PROC_LOAD_FOR_EDIT(proc_name: str):
                         elif parts[4] == ",," and len(parts) > 4:
                             # Format: ADDWPT lat lon ,, speed
                             wp_spd = parts[5] if len(parts) > 5 else ""
+                    elif not is_coordinate_based and len(parts) > 3:
+                        # For named waypoints, altitude might be at index 3
+                        if parts[3] != ",,":
+                            wp_alt = parts[3]
+                        
+                        if len(parts) > 4:
+                            wp_spd = parts[4]
                     
-                    _echo_ok(f"Parsed waypoint: {wp_name} at {lat}, {lon}, alt='{wp_alt}', spd='{wp_spd}'")
+                    if is_coordinate_based:
+                        _echo_ok(f"Parsed coordinate waypoint: {wp_name} at {lat}, {lon}, alt='{wp_alt}', spd='{wp_spd}'")
+                    else:
+                        _echo_ok(f"Parsed named waypoint: {wp_name} (coordinates will be resolved by BlueSky), alt='{wp_alt}', spd='{wp_spd}'")
                     
                     waypoints.append({
                         "name": wp_name,
                         "lat": lat,
                         "lon": lon,
                         "alt": wp_alt,
-                        "spd": wp_spd
+                        "spd": wp_spd,
+                        "is_named": not is_coordinate_based
                     })
                 except (ValueError, IndexError) as e:
                     _echo_err(f"Error parsing line '{line}': {e}")
