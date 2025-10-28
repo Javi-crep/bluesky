@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QCheckBox, QComboBox, QPushButton, QSpinBox,
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
     QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup,
-    QInputDialog, QMessageBox
+    QInputDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt6 import sip
 from bluesky import stack
@@ -487,6 +487,590 @@ class DestDialog(QDialog):
             if codes:
                 data[path] = codes
         return data
+
+
+class ProcedureCreatorDialog(QDialog):
+    """Dialog for creating new procedures by drawing tracks and setting waypoint constraints."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create New Procedure")
+        self.setModal(False)  # Allow interaction with BlueSky screen
+        self.resize(800, 600)
+        
+        # Store polygon coordinates and waypoint data
+        self.polygon_name = ""
+        self.waypoints = []  # List of dicts: {'name': str, 'lat': float, 'lon': float, 'alt': str, 'spd': str}
+        
+        self._init_ui()
+        
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Step 1: Procedure Name and POLY creation
+        step1_group = QGroupBox("Step 1: Create Track")
+        step1_layout = QFormLayout(step1_group)
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Enter procedure name (e.g., 'APPROACH_RWY09')")
+        step1_layout.addRow("Procedure Name:", self.name_input)
+        
+        self.create_poly_btn = QPushButton("Create Track in BlueSky")
+        self.create_poly_btn.clicked.connect(self._create_poly_command)
+        step1_layout.addRow(self.create_poly_btn)
+        
+        self.poly_status = QLabel("Status: Enter a name and click 'Create Track' to start")
+        self.poly_status.setStyleSheet("color: blue; font-style: italic;")
+        step1_layout.addRow(self.poly_status)
+        
+        layout.addWidget(step1_group)
+        
+        # Step 2: Create Procedure File
+        step2_group = QGroupBox("Step 2: Create Basic Procedure")
+        step2_layout = QVBoxLayout(step2_group)
+        
+        create_buttons = QHBoxLayout()
+        self.create_basic_btn = QPushButton("Create Basic Procedure from Track")
+        self.create_basic_btn.clicked.connect(self._create_basic_procedure)
+        create_buttons.addWidget(self.create_basic_btn)
+        create_buttons.addStretch()
+        step2_layout.addLayout(create_buttons)
+        
+        self.create_status = QLabel("Status: Create track first, then click to create basic procedure")
+        self.create_status.setStyleSheet("color: blue; font-style: italic;")
+        step2_layout.addWidget(self.create_status)
+        
+        layout.addWidget(step2_group)
+        
+        # Step 3: Load for Editing
+        step3_group = QGroupBox("Step 3: Edit Constraints")
+        step3_layout = QVBoxLayout(step3_group)
+        
+        edit_buttons = QHBoxLayout()
+        self.load_for_edit_btn = QPushButton("Load for Editing")
+        self.load_for_edit_btn.clicked.connect(self._load_for_editing)
+        edit_buttons.addWidget(self.load_for_edit_btn)
+        edit_buttons.addStretch()
+        step3_layout.addLayout(edit_buttons)
+        
+        layout.addWidget(step3_group)
+        
+        # Dialog buttons
+        buttons = QHBoxLayout()
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.close)
+        buttons.addStretch()
+        buttons.addWidget(self.close_btn)
+        layout.addLayout(buttons)
+        
+    def _create_poly_command(self):
+        """Create POLY command and send to BlueSky command line."""
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Warning", "Please enter a procedure name first.")
+            return
+            
+        # Validate name (alphanumeric and underscores only)
+        import re
+        if not re.match(r'^[A-Za-z0-9_]+$', name):
+            QMessageBox.warning(self, "Warning", "Procedure name can only contain letters, numbers, and underscores.")
+            return
+            
+        self.polygon_name = name
+        
+        # Send command to BlueSky using the same method as random conflicts
+        try:
+            # Execute the POLY command directly (not just pre-fill)
+            from bluesky.ui.qtgl.console import process_cmdline
+            process_cmdline(f"POLY {name}")
+            self.poly_status.setText(f"Command executed: \"POLY {name}\"\n\nINSTRUCTIONS:\n1. Click on the BlueSky map to draw waypoints\n2. Press ENTER to finish the polygon\n3. Then click \"Create Basic Procedure\" below")
+            self.create_basic_btn.setEnabled(True)
+        except Exception as e:
+            self.poly_status.setText(f"Error sending command: {e}")
+    
+    def _create_basic_procedure(self):
+        """Create a basic procedure file using backend command."""
+        if not self.polygon_name:
+            QMessageBox.warning(self, "Warning", "No polygon name set. Create a track first.")
+            return
+            
+        try:
+            # Use backend command to create procedure from polygon
+            from bluesky import stack
+            
+            self.create_status.setText(f"Creating procedure from polygon \"{self.polygon_name}\"...")
+            
+            # Execute the command using stack.stack like other SATG commands
+            stack.stack(f"SATG_PROC_CREATE_FROM_POLY {self.polygon_name}")
+            
+            # Wait a moment for the command to process
+            import time
+            time.sleep(1.5)
+            
+            # Check if the file was created
+            import os
+            proc_file = os.path.join("c:\\Users\\javie\\OneDrive\\Desktop\\bluesky\\satg_data\\procedures", f"{self.polygon_name}.scn")
+            
+            if os.path.exists(proc_file):
+                self.create_status.setText(f"Basic procedure \"{self.polygon_name}\" created successfully!\nFile: {proc_file}\nClick \"Load for Editing\" to add constraints.")
+                self.load_for_edit_btn.setEnabled(True)
+            else:
+                # Check if any messages were shown in console
+                self.create_status.setText(f"Command executed. Check BlueSky console for results.\nIf successful, the file should be at:\n{proc_file}\n\nIf polygon \"{self.polygon_name}\" was drawn properly, try running this command manually:\nSATG_PROC_CREATE_FROM_POLY {self.polygon_name}")
+            
+        except Exception as e:
+            self.create_status.setText(f"Error creating procedure: {e}")
+    
+    def _load_for_editing(self):
+        """Load the created procedure for editing constraints."""
+        if not self.polygon_name:
+            QMessageBox.warning(self, "Warning", "No procedure name set.")
+            return
+            
+        try:
+            # Open a new dialog for editing constraints
+            editor_dialog = ProcedureEditorDialog(self.polygon_name, self)
+            editor_dialog.show()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error opening editor: {e}")
+
+
+class ProcedureEditorDialog(QDialog):
+    """Dialog for editing procedure waypoint constraints."""
+    
+    def __init__(self, proc_name, parent=None):
+        super().__init__(parent)
+        self.proc_name = proc_name
+        self.waypoints = []
+        self.filepath = ""
+        
+        self.setWindowTitle(f"Edit Procedure: {proc_name}")
+        self.setModal(False)
+        self.resize(800, 500)
+        
+        self._init_ui()
+        self._load_procedure_data()
+        
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Info section
+        info_group = QGroupBox("Procedure Information")
+        info_layout = QFormLayout(info_group)
+        
+        self.proc_label = QLabel(self.proc_name)
+        self.proc_label.setStyleSheet("font-weight: bold;")
+        info_layout.addRow("Procedure Name:", self.proc_label)
+        
+        self.status_label = QLabel("Loading procedure data...")
+        info_layout.addRow("Status:", self.status_label)
+        
+        layout.addWidget(info_group)
+        
+        # Waypoints table
+        wp_group = QGroupBox("Waypoint Constraints")
+        wp_layout = QVBoxLayout(wp_group)
+        
+        # Table
+        self.waypoints_table = QTableWidget(0, 5)
+        self.waypoints_table.setHorizontalHeaderLabels(["Name", "Latitude", "Longitude", "Altitude", "Speed"])
+        header = self.waypoints_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        wp_layout.addWidget(self.waypoints_table)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.save_btn = QPushButton("Save Changes")
+        self.save_btn.clicked.connect(self._save_procedure)
+        self.save_and_load_btn = QPushButton("Save and Load to SATG")
+        self.save_and_load_btn.clicked.connect(self._save_and_load)
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.close)
+        
+        button_layout.addWidget(self.save_btn)
+        button_layout.addWidget(self.save_and_load_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(self.close_btn)
+        wp_layout.addLayout(button_layout)
+        
+        layout.addWidget(wp_group)
+    
+    def _load_procedure_data(self):
+        """Load procedure data using backend command."""
+        try:
+            import tempfile
+            import json
+            import time
+            
+            # Use backend command to load procedure for editing
+            from bluesky import stack
+            stack.stack(f"SATG_PROC_LOAD_FOR_EDIT {self.proc_name}")
+            
+            # Wait for command to process
+            time.sleep(1.0)
+            
+            # Read the exported data
+            temp_dir = tempfile.gettempdir()
+            temp_file = os.path.join(temp_dir, f"satg_proc_edit_{self.proc_name}.json")
+            
+            if os.path.exists(temp_file):
+                with open(temp_file, 'r') as f:
+                    data = json.load(f)
+                
+                self.waypoints = data.get("waypoints", [])
+                self.filepath = data.get("filepath", "")
+                
+                # Populate table
+                self._populate_table()
+                
+                self.status_label.setText(f"Loaded {len(self.waypoints)} waypoints for editing")
+                
+                # Clean up temp file
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+            else:
+                self.status_label.setText("Error: Could not load procedure data")
+                
+        except Exception as e:
+            self.status_label.setText(f"Error loading procedure: {e}")
+    
+    def _populate_table(self):
+        """Populate the table with waypoint data."""
+        self.waypoints_table.setRowCount(len(self.waypoints))
+        
+        for i, wp in enumerate(self.waypoints):
+            self.waypoints_table.setItem(i, 0, QTableWidgetItem(wp['name']))
+            self.waypoints_table.setItem(i, 1, QTableWidgetItem(f"{wp['lat']:.6f}"))
+            self.waypoints_table.setItem(i, 2, QTableWidgetItem(f"{wp['lon']:.6f}"))
+            self.waypoints_table.setItem(i, 3, QTableWidgetItem(wp['alt']))
+            self.waypoints_table.setItem(i, 4, QTableWidgetItem(wp['spd']))
+            
+            # Make name/lat/lon read-only, alt/spd editable
+            self.waypoints_table.item(i, 0).setFlags(self.waypoints_table.item(i, 0).flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.waypoints_table.item(i, 1).setFlags(self.waypoints_table.item(i, 1).flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.waypoints_table.item(i, 2).setFlags(self.waypoints_table.item(i, 2).flags() & ~Qt.ItemFlag.ItemIsEditable)
+        
+        # Connect changes to update data
+        self.waypoints_table.itemChanged.connect(self._on_table_changed)
+    
+    def _on_table_changed(self, item):
+        """Update waypoint data when table items change."""
+        row = item.row()
+        col = item.column()
+        if row < len(self.waypoints):
+            if col == 3:  # Altitude
+                self.waypoints[row]['alt'] = item.text()
+            elif col == 4:  # Speed
+                self.waypoints[row]['spd'] = item.text()
+    
+    def _save_procedure(self):
+        """Save the procedure file with updated constraints."""
+        try:
+            from datetime import datetime
+            
+            if not self.filepath:
+                QMessageBox.warning(self, "Warning", "No file path available")
+                return
+            
+            # Create updated file content
+            content = []
+            content.append(f"# Procedure: {self.proc_name}")
+            content.append(f"# Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            content.append(f"# Type: Custom Track Procedure")
+            content.append(f"# Waypoints: {len(self.waypoints)}")
+            content.append("#")
+            
+            for wp in self.waypoints:
+                line = f"00:00:00.00>%0 ADDWPT {wp['lat']:.6f} {wp['lon']:.6f}"
+                if wp['alt'].strip():
+                    line += f" {wp['alt']}"
+                if wp['spd'].strip():
+                    line += f" {wp['spd']}"
+                content.append(line)
+            
+            content.append("")  # Empty line at end
+            
+            # Write file
+            with open(self.filepath, 'w') as f:
+                f.write('\n'.join(content))
+            
+            self.status_label.setText("Procedure saved successfully!")
+            
+            QMessageBox.information(self, "Success", f"Procedure saved: {self.filepath}")
+            
+        except Exception as e:
+            error_msg = f"Error saving procedure: {e}"
+            self.status_label.setText(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+    
+    def _save_and_load(self):
+        """Save the procedure and load it into SATG."""
+        self._save_procedure()
+        
+        # Load into main GUI
+        if self.parent() and hasattr(self.parent(), 'parent') and hasattr(self.parent().parent(), '_load_created_procedure'):
+            self.parent().parent()._load_created_procedure(self.filepath)
+        
+        # Also use backend command to load
+        try:
+            from bluesky import stack
+            stack.stack(f"SATG_PROC_LOAD_PROC {self.filepath}")
+            
+            self.status_label.setText("Procedure saved and loaded to SATG!")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Saved but failed to load: {e}")
+
+
+# --- old methods to remove ---
+
+    def _refresh_waypoints(self):
+        """Refresh waypoints from the created polygon in BlueSky."""
+        if not self.polygon_name:
+            QMessageBox.warning(self, "Warning", "No polygon name set. Create a track first.")
+            return
+            
+        try:
+            # Use backend command to export polygon coordinates
+            coordinates = self._get_polygon_coordinates_via_backend(self.polygon_name)
+            if coordinates:
+                self._populate_waypoints_table(coordinates)
+                self.poly_status.setText(f"Successfully loaded {len(coordinates)} waypoints from '{self.polygon_name}'")
+                self.poly_status.setStyleSheet("color: green;")
+            else:
+                self.poly_status.setText(f"No polygon found with name '{self.polygon_name}'. Make sure you've drawn the track in BlueSky.")
+                self.poly_status.setStyleSheet("color: orange;")
+        except Exception as e:
+            self.poly_status.setText(f"Error refreshing waypoints: {e}")
+            self.poly_status.setStyleSheet("color: red;")
+    
+    def _get_polygon_coordinates_via_backend(self, poly_name):
+        """Get coordinates using backend SATG command. Returns list of (lat, lon) tuples."""
+        try:
+            import tempfile
+            import json
+            import time
+            
+            # Send command to backend to export polygon coordinates
+            from bluesky.ui.qtgl.console import process_cmdline
+            process_cmdline(f"SATG_PROC_EXPORT_POLY {poly_name}")
+            
+            # Wait a moment for the command to process
+            time.sleep(0.5)
+            
+            # Read the exported coordinates from temp file
+            temp_dir = tempfile.gettempdir()
+            temp_file = os.path.join(temp_dir, f"satg_poly_{poly_name.upper()}.json")
+            
+            if os.path.exists(temp_file):
+                with open(temp_file, 'r') as f:
+                    data = json.load(f)
+                
+                coordinates = data.get('coordinates', [])
+                
+                # Clean up temp file
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                
+                return coordinates
+            else:
+                return []
+                
+        except Exception as e:
+            print(f"Error getting polygon coordinates via backend: {e}")
+            return []
+    
+    def _populate_waypoints_table(self, coordinates):
+        """Populate the waypoints table with coordinates."""
+        self.waypoints.clear()
+        self.waypoints_table.setRowCount(len(coordinates))
+        
+        for i, (lat, lon) in enumerate(coordinates):
+            # Default waypoint name
+            wp_name = f"{self.polygon_name}WP{i+1:02d}"
+            
+            waypoint = {
+                'name': wp_name,
+                'lat': lat,
+                'lon': lon,
+                'alt': '',
+                'spd': ''
+            }
+            self.waypoints.append(waypoint)
+            
+            # Add to table
+            self.waypoints_table.setItem(i, 0, QTableWidgetItem(wp_name))
+            self.waypoints_table.setItem(i, 1, QTableWidgetItem(f"{lat:.6f}"))
+            self.waypoints_table.setItem(i, 2, QTableWidgetItem(f"{lon:.6f}"))
+            self.waypoints_table.setItem(i, 3, QTableWidgetItem(""))  # Altitude
+            self.waypoints_table.setItem(i, 4, QTableWidgetItem(""))  # Speed
+            
+            # Make lat/lon read-only but name/alt/spd editable
+            self.waypoints_table.item(i, 1).setFlags(self.waypoints_table.item(i, 1).flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.waypoints_table.item(i, 2).setFlags(self.waypoints_table.item(i, 2).flags() & ~Qt.ItemFlag.ItemIsEditable)
+        
+        # Connect table changes to update waypoints data
+        self.waypoints_table.itemChanged.connect(self._on_table_item_changed)
+    
+    def _on_table_item_changed(self, item):
+        """Update waypoints data when table items change."""
+        row = item.row()
+        col = item.column()
+        if row < len(self.waypoints):
+            if col == 0:  # Name
+                self.waypoints[row]['name'] = item.text()
+            elif col == 3:  # Altitude
+                self.waypoints[row]['alt'] = item.text()
+            elif col == 4:  # Speed
+                self.waypoints[row]['spd'] = item.text()
+    
+    def _add_waypoint(self):
+        """Add a new waypoint manually."""
+        # Simple dialog to add waypoint
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Waypoint")
+        layout = QFormLayout(dialog)
+        
+        name_edit = QLineEdit(f"{self.polygon_name}WP{len(self.waypoints)+1:02d}")
+        lat_edit = QLineEdit()
+        lon_edit = QLineEdit()
+        alt_edit = QLineEdit()
+        spd_edit = QLineEdit()
+        
+        layout.addRow("Name:", name_edit)
+        layout.addRow("Latitude:", lat_edit)
+        layout.addRow("Longitude:", lon_edit)
+        layout.addRow("Altitude:", alt_edit)
+        layout.addRow("Speed:", spd_edit)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                waypoint = {
+                    'name': name_edit.text().strip(),
+                    'lat': float(lat_edit.text()),
+                    'lon': float(lon_edit.text()),
+                    'alt': alt_edit.text().strip(),
+                    'spd': spd_edit.text().strip()
+                }
+                self.waypoints.append(waypoint)
+                self._refresh_table_display()
+            except ValueError:
+                QMessageBox.warning(self, "Warning", "Invalid latitude or longitude value.")
+    
+    def _remove_waypoint(self):
+        """Remove selected waypoint."""
+        current_row = self.waypoints_table.currentRow()
+        if current_row >= 0 and current_row < len(self.waypoints):
+            self.waypoints.pop(current_row)
+            self._refresh_table_display()
+    
+    def _refresh_table_display(self):
+        """Refresh the table display with current waypoints data."""
+        self.waypoints_table.setRowCount(len(self.waypoints))
+        for i, wp in enumerate(self.waypoints):
+            self.waypoints_table.setItem(i, 0, QTableWidgetItem(wp['name']))
+            self.waypoints_table.setItem(i, 1, QTableWidgetItem(f"{wp['lat']:.6f}"))
+            self.waypoints_table.setItem(i, 2, QTableWidgetItem(f"{wp['lon']:.6f}"))
+            self.waypoints_table.setItem(i, 3, QTableWidgetItem(wp['alt']))
+            self.waypoints_table.setItem(i, 4, QTableWidgetItem(wp['spd']))
+            
+            # Make lat/lon read-only
+            self.waypoints_table.item(i, 1).setFlags(self.waypoints_table.item(i, 1).flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.waypoints_table.item(i, 2).setFlags(self.waypoints_table.item(i, 2).flags() & ~Qt.ItemFlag.ItemIsEditable)
+    
+    def _create_file(self):
+        """Create the procedure file."""
+        self._create_procedure_file(load_automatically=False)
+    
+    def _create_and_load(self):
+        """Create the procedure file and load it automatically."""
+        self._create_procedure_file(load_automatically=True)
+    
+    def _create_procedure_file(self, load_automatically=False):
+        """Create the procedure file in satg_data/procedures/."""
+        if not self.polygon_name:
+            QMessageBox.warning(self, "Warning", "No procedure name set.")
+            return
+            
+        if not self.waypoints:
+            QMessageBox.warning(self, "Warning", "No waypoints to create procedure from.")
+            return
+        
+        try:
+            # Create procedures directory if it doesn't exist
+            import os
+            from datetime import datetime
+            
+            procedures_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'satg_data', 'procedures')
+            os.makedirs(procedures_dir, exist_ok=True)
+            
+            # Create filename
+            filename = f"{self.polygon_name}.scn"
+            filepath = os.path.join(procedures_dir, filename)
+            
+            # Check if file exists and ask for confirmation
+            if os.path.exists(filepath):
+                reply = QMessageBox.question(self, "File Exists", 
+                                           f"File '{filename}' already exists. Overwrite?",
+                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            
+            # Create file content
+            content = []
+            content.append(f"# Procedure: {self.polygon_name}")
+            content.append(f"# Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            content.append(f"# Type: Custom Track Procedure")
+            content.append(f"# Waypoints: {len(self.waypoints)}")
+            content.append("#")
+            
+            for i, wp in enumerate(self.waypoints):
+                line = f"00:00:00.00>%0 ADDWPT {wp['name']}"
+                if wp['alt'].strip():
+                    line += f" {wp['alt']}"
+                if wp['spd'].strip():
+                    line += f" {wp['spd']}"
+                content.append(line)
+            
+            content.append("")  # Empty line at end
+            
+            # Write file
+            with open(filepath, 'w') as f:
+                f.write('\n'.join(content))
+            
+            self.file_status.setText(f"Created: {filepath}")
+            self.file_status.setStyleSheet("color: green;")
+            
+            if load_automatically:
+                # Load into the main GUI
+                if self.parent() and hasattr(self.parent(), '_load_created_procedure'):
+                    self.parent()._load_created_procedure(filepath)
+                    self.file_status.setText(f"Created and loaded: {filepath}")
+            
+            QMessageBox.information(self, "Success", f"Procedure file created successfully:\n{filepath}")
+            
+        except Exception as e:
+            error_msg = f"Error creating procedure file: {e}"
+            self.file_status.setText(error_msg)
+            self.file_status.setStyleSheet("color: red;")
+            QMessageBox.critical(self, "Error", error_msg)
+
+
 # --- top strip -------------------------------------------------------------
 
 class TopStrip(QWidget):
@@ -4049,6 +4633,10 @@ class ProcTab(QWidget):
         f1.addRow(self.lst_proc)
         f1.addRow(proc_btns)
 
+        # Create Procedure button
+        create_proc_btn = QPushButton("Create New Procedure...")
+        f1.addRow(create_proc_btn)
+
         # Set the form widget as the scroll area's widget
         files_scroll.setWidget(files_form_widget)
         
@@ -4062,6 +4650,7 @@ class ProcTab(QWidget):
         btn_proc_add.clicked.connect(self._add_proc)
         btn_proc_rm.clicked.connect(self._rm_proc)
         btn_proc_clr.clicked.connect(self._clr_proc)
+        create_proc_btn.clicked.connect(self._create_procedure)
 
         # 2) Batch options
         gb2 = QGroupBox("2) Batch options")
@@ -5024,6 +5613,18 @@ class ProcTab(QWidget):
             self._star_basis_index = self.star_rate_basis.currentIndex()
         self._destinations.clear()
         self._last_dest_sent.clear()
+
+    def _create_procedure(self):
+        """Open the procedure creation dialog."""
+        dialog = ProcedureCreatorDialog(self)
+        dialog.show()  # Use show() instead of exec() for non-modal dialog
+
+    def _load_created_procedure(self, filepath):
+        """Load a newly created procedure file into the GUI."""
+        if os.path.exists(filepath):
+            _emit(f"SATG_PROC_LOAD_PROC {filepath}")
+            self._proc_files.append(filepath)
+            self.lst_proc.addItem(os.path.basename(filepath))
         self._origins.clear()
         self._proc_widgets.clear()
         self._update_dest_state()

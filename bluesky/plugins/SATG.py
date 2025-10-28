@@ -2884,6 +2884,327 @@ def SATG_PROC_LOAD_PROC(path: str):
             _echo_ok(f"Loaded procedure file: {p}")
     return True, ""
 
+
+@command
+def SATG_PROC_LOAD_CUSTOM():
+    """Auto-load all custom procedure files from satg_data/procedures/ folder."""
+    try:
+        # Get the procedures directory path
+        procedures_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'satg_data', 'procedures')
+        
+        if not os.path.exists(procedures_dir):
+            _echo_err(f"Procedures directory not found: {procedures_dir}")
+            return False, ""
+        
+        # Find all .scn files in the procedures directory
+        proc_files = []
+        for filename in os.listdir(procedures_dir):
+            if filename.lower().endswith('.scn'):
+                filepath = os.path.join(procedures_dir, filename)
+                if os.path.isfile(filepath):
+                    proc_files.append(filepath)
+        
+        if not proc_files:
+            _echo_ok("No custom procedure files found in procedures directory")
+            return True, ""
+        
+        # Load each procedure file
+        loaded_count = 0
+        for filepath in proc_files:
+            try:
+                success, _ = SATG_PROC_LOAD_PROC(filepath)
+                if success:
+                    loaded_count += 1
+            except Exception as e:
+                _echo_err(f"Error loading {os.path.basename(filepath)}: {e}")
+        
+        _echo_ok(f"Loaded {loaded_count} custom procedure files from procedures directory")
+        return True, ""
+        
+    except Exception as e:
+        _echo_err(f"Error loading custom procedures: {e}")
+        return False, ""
+
+
+@command
+def SATG_PROC_EXPORT_POLY(poly_name: str):
+    """Export polygon coordinates to a temporary file for GUI access."""
+    try:
+        import bluesky as bs
+        
+        poly_name_upper = poly_name.strip().upper()
+        if not poly_name_upper:
+            _echo_err("SATG_PROC_EXPORT_POLY: missing polygon name")
+            return False, ""
+        
+        # Access BlueSky's areafilter to get polygon coordinates
+        if hasattr(bs, 'sim') and hasattr(bs.sim, 'areafilter'):
+            areafilter = bs.sim.areafilter
+            if hasattr(areafilter, 'areas') and poly_name_upper in areafilter.areas:
+                area_data = areafilter.areas[poly_name_upper]
+                if hasattr(area_data, 'border') and area_data.border is not None:
+                    # Extract coordinates from border
+                    coords = []
+                    border = area_data.border
+                    if hasattr(border, 'lat') and hasattr(border, 'lon'):
+                        for i in range(len(border.lat)):
+                            coords.append((float(border.lat[i]), float(border.lon[i])))
+                    
+                    if coords:
+                        # Export coordinates to temporary file
+                        import tempfile
+                        import json
+                        from datetime import datetime
+                        
+                        temp_dir = tempfile.gettempdir()
+                        temp_file = os.path.join(temp_dir, f"satg_poly_{poly_name_upper}.json")
+                        
+                        data = {
+                            'polygon_name': poly_name_upper,
+                            'coordinates': coords,
+                            'timestamp': datetime.now().isoformat()
+                        }
+                        
+                        with open(temp_file, 'w') as f:
+                            json.dump(data, f, indent=2)
+                        
+                        _echo_ok(f"Exported {len(coords)} coordinates for polygon '{poly_name_upper}' to {temp_file}")
+                        return True, temp_file
+                    else:
+                        _echo_err(f"SATG_PROC_EXPORT_POLY: no coordinates found for polygon '{poly_name_upper}'")
+                        return False, ""
+                else:
+                    _echo_err(f"SATG_PROC_EXPORT_POLY: polygon '{poly_name_upper}' has no border data")
+                    return False, ""
+            else:
+                _echo_err(f"SATG_PROC_EXPORT_POLY: polygon '{poly_name_upper}' not found")
+                return False, ""
+        else:
+            _echo_err("SATG_PROC_EXPORT_POLY: BlueSky areafilter not available")
+            return False, ""
+            
+    except Exception as e:
+        _echo_err(f"SATG_PROC_EXPORT_POLY: error exporting polygon: {e}")
+        return False, ""
+
+
+@command
+def SATG_PROC_CREATE_FROM_POLY(poly_name: str, proc_name: str = ""):
+    """Create a basic procedure file directly from polygon coordinates."""
+    try:
+        from datetime import datetime
+        
+        poly_name_clean = poly_name.strip()
+        if not poly_name_clean:
+            _echo_err("SATG_PROC_CREATE_FROM_POLY: missing polygon name")
+            return False, ""
+        
+        _echo_ok(f"SATG_PROC_CREATE_FROM_POLY: Attempting to find polygon '{poly_name_clean}'")
+        
+        # Use proc_name if provided, otherwise use poly_name
+        procedure_name = proc_name.strip() if proc_name.strip() else poly_name_clean
+        
+        # Use the same method as other SATG polygon commands with case-insensitive search
+        poly = areafilter.getArea(poly_name_clean)
+        actual_poly_name = poly_name_clean
+        
+        # If not found, try case-insensitive search
+        if poly is None and hasattr(areafilter, 'basic_shapes') and areafilter.basic_shapes:
+            for area_name, shape in areafilter.basic_shapes.items():
+                if area_name.lower() == poly_name_clean.lower():
+                    poly = shape
+                    actual_poly_name = area_name
+                    _echo_ok(f"SATG_PROC_CREATE_FROM_POLY: Found polygon with case-insensitive match: '{area_name}'")
+                    break
+        
+        if poly is None:
+            _echo_err(f"SATG_PROC_CREATE_FROM_POLY: polygon '{poly_name_clean}' not found")
+            # Try to list available polygons for debugging
+            try:
+                if hasattr(areafilter, 'areas') and areafilter.areas:
+                    available = list(areafilter.areas.keys())
+                    _echo_err(f"Available polygons: {available}")
+                elif hasattr(areafilter, 'basic_shapes') and areafilter.basic_shapes:
+                    available = list(areafilter.basic_shapes.keys())
+                    _echo_err(f"Available basic shapes: {available}")
+                else:
+                    _echo_err("No polygons found in areafilter")
+            except:
+                _echo_err("Could not list available polygons")
+            return False, ""
+        
+        _echo_ok(f"SATG_PROC_CREATE_FROM_POLY: Found polygon '{actual_poly_name}'")
+        
+        if not hasattr(poly, 'coordinates'):
+            _echo_err(f"SATG_PROC_CREATE_FROM_POLY: '{poly_name_clean}' is not a polygon area")
+            _echo_err(f"Polygon type: {type(poly)}, attributes: {dir(poly)}")
+            return False, ""
+        
+        coordinates = poly.coordinates
+        _echo_ok(f"SATG_PROC_CREATE_FROM_POLY: Found {len(coordinates)} coordinates")
+        
+        if len(coordinates) < 6:  # Need at least 3 points (6 coordinates)
+            _echo_err(f"SATG_PROC_CREATE_FROM_POLY: polygon '{poly_name_clean}' has insufficient coordinates ({len(coordinates)})")
+            return False, ""
+        
+        # Parse coordinates into (lat, lon) pairs
+        waypoints = []
+        for i in range(0, len(coordinates), 2):
+            if i + 1 < len(coordinates):
+                lat = coordinates[i]
+                lon = coordinates[i + 1]
+                waypoints.append((lat, lon))
+        
+        _echo_ok(f"SATG_PROC_CREATE_FROM_POLY: Parsed {len(waypoints)} waypoints")
+        
+        # Create procedures directory if it doesn't exist - use root satg_data folder
+        procedures_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'satg_data', 'procedures')
+        os.makedirs(procedures_dir, exist_ok=True)
+        
+        # Create filename
+        filename = f"{procedure_name}.scn"
+        filepath = os.path.join(procedures_dir, filename)
+        
+        _echo_ok(f"SATG_PROC_CREATE_FROM_POLY: Will create file at {filepath}")
+        
+        # Create file content
+        content = []
+        content.append(f"# Procedure: {procedure_name}")
+        content.append(f"# Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        content.append(f"# Type: Custom Track Procedure from Polygon {actual_poly_name}")
+        content.append(f"# Waypoints: {len(waypoints)}")
+        content.append("#")
+        
+        # Add waypoints directly with coordinates (no DEFWPT needed)
+        for i, (lat, lon) in enumerate(waypoints):
+            wp_name = f"{procedure_name}WP{i+1:02d}"
+            content.append(f"00:00:00.00>%0 ADDWPT {lat:.6f} {lon:.6f}")
+        
+        content.append("")  # Empty line at end
+        
+        # Write file
+        with open(filepath, 'w') as f:
+            f.write('\n'.join(content))
+        
+        _echo_ok(f"Created procedure file: {filepath}")
+        _echo_ok(f"Found {len(waypoints)} waypoints from polygon '{actual_poly_name}'")
+        _echo_ok(f"Use SATG_PROC_LOAD_FOR_EDIT {procedure_name} to edit constraints")
+        return True, filepath
+            
+    except Exception as e:
+        _echo_err(f"SATG_PROC_CREATE_FROM_POLY: error creating procedure: {e}")
+        import traceback
+        _echo_err(f"Traceback: {traceback.format_exc()}")
+        return False, ""
+
+
+@command
+def SATG_PROC_LOAD_FOR_EDIT(proc_name: str):
+    """Load a procedure file and export waypoints for GUI editing."""
+    try:
+        from datetime import datetime
+        import tempfile
+        import json
+        import re
+        
+        proc_name_clean = proc_name.strip()
+        if not proc_name_clean:
+            _echo_err("SATG_PROC_LOAD_FOR_EDIT: missing procedure name")
+            return False, ""
+        
+        # Find the procedure file - use root satg_data folder
+        procedures_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'satg_data', 'procedures')
+        filepath = os.path.join(procedures_dir, f"{proc_name_clean}.scn")
+        
+        if not os.path.exists(filepath):
+            _echo_err(f"SATG_PROC_LOAD_FOR_EDIT: procedure file not found: {filepath}")
+            return False, ""
+        
+        # Parse the procedure file to extract waypoints
+        waypoints = []
+        with open(filepath, 'r') as f:
+            content = f.read()
+        
+        # Find ADDWPT commands and extract waypoint info
+        # Pattern: 00:00:00.00>%0 ADDWPT lat lon [alt] [spd] 
+        # or legacy pattern: 00:00:00.00>%0 ADDWPT name [alt] [spd]
+        addwpt_pattern = r'00:00:00\.00>%0\s+ADDWPT\s+(\S+)(?:\s+(\S+))?(?:\s+(\S+))?(?:\s+(\S+))?'
+        
+        for i, match in enumerate(re.finditer(addwpt_pattern, content)):
+            arg1 = match.group(1)  # First argument after ADDWPT
+            arg2 = match.group(2) if match.group(2) else ""
+            arg3 = match.group(3) if match.group(3) else ""
+            arg4 = match.group(4) if match.group(4) else ""
+            
+            # Check if first two arguments are coordinates (contain decimal points)
+            try:
+                lat = float(arg1)
+                lon = float(arg2) if arg2 else 0.0
+                # This is the new format: ADDWPT lat lon [alt] [spd]
+                wp_name = f"WP{i+1:02d}"  # Generate waypoint name
+                wp_alt = arg3 if arg3 else ""
+                wp_spd = arg4 if arg4 else ""
+            except ValueError:
+                # This is the legacy format: ADDWPT name [alt] [spd]
+                wp_name = arg1
+                wp_alt = arg2 if arg2 else ""
+                wp_spd = arg3 if arg3 else ""
+                
+                # Try to resolve waypoint coordinates from navigation database
+                lat, lon = 0.0, 0.0
+                try:
+                    navdb = getattr(bs, "navdb", None) if bs else None
+                    if navdb:
+                        wpid_list = getattr(navdb, "wpid", None)
+                        wplat_list = getattr(navdb, "wplat", None)
+                        wplon_list = getattr(navdb, "wplon", None)
+                        
+                        if wpid_list is not None and wplat_list is not None and wplon_list is not None:
+                            # Find waypoint in database
+                            wp_key = wp_name.upper()
+                            for j, wpid in enumerate(wpid_list):
+                                if wpid == wp_key:
+                                    lat = float(wplat_list[j])
+                                    lon = float(wplon_list[j])
+                                    break
+                except:
+                    pass  # Use default 0,0 if resolution fails
+            
+            waypoints.append({
+                'name': wp_name,
+                'lat': lat,
+                'lon': lon,
+                'alt': wp_alt,
+                'spd': wp_spd
+            })
+        
+        if waypoints:
+            # Export waypoints to temporary file for GUI
+            temp_dir = tempfile.gettempdir()
+            temp_file = os.path.join(temp_dir, f"satg_proc_edit_{proc_name_clean}.json")
+            
+            data = {
+                'procedure_name': proc_name_clean,
+                'filepath': filepath,
+                'waypoints': waypoints,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with open(temp_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            _echo_ok(f"Loaded {len(waypoints)} waypoints for editing: {proc_name_clean}")
+            _echo_ok(f"Waypoint data exported to: {temp_file}")
+            return True, temp_file
+        else:
+            _echo_err(f"SATG_PROC_LOAD_FOR_EDIT: no waypoints found in procedure file")
+            return False, ""
+            
+    except Exception as e:
+        _echo_err(f"SATG_PROC_LOAD_FOR_EDIT: error loading procedure: {e}")
+        return False, ""
+
+
 @command
 def SATG_PROC_UNLOAD_PROC(path: str):
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
@@ -3878,6 +4199,10 @@ def SATG_HELP(topic: str = ""):
         "  SATG_PROC_LOAD_WPT path_to_waypoints.scn",
         "",
         "  SATG_PROC_LOAD_PROC path_to_procedure.scn", 
+        "  SATG_PROC_LOAD_CUSTOM (auto-load all files from procedures/ folder)",
+        "  SATG_PROC_EXPORT_POLY polygon_name (export polygon coordinates for GUI)",
+        "  SATG_PROC_CREATE_FROM_POLY polygon_name [procedure_name] (create procedure from polygon)",
+        "  SATG_PROC_LOAD_FOR_EDIT procedure_name (load procedure for editing constraints)",
         "",
         "  SATG_PROC_SET_ICAO SID-XX-NAME AIRPORT_ICAO",
         "",
