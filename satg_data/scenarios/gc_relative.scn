@@ -1,0 +1,14 @@
+# SATG Generated Scenario - Geometric Conflicts
+# Created: 2025-10-28 10:53:21
+# Generator: BlueSky SATG Plugin
+#
+# Scenario Type: Geometric Conflicts
+# Position: N/A°, N/A°
+# Time to CPA: 120 seconds
+# Conflict Angle: 90°
+# Aircraft Types: B738
+# Altitude Mode: Level
+#
+0:00:00.00>HOLD
+0:00:00.00>ASAS ON
+0:00:00.00>CRECONFS,GCR1,B738,GCA1,90,2,120,,

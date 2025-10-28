@@ -360,8 +360,20 @@ class _SATGState:
         self.proc_sid_lookup: Dict[str, str] = {}
         self.proc_sid_schedules: Dict[str, Dict[str, object]] = {}
         self.proc_star_info: Dict[str, Dict[str, str]] = {}
-        self.proc_generic_cfg = {"flights": 20}
-        self.proc_sid_cfg = {"flights": 0, "alt_ft": 3000, "spd_kt": 210}
+        self.proc_generic_cfg = {
+            "flights": 20,
+            "override_initial_alt": False,
+            "override_initial_spd": False,
+            "override_final_alt": False,
+            "override_final_spd": False
+        }
+        self.proc_sid_cfg = {
+            "flights": 0, 
+            "alt_ft": 3000, 
+            "spd_kt": 210,
+            "override_initial_alt": False,
+            "override_initial_spd": False
+        }
         self.proc_star_cfg = {
             "flights": 20,
             "minsep": 90,
@@ -371,6 +383,10 @@ class _SATGState:
             "final_spd": 240,
             "use_schedule": False,
             "rate_basis": "initial",
+            "override_initial_alt": False,
+            "override_initial_spd": False,
+            "override_final_alt": False,
+            "override_final_spd": False
         }
         self.proc_sid_rates: Dict[str, float] = {}
         self.proc_star_rates: Dict[str, Dict[str, float]] = {"initial": {}, "final": {}}
@@ -1383,12 +1399,28 @@ def _proc_fix_sequence(proc_path: str) -> List[str]:
     except Exception:
         return []
     seq: List[str] = []
-    for match in re.finditer(r"ADDWPT\s+([A-Za-z0-9_+\-/]+)", txt, re.IGNORECASE):
-        name = match.group(1).strip().upper()
-        if not name:
-            continue
-        if not seq or seq[-1] != name:
-            seq.append(name)
+    
+    # Handle both coordinate format and waypoint name format
+    lines = txt.split('\n')
+    for line_num, line in enumerate(lines):
+        if 'ADDWPT' in line:
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[1] == 'ADDWPT':
+                # Check if third argument (after ADDWPT) is a coordinate (contains decimal point)
+                try:
+                    float(parts[2])  # If this succeeds, it's a coordinate
+                    # Generate a waypoint name for coordinate-based format
+                    wp_name = f"WP{len(seq)+1:02d}"
+                    if not seq or seq[-1] != wp_name:
+                        seq.append(wp_name)
+                except ValueError:
+                    # Traditional waypoint name format
+                    # Use original regex for waypoint names
+                    match = re.search(r"ADDWPT\s+([A-Za-z0-9_+\-/]+)", line, re.IGNORECASE)
+                    if match:
+                        name = match.group(1).strip().upper()
+                        if name and (not seq or seq[-1] != name):
+                            seq.append(name)
     return seq
 
 
@@ -1400,6 +1432,158 @@ def _proc_first_two_fixes(proc_path: str, fix_keys: set) -> tuple[str|None, str|
     if len(seq) == 1:
         return seq[0], None
     return seq[0], seq[1]
+
+
+def _proc_first_two_coordinates(proc_path: str) -> tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+    """Extract the first two coordinates directly from coordinate-based procedure files."""
+    coordinates = _proc_all_coordinates(proc_path)
+    coord1 = coordinates[0] if len(coordinates) >= 1 else None
+    coord2 = coordinates[1] if len(coordinates) >= 2 else None
+    return coord1, coord2
+
+
+def _proc_last_coordinate(proc_path: str) -> Optional[Tuple[float, float]]:
+    """Extract the last coordinate directly from coordinate-based procedure files."""
+    coordinates = _proc_all_coordinates(proc_path)
+    return coordinates[-1] if coordinates else None
+
+
+def _proc_extract_initial_alt_spd(proc_path: str) -> Tuple[Optional[int], Optional[float]]:
+    """Extract initial altitude (feet) and speed (knots or Mach) from procedure file.
+    
+    Returns:
+        Tuple of (altitude_feet, speed_value):
+        - altitude_feet: int altitude in feet, or None if not specified
+        - speed_value: float speed in knots, or Mach number if M prefix, or None if not specified
+    """
+    try:
+        with open(proc_path, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except Exception:
+        return None, None
+    
+    lines = txt.split('\n')
+    for line in lines:
+        if 'ADDWPT' in line:
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[1] == 'ADDWPT':
+                # First ADDWPT line found - check for altitude and speed
+                # Format: timestamp>id ADDWPT lat lon [altitude] [speed]
+                altitude_ft = None
+                speed_val = None
+                
+                # Check for altitude (5th parameter, index 4)
+                if len(parts) >= 5 and parts[4] not in ['', ',,']:
+                    alt_str = parts[4].strip()
+                    try:
+                        if alt_str.upper().startswith('FL'):
+                            # Flight level format: FL100 -> 10000 feet
+                            fl = int(alt_str[2:])
+                            altitude_ft = fl * 100
+                        else:
+                            # Direct feet format: 1000 -> 1000 feet
+                            altitude_ft = int(alt_str)
+                    except ValueError:
+                        pass
+                
+                # Check for speed (6th parameter, index 5)
+                if len(parts) >= 6 and parts[5] not in ['', ',,']:
+                    spd_str = parts[5].strip()
+                    try:
+                        if spd_str.upper().startswith('M'):
+                            # Mach format: M0.7 -> 0.7
+                            speed_val = float(spd_str[1:])
+                        else:
+                            # Knots format: 210 -> 210
+                            speed_val = float(spd_str)
+                    except ValueError:
+                        pass
+                
+                return altitude_ft, speed_val
+    
+    return None, None
+
+
+def _proc_all_coordinates(proc_path: str) -> List[Tuple[float, float]]:
+    """Extract all coordinates from coordinate-based procedure files."""
+    try:
+        with open(proc_path, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except Exception:
+        return []
+    
+    coordinates = []
+    lines = txt.split('\n')
+    for line in lines:
+        if 'ADDWPT' in line:
+            parts = line.strip().split()
+            if len(parts) >= 4 and parts[1] == 'ADDWPT':
+                # Check if third argument (after ADDWPT) is a coordinate (contains decimal point)
+                try:
+                    lat = float(parts[2])
+                    lon = float(parts[3])
+                    coordinates.append((lat, lon))
+                except (ValueError, IndexError):
+                    # Not a coordinate format, skip
+                    continue
+    return coordinates
+
+
+def _proc_is_coordinate_based(proc_path: str) -> bool:
+    """Check if a procedure file uses coordinate-based format (vs waypoint names)."""
+    return len(_proc_all_coordinates(proc_path)) > 0
+
+
+def _proc_unified_first_waypoint(proc_path: str, fix_db: Optional[Dict[str, Tuple[float, float]]] = None) -> Optional[Tuple[float, float]]:
+    """Get first waypoint coordinates, handling both coordinate-based and waypoint-based procedures."""
+    # Try coordinate-based first
+    coord = _proc_first_two_coordinates(proc_path)[0]
+    if coord:
+        return coord
+    
+    # Fall back to waypoint-based resolution
+    fix_names = _proc_fix_sequence(proc_path)
+    if fix_names:
+        return _resolve_fix_coord(fix_names[0], fix_db, proc_path=proc_path)
+    
+    return None
+
+
+def _proc_unified_last_waypoint(proc_path: str, fix_db: Optional[Dict[str, Tuple[float, float]]] = None) -> Optional[Tuple[float, float]]:
+    """Get last waypoint coordinates, handling both coordinate-based and waypoint-based procedures."""
+    # Try coordinate-based first
+    coord = _proc_last_coordinate(proc_path)
+    if coord:
+        return coord
+    
+    # Fall back to waypoint-based resolution
+    fix_names = _proc_fix_sequence(proc_path)
+    if fix_names:
+        return _resolve_fix_coord(fix_names[-1], fix_db, proc_path=proc_path)
+    
+    return None
+
+
+def _proc_unified_waypoint_token(proc_path: str, is_first: bool = True) -> Optional[str]:
+    """Get waypoint token for AT commands, handling both coordinate-based and waypoint-based procedures."""
+    if _proc_is_coordinate_based(proc_path):
+        # For coordinate-based, use coordinates directly
+        if is_first:
+            coord = _proc_first_two_coordinates(proc_path)[0]
+        else:
+            coord = _proc_last_coordinate(proc_path)
+        
+        if coord:
+            lat, lon = coord
+            return f"{lat:.6f},{lon:.6f}"
+    else:
+        # For waypoint-based, use waypoint names
+        fix_names = _proc_fix_sequence(proc_path)
+        if fix_names:
+            fix_name = fix_names[0] if is_first else fix_names[-1]
+            return fix_name.upper()
+    
+    return None
 
 
 def _proc_last_fix(proc_path: str) -> Optional[str]:
@@ -1475,17 +1659,60 @@ def _resolve_waypoint_pair(name1: str, name2: str, fix_db: Optional[Dict[str, Tu
         return None, None
 
 
+def _build_proc_coord_db(proc_path: str) -> Dict[str, Tuple[float, float]]:
+    """Build coordinate database from procedure file for coordinate-based ADDWPT commands."""
+    coord_db = {}
+    try:
+        with open(proc_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        wp_index = 1
+        
+        for line in lines:
+            if 'ADDWPT' in line:
+                parts = line.strip().split()
+                if len(parts) >= 4 and parts[1] == 'ADDWPT':
+                    try:
+                        lat = float(parts[2])
+                        lon = float(parts[3])
+                        wp_name = f"WP{wp_index:02d}"
+                        coord_db[wp_name] = (lat, lon)
+                        wp_index += 1
+                    except ValueError:
+                        # Not coordinate format, skip
+                        pass
+    except Exception:
+        pass
+    
+    return coord_db
+
+
 def _resolve_fix_coord(name: Optional[str],
                        fix_db: Optional[Dict[str, Tuple[float, float]]],
                        ref_lat: Optional[float] = None,
-                       ref_lon: Optional[float] = None) -> Optional[Tuple[float, float]]:
+                       ref_lon: Optional[float] = None,
+                       proc_path: Optional[str] = None) -> Optional[Tuple[float, float]]:
     if not name:
         return None
     key = str(name).strip().upper()
     if not key:
         return None
+    
+    # First check if it's a coordinate-based waypoint from our procedure
+    if proc_path and key.startswith("WP") and len(key) == 4:
+        proc_coord_db = _build_proc_coord_db(proc_path)
+        if key in proc_coord_db:
+            coord = proc_coord_db[key]
+            if fix_db is not None:
+                fix_db[key] = coord
+            return coord
+    
+    # Then check the provided fix database
     if fix_db is not None and key in fix_db:
         return fix_db[key]
+    
+    # Finally try navigation database lookup
     navdb = getattr(bs, "navdb", None) if bs else None
     if navdb:
         try:
@@ -3125,58 +3352,51 @@ def SATG_PROC_LOAD_FOR_EDIT(proc_name: str):
         with open(filepath, 'r') as f:
             content = f.read()
         
-        # Find ADDWPT commands and extract waypoint info
-        # Pattern: 00:00:00.00>%0 ADDWPT lat lon [alt] [spd] 
-        # or legacy pattern: 00:00:00.00>%0 ADDWPT name [alt] [spd]
-        addwpt_pattern = r'00:00:00\.00>%0\s+ADDWPT\s+(\S+)(?:\s+(\S+))?(?:\s+(\S+))?(?:\s+(\S+))?'
+        _echo_ok(f"SATG_PROC_LOAD_FOR_EDIT: Parsing procedure file")
         
-        for i, match in enumerate(re.finditer(addwpt_pattern, content)):
-            arg1 = match.group(1)  # First argument after ADDWPT
-            arg2 = match.group(2) if match.group(2) else ""
-            arg3 = match.group(3) if match.group(3) else ""
-            arg4 = match.group(4) if match.group(4) else ""
+        # Find ADDWPT commands line by line to avoid cross-line matching
+        lines = content.split('\n')
+        addwpt_lines = [line for line in lines if '00:00:00.00>%0 ADDWPT' in line]
+        
+        _echo_ok(f"SATG_PROC_LOAD_FOR_EDIT: Found {len(addwpt_lines)} ADDWPT lines")
+        
+        for i, line in enumerate(addwpt_lines):
+            _echo_ok(f"Processing line: {repr(line)}")
             
-            # Check if first two arguments are coordinates (contain decimal points)
-            try:
-                lat = float(arg1)
-                lon = float(arg2) if arg2 else 0.0
-                # This is the new format: ADDWPT lat lon [alt] [spd]
-                wp_name = f"WP{i+1:02d}"  # Generate waypoint name
-                wp_alt = arg3 if arg3 else ""
-                wp_spd = arg4 if arg4 else ""
-            except ValueError:
-                # This is the legacy format: ADDWPT name [alt] [spd]
-                wp_name = arg1
-                wp_alt = arg2 if arg2 else ""
-                wp_spd = arg3 if arg3 else ""
-                
-                # Try to resolve waypoint coordinates from navigation database
-                lat, lon = 0.0, 0.0
+            # Split the line and extract components
+            parts = line.strip().split()
+            if len(parts) >= 4 and parts[0] == '00:00:00.00>%0' and parts[1] == 'ADDWPT':
                 try:
-                    navdb = getattr(bs, "navdb", None) if bs else None
-                    if navdb:
-                        wpid_list = getattr(navdb, "wpid", None)
-                        wplat_list = getattr(navdb, "wplat", None)
-                        wplon_list = getattr(navdb, "wplon", None)
+                    lat = float(parts[2])
+                    lon = float(parts[3])
+                    wp_name = f"WP{i+1:02d}"
+                    
+                    # Handle altitude and speed with comma placeholders
+                    wp_alt = ""
+                    wp_spd = ""
+                    
+                    if len(parts) > 4:
+                        if parts[4] != ",,":  # Not a placeholder
+                            wp_alt = parts[4]
                         
-                        if wpid_list is not None and wplat_list is not None and wplon_list is not None:
-                            # Find waypoint in database
-                            wp_key = wp_name.upper()
-                            for j, wpid in enumerate(wpid_list):
-                                if wpid == wp_key:
-                                    lat = float(wplat_list[j])
-                                    lon = float(wplon_list[j])
-                                    break
-                except:
-                    pass  # Use default 0,0 if resolution fails
-            
-            waypoints.append({
-                'name': wp_name,
-                'lat': lat,
-                'lon': lon,
-                'alt': wp_alt,
-                'spd': wp_spd
-            })
+                        if len(parts) > 5:
+                            wp_spd = parts[5]
+                        elif parts[4] == ",," and len(parts) > 4:
+                            # Format: ADDWPT lat lon ,, speed
+                            wp_spd = parts[5] if len(parts) > 5 else ""
+                    
+                    _echo_ok(f"Parsed waypoint: {wp_name} at {lat}, {lon}, alt='{wp_alt}', spd='{wp_spd}'")
+                    
+                    waypoints.append({
+                        "name": wp_name,
+                        "lat": lat,
+                        "lon": lon,
+                        "alt": wp_alt,
+                        "spd": wp_spd
+                    })
+                except (ValueError, IndexError) as e:
+                    _echo_err(f"Error parsing line '{line}': {e}")
+                    continue
         
         if waypoints:
             # Export waypoints to temporary file for GUI
@@ -3205,6 +3425,41 @@ def SATG_PROC_LOAD_FOR_EDIT(proc_name: str):
         return False, ""
 
 
+def _rebuild_generic_rates():
+    """Rebuild generic procedure rates based on currently loaded procedure files.
+    
+    This function scans all loaded procedure files and rebuilds the generic rates
+    to match only the waypoints available in the current files. This ensures that
+    when files are removed, their associated generic rate data is also cleaned up.
+    """
+    # Save the current generic configuration
+    current_basis = str(STATE.proc_generic_cfg.get("rate_basis", "initial")).lower()
+    if current_basis not in ("initial", "final"):
+        current_basis = "initial"
+    
+    # Get all available waypoint tokens from currently loaded files
+    available_tokens = set()
+    for proc_path in STATE.proc_proc_files:
+        if os.path.exists(proc_path):
+            # Extract initial and final waypoint tokens
+            initial_token = _proc_unified_waypoint_token(proc_path, is_first=True)
+            final_token = _proc_unified_waypoint_token(proc_path, is_first=False)
+            
+            if initial_token:
+                available_tokens.add(initial_token.upper())
+            if final_token:
+                available_tokens.add(final_token.upper())
+    
+    # Clear and rebuild generic rates tables, keeping only tokens from loaded files
+    for basis in ["initial", "final"]:
+        if basis in STATE.proc_generic_rates:
+            # Keep only rates for waypoints that still exist in loaded files
+            existing_rates = STATE.proc_generic_rates[basis]
+            filtered_rates = {token: rate for token, rate in existing_rates.items() 
+                            if token in available_tokens}
+            STATE.proc_generic_rates[basis] = filtered_rates
+
+
 @command
 def SATG_PROC_UNLOAD_PROC(path: str):
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
@@ -3212,6 +3467,10 @@ def SATG_PROC_UNLOAD_PROC(path: str):
     _unregister_sid_proc(p)
     _unregister_star_proc(p)
     STATE.proc_destinations.pop(p, None)
+    
+    # Rebuild generic rates to remove data from the unloaded file
+    _rebuild_generic_rates()
+    
     _echo_ok(f"Unloaded procedure file: {p}"); return True, ""
 
 @command
@@ -3263,6 +3522,62 @@ def SATG_PROC_SET_ICAO(proc_id: str, icao: str):
     STATE.proc_sid_lookup[info["basename"].upper()] = path  # ensure mapping
     _echo_ok(f"ICAO set for {info['basename']}: {icao_up}")
     return True, ""
+
+
+@command
+def SATG_PROC_OVERRIDE_GENERIC(override_initial_alt: int, override_initial_spd: int, override_final_alt: int, override_final_spd: int):
+    """
+    Set override flags for generic procedure initial and final constraints.
+    
+    Args:
+        override_initial_alt: 1 to override initial altitude, 0 to use procedure file values
+        override_initial_spd: 1 to override initial speed, 0 to use procedure file values  
+        override_final_alt: 1 to override final altitude, 0 to use procedure file values
+        override_final_spd: 1 to override final speed, 0 to use procedure file values
+    """
+    STATE.proc_generic_cfg.update({
+        "override_initial_alt": bool(override_initial_alt),
+        "override_initial_spd": bool(override_initial_spd),
+        "override_final_alt": bool(override_final_alt),
+        "override_final_spd": bool(override_final_spd)
+    })
+    _echo_ok(f"Generic procedure overrides: initial_alt={bool(override_initial_alt)}, initial_spd={bool(override_initial_spd)}, final_alt={bool(override_final_alt)}, final_spd={bool(override_final_spd)}")
+
+
+@command
+def SATG_PROC_OVERRIDE_SID(override_initial_alt: int, override_initial_spd: int):
+    """
+    Set override flags for SID procedure initial constraints.
+    
+    Args:
+        override_initial_alt: 1 to override initial altitude, 0 to use procedure file values
+        override_initial_spd: 1 to override initial speed, 0 to use procedure file values
+    """
+    STATE.proc_sid_cfg.update({
+        "override_initial_alt": bool(override_initial_alt),
+        "override_initial_spd": bool(override_initial_spd)
+    })
+    _echo_ok(f"SID procedure overrides: initial_alt={bool(override_initial_alt)}, initial_spd={bool(override_initial_spd)}")
+
+
+@command
+def SATG_PROC_OVERRIDE_STAR(override_initial_alt: int, override_initial_spd: int, override_final_alt: int, override_final_spd: int):
+    """
+    Set override flags for STAR procedure initial and final constraints.
+    
+    Args:
+        override_initial_alt: 1 to override initial altitude, 0 to use procedure file values
+        override_initial_spd: 1 to override initial speed, 0 to use procedure file values
+        override_final_alt: 1 to override final altitude, 0 to use procedure file values
+        override_final_spd: 1 to override final speed, 0 to use procedure file values
+    """
+    STATE.proc_star_cfg.update({
+        "override_initial_alt": bool(override_initial_alt),
+        "override_initial_spd": bool(override_initial_spd),
+        "override_final_alt": bool(override_final_alt),
+        "override_final_spd": bool(override_final_spd)
+    })
+    _echo_ok(f"STAR procedure overrides: initial_alt={bool(override_initial_alt)}, initial_spd={bool(override_initial_spd)}, final_alt={bool(override_final_alt)}, final_spd={bool(override_final_spd)}")
 
 
 @command
@@ -3763,32 +4078,29 @@ def SATG_PROC_MAKE(name: str,
 
             acid = _next_pr_acid()
 
-            f1_name, f2_name = _proc_first_two_fixes(proc_path, fix_keys)
+            # Use unified coordinate resolution for both coordinate-based and waypoint-based procedures
+            coord1 = _proc_unified_first_waypoint(proc_path, fix_db)
+            coord2 = None
             
-            # Resolve waypoints with geographic proximity logic
-            coord1, coord2 = _resolve_waypoint_pair(f1_name, f2_name, fix_db)
+            if coord1:
+                # Get second coordinate for heading calculation
+                if _proc_is_coordinate_based(proc_path):
+                    coord2 = _proc_first_two_coordinates(proc_path)[1]
+                else:
+                    # For waypoint-based, try to get second waypoint
+                    fix_names = _proc_fix_sequence(proc_path)
+                    if len(fix_names) >= 2:
+                        coord2 = _resolve_fix_coord(fix_names[1], fix_db, coord1[0], coord1[1], proc_path=proc_path)
             
             if not coord1:
-                # Fallback to individual resolution for first waypoint
-                coord1 = _resolve_fix_coord(f1_name, fix_db)
-                if not coord1:
-                    _echo_err(f"{proc_name}: could not resolve first fix position."); return False, ""
-            
-            if not coord2 and f2_name:
-                # Try individual resolution for second waypoint
-                coord2 = _resolve_fix_coord(f2_name, fix_db, coord1[0], coord1[1])
-                    
-            if f1_name:
-                fix_keys.add(f1_name.upper())
+                _echo_err(f"{proc_name}: could not resolve first waypoint position."); return False, ""
             
             # Calculate heading
             if coord2:
                 latA, lonA = coord1
                 latB, lonB = coord2
-                if f2_name:
-                    fix_keys.add(f2_name.upper())
                 hdg0 = _bearing_deg(latA, lonA, latB, lonB)
-                print(f"SATG DEBUG: Heading from {f1_name} to {f2_name}: {hdg0:.1f}°")
+                print(f"SATG DEBUG: Heading from first to second waypoint: {hdg0:.1f}°")
             else:
                 hdg0 = 0.0
                 print(f"SATG DEBUG: No second waypoint, using heading 0°")
@@ -3804,12 +4116,78 @@ def SATG_PROC_MAKE(name: str,
 
             hdg_cmd = int(round(hdg0)) % 360
             print(f"SATG DEBUG: Final hdg_cmd for CRE command: {hdg_cmd:03d}")
-            mach_token = f"M{gen_mach:.2f}"
-            spawn_token = f1_name.upper() if f1_name else f"{latA:.6f},{lonA:.6f}"
-            f.write(f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {gen_alt_ft} {mach_token}\n")
+            
+            # Always use coordinates for spawn position in CRE command
+            # This ensures coordinate-based procedures spawn at actual coordinates, not generated waypoint names
+            latA, lonA = coord1
+            spawn_token = f"{latA:.6f},{lonA:.6f}"
+            
+            # Check for initial overrides to modify CRE command
+            gen_override_initial_alt = gen_cfg.get("override_initial_alt", False)
+            gen_override_initial_spd = gen_cfg.get("override_initial_spd", False)
+            
+            # Extract initial altitude and speed from procedure file
+            proc_alt_ft, proc_spd_val = _proc_extract_initial_alt_spd(proc_path)
+            
+            # Determine altitude and speed for CRE command
+            if gen_override_initial_alt:
+                cre_alt_ft = gen_alt_ft  # Use GUI altitude
+            else:
+                cre_alt_ft = proc_alt_ft  # Use procedure file altitude (can be None)
+                
+            if gen_override_initial_spd:
+                cre_mach_token = f"M{gen_mach:.2f}"  # Use GUI speed
+            else:
+                # Use procedure file speed (can be None)
+                if proc_spd_val is not None:
+                    if proc_spd_val < 1.0:  # Assume Mach number if < 1.0
+                        cre_mach_token = f"M{proc_spd_val:.2f}"
+            if gen_override_initial_spd:
+                cre_mach_token = f"M{gen_mach:.2f}"  # Use GUI speed
+            else:
+                # Use procedure file speed (can be None)
+                if proc_spd_val is not None:
+                    if proc_spd_val < 1.0:  # Assume Mach number if < 1.0
+                        cre_mach_token = f"M{proc_spd_val:.2f}"
+                    else:  # Assume knots if >= 1.0
+                        cre_mach_token = f"{int(proc_spd_val)}"
+                else:
+                    cre_mach_token = None
+                
+            # Handle placeholder case for partial overrides
+            if (gen_override_initial_spd or proc_spd_val is not None) and (not gen_override_initial_alt and cre_alt_ft is None):
+                # Only speed override/available - use placeholder for altitude
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} ,, {cre_mach_token}\n"
+            elif (gen_override_initial_alt or cre_alt_ft is not None) and (not gen_override_initial_spd and cre_mach_token is None):
+                # Only altitude override/available - use placeholder for speed
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {cre_alt_ft} ,,\n"
+            elif (gen_override_initial_alt or cre_alt_ft is not None) and (gen_override_initial_spd or cre_mach_token is not None):
+                # Both available
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {cre_alt_ft} {cre_mach_token}\n"
+            else:
+                # No overrides and no procedure values - use default behavior (don't specify alt/speed in CRE)
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d}\n"
+            
+            f.write(cre_command)
             f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
+            
+            # Add final altitude and speed override commands if enabled
+            gen_final_alt_fl = max(0, int(gen_cfg.get("final_alt_fl", 100)))
+            gen_final_spd = max(0, int(gen_cfg.get("final_spd", 240)))
+            gen_override_final_alt = gen_cfg.get("override_final_alt", False)
+            gen_override_final_spd = gen_cfg.get("override_final_spd", False)
+            
+            if gen_override_final_alt or gen_override_final_spd:
+                final_token = _proc_unified_waypoint_token(proc_path, is_first=False)
+                if final_token:
+                    if gen_override_final_alt and gen_final_alt_fl > 0:
+                        final_alt_tok = _fmt_alt_token(gen_final_alt_fl)
+                        f.write(f"{ts}{acid} AT {final_token} ALT {final_alt_tok}\n")
+                    if gen_override_final_spd and gen_final_spd > 0:
+                        f.write(f"{ts}{acid} AT {final_token} SPD {gen_final_spd}\n")
+            
             if STATE.proc_destinations_enabled:
                 dests = STATE.proc_destinations.get(proc_path)
                 if dests:
@@ -3865,14 +4243,52 @@ def SATG_PROC_MAKE(name: str,
             acid = _next_pr_acid()
 
             actype = "A320"
-            f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+            
+            # Check for initial overrides to modify CRE command
+            sid_override_initial_alt = sid_cfg.get("override_initial_alt", False)
+            sid_override_initial_spd = sid_cfg.get("override_initial_spd", False)
+            
+            # Extract initial altitude and speed from procedure file
+            proc_alt_ft, proc_spd_val = _proc_extract_initial_alt_spd(proc_path)
+            
+            # Build CRE command with or without altitude/speed overrides
+            if sid_override_initial_alt:
+                cre_alt = int(sid_cfg.get('alt_ft', 5000))
+            else:
+                cre_alt = proc_alt_ft  # Use procedure file altitude (can be None)
+                
+            if sid_override_initial_spd:
+                cre_spd = int(sid_cfg.get('spd_kt', 250))
+            else:
+                # Use procedure file speed (can be None)
+                if proc_spd_val is not None:
+                    if proc_spd_val < 1.0:  # Mach number
+                        cre_spd = f"M{proc_spd_val:.2f}"
+                    else:  # Knots
+                        cre_spd = int(proc_spd_val)
+                else:
+                    cre_spd = None
+            
+            # Handle placeholder cases for partial overrides
+            if (sid_override_initial_spd or cre_spd is not None) and (not sid_override_initial_alt and cre_alt is None):
+                # Only speed override/available - use placeholder for altitude
+                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} ,, {cre_spd}\n")
+            elif (sid_override_initial_alt or cre_alt is not None) and (not sid_override_initial_spd and cre_spd is None):
+                # Only altitude override/available - use placeholder for speed
+                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} ,,\n")
+            elif (sid_override_initial_alt or cre_alt is not None) and (sid_override_initial_spd or cre_spd is not None):
+                # Both available
+                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} {cre_spd}\n")
+            else:
+                # No overrides and no procedure values - use standard format
+                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+                
             f.write(f"{ts}ADDWPT {acid} {icao}/{rw_tag}\n")
             f.write(f"{ts}ADDWPT {acid} TAKEOFF\n")
             f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
-            f.write(f"{ts}SPD {acid} {int(sid_cfg['spd_kt'])}\n")
-            f.write(f"{ts}ALT {acid} {int(sid_cfg['alt_ft'])}\n")
+            
             if STATE.proc_destinations_enabled:
                 dests = STATE.proc_destinations.get(proc_path)
                 if dests:
@@ -3910,14 +4326,52 @@ def SATG_PROC_MAKE(name: str,
                     acid = _next_pr_acid()
 
                     actype = "A320"
-                    f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+                    
+                    # Check for initial overrides to modify CRE command
+                    sid_override_initial_alt = sid_cfg.get("override_initial_alt", False)
+                    sid_override_initial_spd = sid_cfg.get("override_initial_spd", False)
+                    
+                    # Extract initial altitude and speed from procedure file
+                    proc_alt_ft, proc_spd_val = _proc_extract_initial_alt_spd(proc_path)
+                    
+                    # Build CRE command with or without altitude/speed overrides
+                    if sid_override_initial_alt:
+                        cre_alt = int(sid_cfg.get('alt_ft', 5000))
+                    else:
+                        cre_alt = proc_alt_ft  # Use procedure file altitude (can be None)
+                        
+                    if sid_override_initial_spd:
+                        cre_spd = int(sid_cfg.get('spd_kt', 250))
+                    else:
+                        # Use procedure file speed (can be None)
+                        if proc_spd_val is not None:
+                            if proc_spd_val < 1.0:  # Mach number
+                                cre_spd = f"M{proc_spd_val:.2f}"
+                            else:  # Knots
+                                cre_spd = int(proc_spd_val)
+                        else:
+                            cre_spd = None
+                    
+                    # Handle placeholder cases for partial overrides
+                    if (sid_override_initial_spd or cre_spd is not None) and (not sid_override_initial_alt and cre_alt is None):
+                        # Only speed override/available - use placeholder for altitude
+                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} ,, {cre_spd}\n")
+                    elif (sid_override_initial_alt or cre_alt is not None) and (not sid_override_initial_spd and cre_spd is None):
+                        # Only altitude override/available - use placeholder for speed
+                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} ,,\n")
+                    elif (sid_override_initial_alt or cre_alt is not None) and (sid_override_initial_spd or cre_spd is not None):
+                        # Both available
+                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} {cre_spd}\n")
+                    else:
+                        # No overrides and no procedure values - use standard format
+                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+                        
                     f.write(f"{ts}ADDWPT {acid} {icao}/{rw_tag}\n")
                     f.write(f"{ts}ADDWPT {acid} TAKEOFF\n")
                     f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
                     f.write(f"{ts}LNAV {acid} ON\n")
                     f.write(f"{ts}VNAV {acid} ON\n")
-                    f.write(f"{ts}SPD {acid} {int(sid_cfg['spd_kt'])}\n")
-                    f.write(f"{ts}ALT {acid} {int(sid_cfg['alt_ft'])}\n")
+                    
                     if STATE.proc_destinations_enabled:
                         dests = STATE.proc_destinations.get(proc_path)
                         if dests:
@@ -3938,6 +4392,10 @@ def SATG_PROC_MAKE(name: str,
         star_mach_val = float(star_cfg.get("initial_mach", star_cfg.get("mach", 0.79)))
         star_final_fl = max(0, int(star_cfg.get("final_alt_fl", 100)))
         star_final_spd = max(0, int(star_cfg.get("final_spd", 240)))
+        star_override_initial_alt = star_cfg.get("override_initial_alt", False)
+        star_override_initial_spd = star_cfg.get("override_initial_spd", False)
+        star_override_final_alt = star_cfg.get("override_final_alt", False)
+        star_override_final_spd = star_cfg.get("override_final_spd", False)
         star_schedule_data = STATE.proc_star_schedules if use_star_schedule else {}
 
         star_groups: Dict[str, List[str]] = {}
@@ -4007,25 +4465,79 @@ def SATG_PROC_MAKE(name: str,
             f2_up = f2_name.upper() if isinstance(f2_name, str) else None
             pen_final_up = pen_final.upper() if isinstance(pen_final, str) else None
             fix_keys.add(f1_up)
-            coord1 = _resolve_fix_coord(f1_up, fix_db)
-            lat0 = lon0 = None
-            if coord1:
-                lat0, lon0 = coord1
-            coord2 = _resolve_fix_coord(f2_up, fix_db, lat0, lon0) if (f2_up and lat0 is not None and lon0 is not None) else None
+            
+            # Use unified coordinate resolution for both coordinate-based and waypoint-based procedures
+            coord1 = _proc_unified_first_waypoint(proc_path, fix_db)
+            if not coord1:
+                _echo_err(f"{proc_name}: could not resolve first waypoint position."); return False, ""
+            
+            # Get second coordinate for heading calculation
+            coord2 = None
+            if _proc_is_coordinate_based(proc_path):
+                coord2 = _proc_first_two_coordinates(proc_path)[1]
+            else:
+                if f2_up:
+                    coord2 = _resolve_fix_coord(f2_up, fix_db, coord1[0], coord1[1])
+                    if coord2:
+                        fix_keys.add(f2_up)
+            
+            # Calculate heading
             if coord2:
+                lat0, lon0 = coord1
                 lat1, lon1 = coord2
-                fix_keys.add(f2_up)
                 hdg0 = _bearing_deg(lat0, lon0, lat1, lon1)
             else:
                 hdg0 = 0.0
+            
             fix_keys.add(final_fix_up)
             ts = _fmt_ts(t_sec)
             acid = _next_pr_acid()
             actype = "A320"
             hdg_cmd = int(round(hdg0)) % 360
-            mach_token = f"M{star_mach_val:.2f}"
-            spawn_token = f1_up
-            f.write(f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {star_alt_ft} {mach_token}\n")
+            
+            # Extract initial altitude and speed from procedure file
+            proc_alt_ft, proc_spd_val = _proc_extract_initial_alt_spd(proc_path)
+            
+            # Check for initial overrides to modify CRE command
+            if star_override_initial_alt:
+                cre_alt_ft = star_alt_ft  # Use GUI altitude
+            else:
+                cre_alt_ft = proc_alt_ft  # Use procedure file altitude (can be None)
+                
+            if star_override_initial_spd:
+                cre_mach_token = f"M{star_mach_val:.2f}"  # Use GUI speed
+            else:
+                # Use procedure file speed (can be None)
+                if proc_spd_val is not None:
+                    if proc_spd_val < 1.0:  # Mach number
+                        cre_mach_token = f"M{proc_spd_val:.2f}"
+                    else:  # Knots
+                        cre_mach_token = f"{int(proc_spd_val)}"
+                else:
+                    cre_mach_token = None
+            
+            # Use unified spawn token (coordinates for coordinate-based, waypoint name for waypoint-based)
+            if _proc_is_coordinate_based(proc_path):
+                lat0, lon0 = coord1
+                spawn_token = f"{lat0:.6f},{lon0:.6f}"
+            else:
+                spawn_token = f1_up
+            
+            # Handle placeholder case for partial overrides
+            if (star_override_initial_spd or cre_mach_token is not None) and (not star_override_initial_alt and cre_alt_ft is None):
+                # Only speed override/available - use placeholder for altitude
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} ,, {cre_mach_token}\n"
+            elif (star_override_initial_alt or cre_alt_ft is not None) and (not star_override_initial_spd and cre_mach_token is None):
+                # Only altitude override/available - use placeholder for speed
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {cre_alt_ft} ,,\n"
+            elif (star_override_initial_alt or cre_alt_ft is not None) and (star_override_initial_spd or cre_mach_token is not None):
+                # Both available
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d} {cre_alt_ft} {cre_mach_token}\n"
+            else:
+                # No overrides and no procedure values - use default behavior (don't specify alt/speed in CRE)
+                cre_command = f"{ts}CRE {acid} {actype} {spawn_token} {hdg_cmd:03d}\n"
+            
+            f.write(cre_command)
             f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
@@ -4034,6 +4546,17 @@ def SATG_PROC_MAKE(name: str,
                 if dests:
                     dest_choice = rng.choice(dests)
                     f.write(f"{ts}DEST {acid} {dest_choice}\n")
+            
+            # Add final altitude/speed override commands if enabled
+            if star_override_final_alt or star_override_final_spd:
+                final_token = _proc_unified_waypoint_token(proc_path, is_first=False)
+                if final_token:
+                    if star_override_final_alt and star_final_fl > 0:
+                        final_alt_tok = _fmt_alt_token(star_final_fl)
+                        f.write(f"{ts}{acid} AT {final_token} ALT {final_alt_tok}\n")
+                    if star_override_final_spd and star_final_spd > 0:
+                        f.write(f"{ts}{acid} AT {final_token} SPD {star_final_spd}\n")
+            
             final_hdg = None
             if pen_final_up:
                 coord_pen = _resolve_fix_coord(pen_final_up, fix_db)
@@ -4043,9 +4566,6 @@ def SATG_PROC_MAKE(name: str,
             if final_hdg is None:
                 final_hdg = hdg0
             final_hdg_cmd = int(round(final_hdg)) % 360
-            final_alt_tok = _fmt_alt_token(star_final_fl)
-            f.write(f"{ts}{acid} AT {final_fix_up} ALT {final_alt_tok}\n")
-            f.write(f"{ts}{acid} AT {final_fix_up} SPD {star_final_spd}\n")
             return True
 
         if star_paths:

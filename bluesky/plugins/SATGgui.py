@@ -790,10 +790,21 @@ class ProcedureEditorDialog(QDialog):
             
             for wp in self.waypoints:
                 line = f"00:00:00.00>%0 ADDWPT {wp['lat']:.6f} {wp['lon']:.6f}"
-                if wp['alt'].strip():
+                
+                has_alt = wp['alt'].strip()
+                has_spd = wp['spd'].strip()
+                
+                if has_alt and has_spd:
+                    # Both altitude and speed
+                    line += f" {wp['alt']} {wp['spd']}"
+                elif has_alt and not has_spd:
+                    # Only altitude
                     line += f" {wp['alt']}"
-                if wp['spd'].strip():
-                    line += f" {wp['spd']}"
+                elif not has_alt and has_spd:
+                    # Only speed - use comma placeholders
+                    line += f" ,, {wp['spd']}"
+                # If neither, just leave as coordinates only
+                
                 content.append(line)
             
             content.append("")  # Empty line at end
@@ -1264,12 +1275,18 @@ class TopStrip(QWidget):
         config['generic_rate_basis'] = tab_widget.generic_rate_basis.currentIndex()
         config['generic_final_alt_fl'] = tab_widget.generic_final_alt_fl.value()
         config['generic_final_spd'] = tab_widget.generic_final_spd.value()
+        config['generic_override_initial_alt'] = tab_widget.generic_override_initial_alt.isChecked()
+        config['generic_override_initial_spd'] = tab_widget.generic_override_initial_spd.isChecked()
+        config['generic_override_final_alt'] = tab_widget.generic_override_final_alt.isChecked()
+        config['generic_override_final_spd'] = tab_widget.generic_override_final_spd.isChecked()
         
         # SID parameters
         config['sid_flights'] = tab_widget.sid_flights.value()
         config['sid_alt'] = tab_widget.sid_alt.value()
         config['sid_spd'] = tab_widget.sid_spd.value()
         config['sid_mode'] = tab_widget.sid_mode.currentIndex()
+        config['sid_override_initial_alt'] = tab_widget.sid_override_initial_alt.isChecked()
+        config['sid_override_initial_spd'] = tab_widget.sid_override_initial_spd.isChecked()
         
         # STAR parameters
         config['star_flights'] = tab_widget.star_flights.value()
@@ -1279,6 +1296,10 @@ class TopStrip(QWidget):
         config['star_rate_basis'] = tab_widget.star_rate_basis.currentIndex()
         config['star_final_alt_fl'] = tab_widget.star_final_alt_fl.value()
         config['star_final_spd'] = tab_widget.star_final_spd.value()
+        config['star_override_initial_alt'] = tab_widget.star_override_initial_alt.isChecked()
+        config['star_override_initial_spd'] = tab_widget.star_override_initial_spd.isChecked()
+        config['star_override_final_alt'] = tab_widget.star_override_final_alt.isChecked()
+        config['star_override_final_spd'] = tab_widget.star_override_final_spd.isChecked()
         
         # Save SID scheduling data
         config['sid_rate_rows'] = {}
@@ -1350,6 +1371,14 @@ class TopStrip(QWidget):
                 tab_widget.generic_final_alt_fl.setValue(config_data['generic_final_alt_fl'])
             if 'generic_final_spd' in config_data:
                 tab_widget.generic_final_spd.setValue(config_data['generic_final_spd'])
+            if 'generic_override_initial_alt' in config_data:
+                tab_widget.generic_override_initial_alt.setChecked(config_data['generic_override_initial_alt'])
+            if 'generic_override_initial_spd' in config_data:
+                tab_widget.generic_override_initial_spd.setChecked(config_data['generic_override_initial_spd'])
+            if 'generic_override_final_alt' in config_data:
+                tab_widget.generic_override_final_alt.setChecked(config_data['generic_override_final_alt'])
+            if 'generic_override_final_spd' in config_data:
+                tab_widget.generic_override_final_spd.setChecked(config_data['generic_override_final_spd'])
                 
             # Apply SID parameters
             if 'sid_flights' in config_data:
@@ -1360,6 +1389,10 @@ class TopStrip(QWidget):
                 tab_widget.sid_spd.setValue(config_data['sid_spd'])
             if 'sid_mode' in config_data:
                 tab_widget.sid_mode.setCurrentIndex(config_data['sid_mode'])
+            if 'sid_override_initial_alt' in config_data:
+                tab_widget.sid_override_initial_alt.setChecked(config_data['sid_override_initial_alt'])
+            if 'sid_override_initial_spd' in config_data:
+                tab_widget.sid_override_initial_spd.setChecked(config_data['sid_override_initial_spd'])
                 
             # Apply STAR parameters
             if 'star_flights' in config_data:
@@ -1381,6 +1414,14 @@ class TopStrip(QWidget):
                 tab_widget.star_final_alt_fl.setValue(config_data['star_final_alt_fl'])
             if 'star_final_spd' in config_data:
                 tab_widget.star_final_spd.setValue(config_data['star_final_spd'])
+            if 'star_override_initial_alt' in config_data:
+                tab_widget.star_override_initial_alt.setChecked(config_data['star_override_initial_alt'])
+            if 'star_override_initial_spd' in config_data:
+                tab_widget.star_override_initial_spd.setChecked(config_data['star_override_initial_spd'])
+            if 'star_override_final_alt' in config_data:
+                tab_widget.star_override_final_alt.setChecked(config_data['star_override_final_alt'])
+            if 'star_override_final_spd' in config_data:
+                tab_widget.star_override_final_spd.setChecked(config_data['star_override_final_spd'])
                 
             # Apply scenario parameters
             if 'scn_name' in config_data:
@@ -4709,6 +4750,12 @@ class ProcTab(QWidget):
         self.generic_final_alt_fl.setValue(100)
         self.generic_final_alt_fl.setToolTip("Target flight level for generic procedure completion")
         alt_layout_generic.addWidget(self.generic_final_alt_fl)
+        self.generic_override_initial_alt = QCheckBox("Override Initial")
+        self.generic_override_initial_alt.setToolTip("Override initial altitude from procedure files")
+        alt_layout_generic.addWidget(self.generic_override_initial_alt)
+        self.generic_override_final_alt = QCheckBox("Override Final")
+        self.generic_override_final_alt.setToolTip("Override final altitude in procedure files")
+        alt_layout_generic.addWidget(self.generic_override_final_alt)
         alt_layout_generic.addStretch(1)
         fg.addRow(alt_row_generic)
         spd_row_generic = QWidget(generic_box)
@@ -4729,6 +4776,12 @@ class ProcTab(QWidget):
         self.generic_final_spd.setValue(240)
         self.generic_final_spd.setToolTip("Target airspeed for generic procedure completion in knots")
         spd_layout_generic.addWidget(self.generic_final_spd)
+        self.generic_override_initial_spd = QCheckBox("Override Initial")
+        self.generic_override_initial_spd.setToolTip("Override initial speed from procedure files")
+        spd_layout_generic.addWidget(self.generic_override_initial_spd)
+        self.generic_override_final_spd = QCheckBox("Override Final")
+        self.generic_override_final_spd.setToolTip("Override final speed in procedure files")
+        spd_layout_generic.addWidget(self.generic_override_final_spd)
         spd_layout_generic.addStretch(1)
         fg.addRow(spd_row_generic)
         self.generic_sched_btn = QPushButton("Configure schedule…")
@@ -4758,10 +4811,25 @@ class ProcTab(QWidget):
         fs.addRow("Flights:", self.sid_flights)
         self.sid_alt = QSpinBox(); self.sid_alt.setRange(0, 50000); self.sid_alt.setValue(3000)
         self.sid_alt.setToolTip("Initial altitude for SID departures in feet")
-        fs.addRow("Initial ALT [ft]:", self.sid_alt)
+        sid_alt_row = QWidget()
+        sid_alt_layout = QHBoxLayout(sid_alt_row); sid_alt_layout.setContentsMargins(0, 0, 0, 0)
+        sid_alt_layout.addWidget(self.sid_alt)
+        self.sid_override_initial_alt = QCheckBox("Override")
+        self.sid_override_initial_alt.setToolTip("Override initial altitude from procedure files")
+        sid_alt_layout.addWidget(self.sid_override_initial_alt)
+        sid_alt_layout.addStretch(1)
+        fs.addRow("Initial ALT [ft]:", sid_alt_row)
+        
         self.sid_spd = QSpinBox(); self.sid_spd.setRange(0, 600); self.sid_spd.setValue(210)
         self.sid_spd.setToolTip("Initial speed for SID departures in knots")
-        fs.addRow("Initial SPD [kt]:", self.sid_spd)
+        sid_spd_row = QWidget()
+        sid_spd_layout = QHBoxLayout(sid_spd_row); sid_spd_layout.setContentsMargins(0, 0, 0, 0)
+        sid_spd_layout.addWidget(self.sid_spd)
+        self.sid_override_initial_spd = QCheckBox("Override")
+        self.sid_override_initial_spd.setToolTip("Override initial speed from procedure files")
+        sid_spd_layout.addWidget(self.sid_override_initial_spd)
+        sid_spd_layout.addStretch(1)
+        fs.addRow("Initial SPD [kt]:", sid_spd_row)
         self.sid_sched_btn = QPushButton("Configure schedule…")
         self.sid_sched_btn.clicked.connect(self._configure_sid_schedule)
         fs.addRow(self.sid_sched_btn)
@@ -4808,6 +4876,12 @@ class ProcTab(QWidget):
         self.star_final_alt_fl.setValue(100)
         self.star_final_alt_fl.setToolTip("Target flight level for STAR procedure completion")
         alt_layout.addWidget(self.star_final_alt_fl)
+        self.star_override_initial_alt = QCheckBox("Override Initial")
+        self.star_override_initial_alt.setToolTip("Override initial altitude from procedure files")
+        alt_layout.addWidget(self.star_override_initial_alt)
+        self.star_override_final_alt = QCheckBox("Override Final")
+        self.star_override_final_alt.setToolTip("Override final altitude in procedure files")
+        alt_layout.addWidget(self.star_override_final_alt)
         alt_layout.addStretch(1)
         ft.addRow(alt_row)
         spd_row = QWidget(star_box)
@@ -4828,6 +4902,12 @@ class ProcTab(QWidget):
         self.star_final_spd.setValue(240)
         self.star_final_spd.setToolTip("Target airspeed for STAR procedure completion in knots")
         spd_layout.addWidget(self.star_final_spd)
+        self.star_override_initial_spd = QCheckBox("Override Initial")
+        self.star_override_initial_spd.setToolTip("Override initial speed from procedure files")
+        spd_layout.addWidget(self.star_override_initial_spd)
+        self.star_override_final_spd = QCheckBox("Override Final")
+        self.star_override_final_spd.setToolTip("Override final speed in procedure files")
+        spd_layout.addWidget(self.star_override_final_spd)
         spd_layout.addStretch(1)
         ft.addRow(spd_row)
         self.star_sched_btn = QPushButton("Configure schedule…")
@@ -5737,7 +5817,19 @@ class ProcTab(QWidget):
             f"{1 if gen_mode_schedule else 0} {gen_rate_basis_idx} {gen_final_alt_fl} {gen_final_spd}"
         )
         
+        # Send override settings for generic procedures
+        gen_override_initial_alt = int(self.generic_override_initial_alt.isChecked())
+        gen_override_initial_spd = int(self.generic_override_initial_spd.isChecked())
+        gen_override_final_alt = int(self.generic_override_final_alt.isChecked())
+        gen_override_final_spd = int(self.generic_override_final_spd.isChecked())
+        _emit(f"SATG_PROC_OVERRIDE_GENERIC {gen_override_initial_alt} {gen_override_initial_spd} {gen_override_final_alt} {gen_override_final_spd}")
+        
         _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_alt} {sid_spd}")
+        
+        # Send override settings for SID procedures
+        sid_override_initial_alt = int(self.sid_override_initial_alt.isChecked())
+        sid_override_initial_spd = int(self.sid_override_initial_spd.isChecked())
+        _emit(f"SATG_PROC_OVERRIDE_SID {sid_override_initial_alt} {sid_override_initial_spd}")
         _emit(f"SATG_PROC_USE_DEST {1 if self.dest_enable.isChecked() else 0}")
         active_runways = self._current_sid_runways()
         current_sched_sent = set()
@@ -5852,6 +5944,13 @@ class ProcTab(QWidget):
             f"SATG_PROC_CFG_STAR {star_n} {star_minsep} {star_alt_fl} {star_mach:.2f} "
             f"{1 if star_mode_schedule else 0} {star_rate_basis_idx} {star_final_alt_fl} {star_final_spd}"
         )
+        
+        # Send override settings for STAR procedures
+        star_override_initial_alt = int(self.star_override_initial_alt.isChecked())
+        star_override_initial_spd = int(self.star_override_initial_spd.isChecked())
+        star_override_final_alt = int(self.star_override_final_alt.isChecked())
+        star_override_final_spd = int(self.star_override_final_spd.isChecked())
+        _emit(f"SATG_PROC_OVERRIDE_STAR {star_override_initial_alt} {star_override_initial_spd} {star_override_final_alt} {star_override_final_spd}")
 
         rate_store = self._star_rate_values.setdefault(basis_name, {})
         for key in sorted(self._star_rate_rows.keys()):
