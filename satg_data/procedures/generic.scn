@@ -1,5 +1,9 @@
-00:00:00.00>%0 ADDWPT EHAM
+# Procedure: generic
+# Updated: 2025-10-29 11:53:16
+# Type: Custom Track Procedure
+# Waypoints: 4
+#
+00:00:00.00>%0 ADDWPT EHAM 1000 210
 00:00:00.00>%0 ADDWPT LAK
-00:00:00.00>%0 ADDWPT SSB
-00:00:00.00>%0 ADDWPT GV
-
+00:00:00.00>%0 ADDWPT SSB FL300
+00:00:00.00>%0 ADDWPT GV ,, M0.7

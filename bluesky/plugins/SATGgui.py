@@ -662,7 +662,6 @@ class ProcedureEditorDialog(QDialog):
     
     def __init__(self, proc_name, parent=None):
         super().__init__(parent)
-        print(f"[DEBUG] ProcedureEditorDialog.__init__ called with proc_name: {proc_name}")
         self.proc_name = proc_name
         self.waypoints = []
         self.filepath = ""
@@ -671,11 +670,8 @@ class ProcedureEditorDialog(QDialog):
         self.setModal(True)  # Make it modal
         self.resize(800, 500)
         
-        print(f"[DEBUG] Initializing UI...")
         self._init_ui()
-        print(f"[DEBUG] Loading procedure data...")
         self._load_procedure_data()
-        print(f"[DEBUG] ProcedureEditorDialog initialization complete")
         
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -713,13 +709,10 @@ class ProcedureEditorDialog(QDialog):
         button_layout = QHBoxLayout()
         self.save_btn = QPushButton("Save Changes")
         self.save_btn.clicked.connect(self._save_procedure)
-        self.save_and_load_btn = QPushButton("Save and Load to SATG")
-        self.save_and_load_btn.clicked.connect(self._save_and_load)
         self.close_btn = QPushButton("Close")
         self.close_btn.clicked.connect(self.close)
         
         button_layout.addWidget(self.save_btn)
-        button_layout.addWidget(self.save_and_load_btn)
         button_layout.addStretch()
         button_layout.addWidget(self.close_btn)
         wp_layout.addLayout(button_layout)
@@ -727,63 +720,99 @@ class ProcedureEditorDialog(QDialog):
         layout.addWidget(wp_group)
     
     def _load_procedure_data(self):
-        """Load procedure data using backend command."""
+        """Load procedure data by directly reading the procedure file."""
         try:
-            import tempfile
-            import json
-            import time
+            import re
             
-            print(f"[DEBUG] Loading procedure data for: {self.proc_name}")
+            # Find the procedure file path from loaded files
+            proc_file_path = None
+            for filepath in self.parent()._proc_files:
+                if os.path.splitext(os.path.basename(filepath))[0] == self.proc_name:
+                    proc_file_path = filepath
+                    break
             
-            # Use backend command to load procedure for editing
-            from bluesky import stack
-            stack.stack(f"SATG_PROC_LOAD_FOR_EDIT {self.proc_name}")
+            if not proc_file_path:
+                self.status_label.setText("Error: Procedure file not found in loaded files")
+                return
             
-            # Wait for command to process
-            time.sleep(1.0)
+            if not os.path.exists(proc_file_path):
+                self.status_label.setText(f"Error: Procedure file not found: {proc_file_path}")
+                return
             
-            # Read the exported data
-            temp_dir = tempfile.gettempdir()
-            temp_file = os.path.join(temp_dir, f"satg_proc_edit_{self.proc_name}.json")
+            # Read and parse the procedure file directly
+            with open(proc_file_path, 'r') as f:
+                content = f.read()
             
-            print(f"[DEBUG] Looking for temp file: {temp_file}")
+            # Find ADDWPT commands line by line
+            lines = content.split('\n')
+            addwpt_lines = [line for line in lines if '00:00:00.00>%0 ADDWPT' in line]
             
-            if os.path.exists(temp_file):
-                print(f"[DEBUG] Temp file found, loading data...")
-                with open(temp_file, 'r') as f:
-                    data = json.load(f)
-                
-                self.waypoints = data.get("waypoints", [])
-                self.filepath = data.get("filepath", "")
-                
-                print(f"[DEBUG] Loaded {len(self.waypoints)} waypoints")
-                for i, wp in enumerate(self.waypoints):
-                    print(f"[DEBUG] Waypoint {i+1}: {wp}")
-                
-                # Populate table
-                try:
-                    print(f"[DEBUG] Populating table...")
-                    self._populate_table()
-                    self.status_label.setText(f"Loaded {len(self.waypoints)} waypoints for editing")
-                    print(f"[DEBUG] Table populated successfully")
-                except Exception as table_error:
-                    self.status_label.setText(f"Error populating table: {table_error}")
-                    import traceback
-                    print(f"[DEBUG] Table population error: {traceback.format_exc()}")
-                
-                # Clean up temp file
-                try:
-                    os.remove(temp_file)
-                except:
-                    pass
+            waypoints = []
+            for i, line in enumerate(addwpt_lines):
+                # Split the line and extract components
+                parts = line.strip().split()
+                if len(parts) >= 3 and parts[0] == '00:00:00.00>%0' and parts[1] == 'ADDWPT':
+                    try:
+                        # Check if this is a coordinate-based waypoint (lat/lon numbers) or named waypoint
+                        waypoint_identifier = parts[2]
+                        
+                        # Try to parse as coordinates first
+                        try:
+                            lat = float(waypoint_identifier)
+                            lon = float(parts[3]) if len(parts) > 3 else 0.0
+                            
+                            # This is a coordinate waypoint
+                            waypoint = {
+                                'name': f"WPT{i+1}",  # Generate a name for coordinate waypoints
+                                'lat': lat,
+                                'lon': lon,
+                                'alt': '',
+                                'spd': '',
+                                'is_named': False
+                            }
+                            
+                            # Look for optional altitude and speed in remaining parts
+                            for part in parts[4:]:
+                                if part.startswith('FL') or part.startswith('A'):
+                                    waypoint['alt'] = part
+                                elif part.isdigit():
+                                    waypoint['spd'] = part
+                                    
+                        except (ValueError, IndexError):
+                            # This is a named waypoint (like EHAM, LAK, etc.)
+                            waypoint = {
+                                'name': waypoint_identifier,
+                                'lat': 0.0,  # Named waypoints don't store coordinates in procedure file
+                                'lon': 0.0,
+                                'alt': '',
+                                'spd': '',
+                                'is_named': True
+                            }
+                            
+                            # Look for optional altitude and speed in remaining parts
+                            for part in parts[3:]:
+                                if part.startswith('FL') or part.startswith('A'):
+                                    waypoint['alt'] = part
+                                elif part.isdigit():
+                                    waypoint['spd'] = part
+                        
+                        waypoints.append(waypoint)
+                        
+                    except (ValueError, IndexError) as e:
+                        print(f"Error parsing line '{line}': {e}")
+                        continue
+            
+            if waypoints:
+                self.waypoints = waypoints
+                self.filepath = proc_file_path  # Set the filepath for saving
+                self._populate_table()
+                self.status_label.setText(f"Loaded {len(waypoints)} waypoints from {self.proc_name}")
             else:
-                print(f"[DEBUG] Temp file not found")
-                self.status_label.setText("Error: Could not load procedure data")
+                self.status_label.setText("No waypoints found in procedure file")
                 
         except Exception as e:
-            print(f"[DEBUG] Exception in _load_procedure_data: {e}")
-            import traceback
-            print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
+            self.status_label.setText(f"Error loading procedure: {e}")
+            print(f"Error in _load_procedure_data: {e}")
             self.status_label.setText(f"Error loading procedure: {e}")
     
     def _populate_table(self):
@@ -937,32 +966,32 @@ class ProcedureEditorDialog(QDialog):
             
             self.status_label.setText("Procedure saved successfully!")
             
-            QMessageBox.information(self, "Success", f"Procedure saved: {self.filepath}")
+            # Now perform the unload → reload cycle
+            try:
+                from bluesky import stack
+                
+                # Step 1: Unload the old version
+                stack.stack(f"SATG_PROC_UNLOAD_PROC {self.filepath}")
+                print(f"[DEBUG] Unloaded old version: {self.filepath}")
+                
+                # Step 2: Reload the new version
+                stack.stack(f"SATG_PROC_LOAD_PROC {self.filepath}")
+                print(f"[DEBUG] Reloaded updated version: {self.filepath}")
+                
+                self.status_label.setText("Procedure saved and reloaded successfully!")
+                QMessageBox.information(self, "Success", f"Procedure saved and reloaded: {self.filepath}")
+                
+            except Exception as load_error:
+                # File was saved but reload failed
+                self.status_label.setText(f"Saved but reload failed: {load_error}")
+                QMessageBox.warning(self, "Warning", f"Procedure saved but failed to reload: {load_error}")
             
         except Exception as e:
             error_msg = f"Error saving procedure: {e}"
             self.status_label.setText(error_msg)
             QMessageBox.critical(self, "Error", error_msg)
     
-    def _save_and_load(self):
-        """Save the procedure and load it into SATG."""
-        self._save_procedure()
-        
-        # Load into main GUI
-        if self.parent() and hasattr(self.parent(), 'parent') and hasattr(self.parent().parent(), '_load_created_procedure'):
-            self.parent().parent()._load_created_procedure(self.filepath)
-        
-        # Also use backend command to load
-        try:
-            from bluesky import stack
-            stack.stack(f"SATG_PROC_LOAD_PROC {self.filepath}")
-            
-            self.status_label.setText("Procedure saved and loaded to SATG!")
-            
-        except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Saved but failed to load: {e}")
-
-
+    
 # --- old methods to remove ---
 
     def _refresh_waypoints(self):
@@ -1677,6 +1706,7 @@ class TopStrip(QWidget):
             origin_edit.setPlaceholderText("Origin ICAO")
             origin_edit.setMaxLength(4)
             origin_edit.setMaximumWidth(90)
+            origin_edit.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc;")
             if tab_widget._origins.get(file_path):
                 origin_edit.setText(tab_widget._origins[file_path])
                 # Immediately call the backend to set the ICAO (needed for config loading)
@@ -1696,6 +1726,7 @@ class TopStrip(QWidget):
 
         dest_edit = QLineEdit(container)
         dest_edit.setPlaceholderText("Destinations (comma separated)")
+        dest_edit.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc;")
         existing = tab_widget._destinations.get(file_path, [])
         if existing:
             dest_edit.setText(", ".join(existing))
@@ -5743,6 +5774,7 @@ class ProcTab(QWidget):
                 origin_edit.setPlaceholderText("Origin ICAO")
                 origin_edit.setMaxLength(4)
                 origin_edit.setMaximumWidth(90)
+                origin_edit.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc;")
                 if self._origins.get(p):
                     origin_edit.setText(self._origins[p])
                 origin_edit.editingFinished.connect(lambda path=p, ref=origin_edit: self._update_origin_entry(path, ref.text()))
@@ -5760,6 +5792,7 @@ class ProcTab(QWidget):
 
             dest_edit = QLineEdit(container)
             dest_edit.setPlaceholderText("Destinations (comma separated)")
+            dest_edit.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc;")
             existing = self._destinations.get(p, [])
             if existing:
                 dest_edit.setText(", ".join(existing))
@@ -5873,15 +5906,9 @@ class ProcTab(QWidget):
             # Open the procedure editor dialog with the selected procedure name
             # This follows the same pattern as the "Load for Editing" button
             try:
-                print(f"[DEBUG] Creating ProcedureEditorDialog for: {proc_name}")
                 editor_dialog = ProcedureEditorDialog(proc_name, self)
-                print(f"[DEBUG] Dialog created, showing...")
                 editor_dialog.exec()  # Use exec() for modal dialog instead of show()
-                print(f"[DEBUG] Dialog closed")
             except Exception as e:
-                print(f"[DEBUG] Error creating editor dialog: {e}")
-                import traceback
-                print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
                 QMessageBox.critical(self, "Error", f"Error opening editor: {e}")
 
     def _load_created_procedure(self, filepath):

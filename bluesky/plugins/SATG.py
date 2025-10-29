@@ -3427,18 +3427,25 @@ def SATG_PROC_LOAD_FOR_EDIT(proc_name: str):
             temp_dir = tempfile.gettempdir()
             temp_file = os.path.join(temp_dir, f"satg_proc_edit_{proc_name_clean}.json")
             
+            # Remove any existing temp file to ensure fresh data
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception:
+                pass
+            
             data = {
                 'procedure_name': proc_name_clean,
                 'filepath': filepath,
                 'waypoints': waypoints,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'request_id': f"{proc_name_clean}_{datetime.now().timestamp()}"  # Unique request ID
             }
             
             with open(temp_file, 'w') as f:
                 json.dump(data, f, indent=2)
             
             _echo_ok(f"Loaded {len(waypoints)} waypoints for editing: {proc_name_clean}")
-            _echo_ok(f"Waypoint data exported to: {temp_file}")
             return True, temp_file
         else:
             _echo_err(f"SATG_PROC_LOAD_FOR_EDIT: no waypoints found in procedure file")
