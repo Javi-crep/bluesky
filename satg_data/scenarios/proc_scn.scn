@@ -1,92 +1,72 @@
 # SATG Generated Scenario - Procedural Traffic
-# Created: 2025-10-29 11:54:48
+# Created: 2025-10-29 14:48:27
 # Generator: BlueSky SATG Plugin
 #
 # Scenario Type: Procedural Traffic
-# Aircraft Count: 20
+# Aircraft Count: 15
 # Generic Procedures: Spawn at first waypoint
 # SID Procedures: No
 # STAR Procedures: No
 #
 0:00:00.00>HOLD
 0:00:00.00>ASAS ON
-0:00:00.00>CRE PRC001 A320 52.958802,3.896430 182 10000 300
-0:00:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC001
+0:00:00.00>CRE PRC001 A320 46.288333,47.940000 000
+0:00:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC001
 0:00:00.00>LNAV PRC001 ON
 0:00:00.00>VNAV PRC001 ON
-0:00:00.00>CRE PRC003 A320 52.309000,4.764000 067 210 ,,
-0:00:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC003
-0:00:00.00>LNAV PRC003 ON
-0:00:00.00>VNAV PRC003 ON
-0:03:00.00>CRE PRC002 A320 52.958802,3.896430 182 10000 300
-0:03:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC002
+0:03:00.00>CRE PRC002 A320 46.288333,47.940000 000
+0:03:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC002
 0:03:00.00>LNAV PRC002 ON
 0:03:00.00>VNAV PRC002 ON
-0:03:00.00>CRE PRC004 A320 52.309000,4.764000 067 210 ,,
-0:03:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC004
-0:03:00.00>LNAV PRC004 ON
-0:03:00.00>VNAV PRC004 ON
-0:06:00.00>CRE PRC005 A320 52.958802,3.896430 182 10000 300
-0:06:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC005
-0:06:00.00>LNAV PRC005 ON
-0:06:00.00>VNAV PRC005 ON
-0:06:00.00>CRE PRC006 A320 52.309000,4.764000 067 210 ,,
-0:06:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC006
-0:06:00.00>LNAV PRC006 ON
-0:06:00.00>VNAV PRC006 ON
-0:09:00.00>CRE PRC007 A320 52.309000,4.764000 067 210 ,,
-0:09:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC007
-0:09:00.00>LNAV PRC007 ON
-0:09:00.00>VNAV PRC007 ON
-0:09:00.00>CRE PRC011 A320 52.958802,3.896430 182 10000 300
-0:09:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC011
-0:09:00.00>LNAV PRC011 ON
-0:09:00.00>VNAV PRC011 ON
-0:12:00.00>CRE PRC008 A320 52.309000,4.764000 067 210 ,,
-0:12:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC008
-0:12:00.00>LNAV PRC008 ON
-0:12:00.00>VNAV PRC008 ON
-0:12:00.00>CRE PRC012 A320 52.958802,3.896430 182 10000 300
-0:12:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC012
-0:12:00.00>LNAV PRC012 ON
-0:12:00.00>VNAV PRC012 ON
-0:15:00.00>CRE PRC009 A320 52.309000,4.764000 067 210 ,,
-0:15:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC009
-0:15:00.00>LNAV PRC009 ON
-0:15:00.00>VNAV PRC009 ON
-0:15:00.00>CRE PRC013 A320 52.958802,3.896430 182 10000 300
-0:15:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC013
-0:15:00.00>LNAV PRC013 ON
-0:15:00.00>VNAV PRC013 ON
-0:18:00.00>CRE PRC010 A320 52.309000,4.764000 067 210 ,,
-0:18:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC010
-0:18:00.00>LNAV PRC010 ON
-0:18:00.00>VNAV PRC010 ON
-0:18:00.00>CRE PRC014 A320 52.958802,3.896430 182 10000 300
-0:18:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC014
-0:18:00.00>LNAV PRC014 ON
-0:18:00.00>VNAV PRC014 ON
-0:21:00.00>CRE PRC015 A320 52.309000,4.764000 067 210 ,,
-0:21:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC015
-0:21:00.00>LNAV PRC015 ON
-0:21:00.00>VNAV PRC015 ON
-0:21:00.00>CRE PRC016 A320 52.958802,3.896430 182 10000 300
-0:21:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC016
-0:21:00.00>LNAV PRC016 ON
-0:21:00.00>VNAV PRC016 ON
-0:24:00.00>CRE PRC017 A320 52.309000,4.764000 067 210 ,,
-0:24:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC017
-0:24:00.00>LNAV PRC017 ON
-0:24:00.00>VNAV PRC017 ON
-0:24:00.00>CRE PRC018 A320 52.958802,3.896430 182 10000 300
-0:24:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC018
-0:24:00.00>LNAV PRC018 ON
-0:24:00.00>VNAV PRC018 ON
-0:27:00.00>CRE PRC019 A320 52.958802,3.896430 182 10000 300
-0:27:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/test.scn PRC019
-0:27:00.00>LNAV PRC019 ON
-0:27:00.00>VNAV PRC019 ON
-0:27:00.00>CRE PRC020 A320 52.309000,4.764000 067 210 ,,
-0:27:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC020
-0:27:00.00>LNAV PRC020 ON
-0:27:00.00>VNAV PRC020 ON
+0:06:00.00>CRE PRC003 A320 46.288333,47.940000 000
+0:06:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC003
+0:06:00.00>LNAV PRC003 ON
+0:06:00.00>VNAV PRC003 ON
+0:09:00.00>CRE PRC004 A320 46.288333,47.940000 000
+0:09:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC004
+0:09:00.00>LNAV PRC004 ON
+0:09:00.00>VNAV PRC004 ON
+0:12:00.00>CRE PRC005 A320 46.288333,47.940000 000
+0:12:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC005
+0:12:00.00>LNAV PRC005 ON
+0:12:00.00>VNAV PRC005 ON
+0:15:00.00>CRE PRC006 A320 46.288333,47.940000 000
+0:15:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC006
+0:15:00.00>LNAV PRC006 ON
+0:15:00.00>VNAV PRC006 ON
+0:18:00.00>CRE PRC007 A320 46.288333,47.940000 000
+0:18:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC007
+0:18:00.00>LNAV PRC007 ON
+0:18:00.00>VNAV PRC007 ON
+0:21:00.00>CRE PRC008 A320 46.288333,47.940000 000
+0:21:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC008
+0:21:00.00>LNAV PRC008 ON
+0:21:00.00>VNAV PRC008 ON
+0:24:00.00>CRE PRC009 A320 46.288333,47.940000 000
+0:24:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC009
+0:24:00.00>LNAV PRC009 ON
+0:24:00.00>VNAV PRC009 ON
+0:27:00.00>CRE PRC010 A320 46.288333,47.940000 000
+0:27:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC010
+0:27:00.00>LNAV PRC010 ON
+0:27:00.00>VNAV PRC010 ON
+0:30:00.00>CRE PRC011 A320 46.288333,47.940000 000
+0:30:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC011
+0:30:00.00>LNAV PRC011 ON
+0:30:00.00>VNAV PRC011 ON
+0:33:00.00>CRE PRC012 A320 46.288333,47.940000 000
+0:33:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC012
+0:33:00.00>LNAV PRC012 ON
+0:33:00.00>VNAV PRC012 ON
+0:36:00.00>CRE PRC013 A320 46.288333,47.940000 000
+0:36:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC013
+0:36:00.00>LNAV PRC013 ON
+0:36:00.00>VNAV PRC013 ON
+0:39:00.00>CRE PRC014 A320 46.288333,47.940000 000
+0:39:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC014
+0:39:00.00>LNAV PRC014 ON
+0:39:00.00>VNAV PRC014 ON
+0:42:00.00>CRE PRC015 A320 46.288333,47.940000 000
+0:42:00.00>PCALL C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/procedures/generic.scn PRC015
+0:42:00.00>LNAV PRC015 ON
+0:42:00.00>VNAV PRC015 ON

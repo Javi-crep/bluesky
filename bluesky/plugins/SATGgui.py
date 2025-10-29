@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
     QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup,
     QInputDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView
+    QAbstractItemView, QFrame
 )
 from PyQt6 import sip
 from bluesky import stack
@@ -694,8 +694,20 @@ class ProcedureEditorDialog(QDialog):
         wp_layout = QVBoxLayout(wp_group)
         
         # Table
+        # Create waypoints table with simple built-in drag & drop
         self.waypoints_table = QTableWidget(0, 5)
         self.waypoints_table.setHorizontalHeaderLabels(["Name", "Latitude", "Longitude", "Altitude", "Speed"])
+        self.waypoints_table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
+        self.waypoints_table.setDragDropOverwriteMode(False)
+        self.waypoints_table.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.waypoints_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        
+        # Connect item changed signal to update waypoints data
+        self.waypoints_table.itemChanged.connect(self._on_table_changed)
+        
+        # Use simple drag-drop with model synchronization
+        self._setup_simple_drag_drop()
+        
         header = self.waypoints_table.horizontalHeader()
         header.setStretchLastSection(True)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
@@ -704,6 +716,18 @@ class ProcedureEditorDialog(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         wp_layout.addWidget(self.waypoints_table)
+        
+        # Waypoint management buttons
+        wp_button_layout = QHBoxLayout()
+        self.add_wp_btn = QPushButton("Add Waypoint")
+        self.add_wp_btn.clicked.connect(self._add_waypoint)
+        self.delete_wp_btn = QPushButton("Delete Selected")
+        self.delete_wp_btn.clicked.connect(self._delete_waypoint)
+        
+        wp_button_layout.addWidget(self.add_wp_btn)
+        wp_button_layout.addWidget(self.delete_wp_btn)
+        wp_button_layout.addStretch()
+        wp_layout.addLayout(wp_button_layout)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -772,11 +796,24 @@ class ProcedureEditorDialog(QDialog):
                             }
                             
                             # Look for optional altitude and speed in remaining parts
-                            for part in parts[4:]:
-                                if part.startswith('FL') or part.startswith('A'):
+                            remaining_parts = parts[4:]
+                            for j, part in enumerate(remaining_parts):
+                                # Skip empty or comma-only parts
+                                if not part or part == ',,':
+                                    continue
+                                
+                                # Altitude indicators: FL (flight level), A (altitude), or larger numbers (>=1000 likely altitude)
+                                if part.startswith('FL') or part.startswith('A') or (part.isdigit() and int(part) >= 1000):
                                     waypoint['alt'] = part
-                                elif part.isdigit():
+                                # Speed indicators: M (Mach), smaller numbers (speed), or decimal numbers
+                                elif part.startswith('M') or (part.replace('.', '').isdigit() and float(part) <= 999):
                                     waypoint['spd'] = part
+                                # For ambiguous pure numbers, use position: first number = altitude, second = speed
+                                elif part.isdigit():
+                                    if not waypoint['alt']:  # First number goes to altitude
+                                        waypoint['alt'] = part
+                                    elif not waypoint['spd']:  # Second number goes to speed
+                                        waypoint['spd'] = part
                                     
                         except (ValueError, IndexError):
                             # This is a named waypoint (like EHAM, LAK, etc.)
@@ -790,11 +827,24 @@ class ProcedureEditorDialog(QDialog):
                             }
                             
                             # Look for optional altitude and speed in remaining parts
-                            for part in parts[3:]:
-                                if part.startswith('FL') or part.startswith('A'):
+                            remaining_parts = parts[3:]
+                            for j, part in enumerate(remaining_parts):
+                                # Skip empty or comma-only parts
+                                if not part or part == ',,':
+                                    continue
+                                
+                                # Altitude indicators: FL (flight level), A (altitude), or larger numbers (>1000 likely altitude)
+                                if part.startswith('FL') or part.startswith('A') or (part.isdigit() and int(part) >= 1000):
                                     waypoint['alt'] = part
-                                elif part.isdigit():
+                                # Speed indicators: M (Mach), smaller numbers (speed), or decimal numbers
+                                elif part.startswith('M') or (part.replace('.', '').isdigit() and float(part) <= 999):
                                     waypoint['spd'] = part
+                                # For ambiguous pure numbers, use position: first number = altitude, second = speed
+                                elif part.isdigit():
+                                    if not waypoint['alt']:  # First number goes to altitude
+                                        waypoint['alt'] = part
+                                    elif not waypoint['spd']:  # Second number goes to speed
+                                        waypoint['spd'] = part
                         
                         waypoints.append(waypoint)
                         
@@ -817,10 +867,13 @@ class ProcedureEditorDialog(QDialog):
     
     def _populate_table(self):
         """Populate the table with waypoint data."""
+        # Temporarily disconnect the signal to prevent recursion
+        self.waypoints_table.itemChanged.disconnect()
+        
         self.waypoints_table.setRowCount(len(self.waypoints))
         
         # Define colors for different cell types
-        readonly_color = QColor(240, 240, 240)  # Light gray for read-only cells
+        readonly_color = QColor(255, 230, 230)  # Light red for read-only cells
         editable_color = QColor(255, 255, 255)  # White for editable cells
         
         for i, wp in enumerate(self.waypoints):
@@ -829,7 +882,10 @@ class ProcedureEditorDialog(QDialog):
             alt_item = QTableWidgetItem(wp['alt'])
             spd_item = QTableWidgetItem(wp['spd'])
             
-            if wp.get('is_named', False):
+            # Check waypoint type
+            is_named = wp.get('is_named', None)
+            
+            if is_named is True:
                 # Named waypoint: name is editable, coordinates are read-only
                 lat_item = QTableWidgetItem("Named Waypoint")
                 lon_item = QTableWidgetItem("Named Waypoint")
@@ -843,20 +899,30 @@ class ProcedureEditorDialog(QDialog):
                 # Name is editable with white background
                 name_item.setBackground(editable_color)
                 
-            else:
-                # Coordinate waypoint: coordinates are editable, name is read-only (auto-generated)
+            elif is_named is False:
+                # Coordinate waypoint: coordinates are editable, name shows coordinates
                 lat_item = QTableWidgetItem(f"{wp['lat']:.6f}")
                 lon_item = QTableWidgetItem(f"{wp['lon']:.6f}")
                 
-                # Make name read-only with gray background (auto-generated like WP01)
+                # Make name read-only with gray background (auto-generated)
                 name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 name_item.setBackground(readonly_color)
                 
                 # Coordinates are editable with white background
                 lat_item.setBackground(editable_color)
                 lon_item.setBackground(editable_color)
+                
+            else:
+                # Undefined state (new waypoint): all editable, empty coordinates
+                lat_item = QTableWidgetItem("")  # Empty until user decides
+                lon_item = QTableWidgetItem("")  # Empty until user decides
+                
+                # All fields are editable with white background
+                name_item.setBackground(editable_color)
+                lat_item.setBackground(editable_color)
+                lon_item.setBackground(editable_color)
             
-            # Altitude and speed are always editable for both types
+            # Altitude and speed are always editable for all types
             alt_item.setBackground(editable_color)
             spd_item.setBackground(editable_color)
             
@@ -867,42 +933,128 @@ class ProcedureEditorDialog(QDialog):
             self.waypoints_table.setItem(i, 3, alt_item)
             self.waypoints_table.setItem(i, 4, spd_item)
         
-        # Connect changes to update data
+        # Reconnect the signal after population is complete
         self.waypoints_table.itemChanged.connect(self._on_table_changed)
     
     def _on_table_changed(self, item):
         """Update waypoint data when table items change."""
         row = item.row()
         col = item.column()
+        
         if row < len(self.waypoints):
-            if col == 0:  # Name (only for named waypoints)
-                # Only update name if this is a named waypoint
-                if self.waypoints[row].get('is_named', False):
-                    self.waypoints[row]['name'] = item.text()
-            elif col == 1:  # Latitude (only for coordinate waypoints)
-                # Only update lat if this is a coordinate waypoint
-                if not self.waypoints[row].get('is_named', False):
-                    try:
-                        self.waypoints[row]['lat'] = float(item.text())
-                    except ValueError:
-                        # Reset to original value if invalid
-                        item.setText(f"{self.waypoints[row]['lat']:.6f}")
-            elif col == 2:  # Longitude (only for coordinate waypoints)
-                # Only update lon if this is a coordinate waypoint
-                if not self.waypoints[row].get('is_named', False):
-                    try:
-                        self.waypoints[row]['lon'] = float(item.text())
-                    except ValueError:
-                        # Reset to original value if invalid
-                        item.setText(f"{self.waypoints[row]['lon']:.6f}")
-            elif col == 3:  # Altitude (always editable)
-                self.waypoints[row]['alt'] = item.text()
-            elif col == 4:  # Speed (always editable)
-                self.waypoints[row]['spd'] = item.text()
+            # Temporarily disconnect to prevent recursion during updates
+            self.waypoints_table.itemChanged.disconnect()
+            
+            try:
+                if col == 0:  # Name column
+                    new_name = item.text().strip()
+                    if new_name:
+                        # User entered a name - switch to named waypoint mode
+                        self.waypoints[row]['name'] = new_name
+                        self.waypoints[row]['is_named'] = True
+                        # Update lat/lon cells to show "Named Waypoint"
+                        lat_item = self.waypoints_table.item(row, 1)
+                        lon_item = self.waypoints_table.item(row, 2)
+                        if lat_item:
+                            lat_item.setText("Named Waypoint")
+                            lat_item.setFlags(lat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                            lat_item.setBackground(QColor(255, 230, 230))
+                        if lon_item:
+                            lon_item.setText("Named Waypoint")
+                            lon_item.setFlags(lon_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                            lon_item.setBackground(QColor(255, 230, 230))
+                    else:
+                        # User cleared the name - reset to undefined if it was named
+                        if self.waypoints[row].get('is_named') is True:
+                            self.waypoints[row]['name'] = ''
+                            self.waypoints[row]['is_named'] = None
+                            # Set default coordinates
+                            if self.waypoints[row].get('lat') is None:
+                                self.waypoints[row]['lat'] = 0.0
+                            if self.waypoints[row].get('lon') is None:
+                                self.waypoints[row]['lon'] = 0.0
+                            # Update lat/lon cells to be editable and empty
+                            lat_item = self.waypoints_table.item(row, 1)
+                            lon_item = self.waypoints_table.item(row, 2)
+                            if lat_item:
+                                lat_item.setText("")
+                                lat_item.setFlags(lat_item.flags() | Qt.ItemFlag.ItemIsEditable)
+                                lat_item.setBackground(QColor(255, 255, 255))
+                            if lon_item:
+                                lon_item.setText("")
+                                lon_item.setFlags(lon_item.flags() | Qt.ItemFlag.ItemIsEditable)
+                                lon_item.setBackground(QColor(255, 255, 255))
+                            
+                elif col == 1:  # Latitude column
+                    new_lat = item.text().strip()
+                    if new_lat:
+                        try:
+                            lat_value = float(new_lat)
+                            # User entered coordinates - switch to coordinate mode
+                            self.waypoints[row]['lat'] = lat_value
+                            self.waypoints[row]['is_named'] = False
+                            # Clear name and make it read-only
+                            name_item = self.waypoints_table.item(row, 0)
+                            if name_item:
+                                name_item.setText("")
+                                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                                name_item.setBackground(QColor(255, 230, 230))
+                            # Set default longitude if needed
+                            if self.waypoints[row].get('lon') is None:
+                                self.waypoints[row]['lon'] = 0.0
+                                lon_item = self.waypoints_table.item(row, 2)
+                                if lon_item:
+                                    lon_item.setText("0.000000")
+                        except ValueError:
+                            # Invalid latitude - reset
+                            if self.waypoints[row].get('lat') is not None:
+                                item.setText(f"{self.waypoints[row]['lat']:.6f}")
+                            else:
+                                item.setText("")
+                    
+                elif col == 2:  # Longitude column
+                    new_lon = item.text().strip()
+                    if new_lon:
+                        try:
+                            lon_value = float(new_lon)
+                            # User entered coordinates - switch to coordinate mode
+                            self.waypoints[row]['lon'] = lon_value
+                            self.waypoints[row]['is_named'] = False
+                            # Clear name and make it read-only
+                            name_item = self.waypoints_table.item(row, 0)
+                            if name_item:
+                                name_item.setText("")
+                                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                                name_item.setBackground(QColor(255, 230, 230))
+                            # Set default latitude if needed
+                            if self.waypoints[row].get('lat') is None:
+                                self.waypoints[row]['lat'] = 0.0
+                                lat_item = self.waypoints_table.item(row, 1)
+                                if lat_item:
+                                    lat_item.setText("0.000000")
+                        except ValueError:
+                            # Invalid longitude - reset
+                            if self.waypoints[row].get('lon') is not None:
+                                item.setText(f"{self.waypoints[row]['lon']:.6f}")
+                            else:
+                                item.setText("")
+                        
+                elif col == 3:  # Altitude column (always editable)
+                    self.waypoints[row]['alt'] = item.text().strip()
+                    
+                elif col == 4:  # Speed column (always editable)
+                    self.waypoints[row]['spd'] = item.text().strip()
+                    
+            finally:
+                # Always reconnect the signal
+                self.waypoints_table.itemChanged.connect(self._on_table_changed)
     
     def _save_procedure(self):
         """Save the procedure file with updated constraints."""
         try:
+            # Update waypoints from table to capture any reordering
+            self._update_waypoints_from_table()
+            
             from datetime import datetime
             
             if not self.filepath:
@@ -978,6 +1130,36 @@ class ProcedureEditorDialog(QDialog):
                 stack.stack(f"SATG_PROC_LOAD_PROC {self.filepath}")
                 print(f"[DEBUG] Reloaded updated version: {self.filepath}")
                 
+                # Update the procedure widget's waypoint information with new sequence
+                if self.parent() and hasattr(self.parent(), '_proc_widgets'):
+                    if self.filepath in self.parent()._proc_widgets:
+                        # Re-extract waypoints from the updated file
+                        if hasattr(self.parent(), '_proc_fix_sequence'):
+                            fixes = self.parent()._proc_fix_sequence(self.filepath)
+                            initial_fix = fixes[0] if fixes else ""
+                            final_fix = fixes[-1] if fixes else ""
+                            
+                            # Update the stored waypoint information
+                            self.parent()._proc_widgets[self.filepath]["initial_fix"] = initial_fix
+                            self.parent()._proc_widgets[self.filepath]["final_fix"] = final_fix
+                            print(f"[DEBUG] Updated waypoints: initial={initial_fix}, final={final_fix}")
+                
+                # Update batch options using the same pattern as _add_proc and _rm_proc
+                if self.parent():
+                    if hasattr(self.parent(), '_refresh_sid_runway_rows'):
+                        self.parent()._refresh_sid_runway_rows()
+                    if hasattr(self.parent(), '_refresh_star_rate_rows'):
+                        self.parent()._refresh_star_rate_rows()
+                    if hasattr(self.parent(), '_refresh_generic_rate_rows'):
+                        self.parent()._refresh_generic_rate_rows()
+                    if hasattr(self.parent(), '_sync_destination_edits'):
+                        self.parent()._sync_destination_edits()
+                    if hasattr(self.parent(), '_sync_origin_edits'):
+                        self.parent()._sync_origin_edits()
+                    if hasattr(self.parent(), '_update_dest_state'):
+                        self.parent()._update_dest_state()
+                    print(f"[DEBUG] Updated batch options after procedure reload")
+                
                 self.status_label.setText("Procedure saved and reloaded successfully!")
                 QMessageBox.information(self, "Success", f"Procedure saved and reloaded: {self.filepath}")
                 
@@ -990,6 +1172,569 @@ class ProcedureEditorDialog(QDialog):
             error_msg = f"Error saving procedure: {e}"
             self.status_label.setText(error_msg)
             QMessageBox.critical(self, "Error", error_msg)
+    
+    def _add_waypoint(self):
+        """Add a new waypoint to the procedure."""
+        # Create new waypoint dialog
+        from PyQt6.QtWidgets import QInputDialog
+        
+        # Ask user for waypoint type
+        items = ["Named Waypoint (e.g., EHAM, LAK)", "Coordinate Waypoint (lat/lon)"]
+        item, ok = QInputDialog.getItem(self, "Add Waypoint", "Choose waypoint type:", items, 0, False)
+        
+        if not ok:
+            return
+            
+        if "Named" in item:
+            # Named waypoint
+            name, ok = QInputDialog.getText(self, "Add Named Waypoint", "Enter waypoint name (e.g., EHAM, LAK):")
+            if ok and name.strip():
+                new_waypoint = {
+                    'name': name.strip().upper(),
+                    'lat': 0.0,
+                    'lon': 0.0,
+                    'alt': '',
+                    'spd': '',
+                    'is_named': True
+                }
+                self.waypoints.append(new_waypoint)
+                self._populate_table()
+                self.status_label.setText(f"Added named waypoint: {name.strip().upper()}")
+        else:
+            # Coordinate waypoint
+            lat, ok = QInputDialog.getDouble(self, "Add Coordinate Waypoint", "Enter latitude:", 0.0, -90.0, 90.0, 6)
+            if not ok:
+                return
+            lon, ok = QInputDialog.getDouble(self, "Add Coordinate Waypoint", "Enter longitude:", 0.0, -180.0, 180.0, 6)
+            if not ok:
+                return
+                
+            new_waypoint = {
+                'name': f"WPT{len(self.waypoints)+1}",
+                'lat': lat,
+                'lon': lon,
+                'alt': '',
+                'spd': '',
+                'is_named': False
+            }
+            self.waypoints.append(new_waypoint)
+            self._populate_table()
+            self.status_label.setText(f"Added coordinate waypoint: {lat:.6f}, {lon:.6f}")
+    
+    def _delete_waypoint(self):
+        """Delete the selected waypoint from the procedure."""
+        current_row = self.waypoints_table.currentRow()
+        if current_row < 0:
+            QMessageBox.information(self, "No Selection", "Please select a waypoint to delete.")
+            return
+            
+        if current_row >= len(self.waypoints):
+            return
+            
+        # Confirm deletion
+        waypoint = self.waypoints[current_row]
+        waypoint_name = waypoint['name']
+        
+        reply = QMessageBox.question(self, "Confirm Deletion", 
+                                   f"Delete waypoint '{waypoint_name}'?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Remove from waypoints list
+            del self.waypoints[current_row]
+            
+            # Refresh table
+            self._populate_table()
+            
+            self.status_label.setText(f"Deleted waypoint: {waypoint_name}")
+    
+    def _update_waypoints_from_table(self):
+        """Update waypoints list from current table order (for drag-drop support)."""
+        try:
+            new_waypoints = []
+            
+            for row in range(self.waypoints_table.rowCount()):
+                # Get data from table items
+                name_item = self.waypoints_table.item(row, 0)
+                lat_item = self.waypoints_table.item(row, 1)
+                lon_item = self.waypoints_table.item(row, 2)
+                alt_item = self.waypoints_table.item(row, 3)
+                spd_item = self.waypoints_table.item(row, 4)
+                
+                if name_item is None:
+                    continue
+                    
+                # Determine if this is a named waypoint based on lat/lon display
+                is_named = lat_item and lat_item.text() == "Named Waypoint"
+                
+                try:
+                    lat_val = 0.0 if is_named else (float(lat_item.text()) if lat_item and lat_item.text() != "Named Waypoint" else 0.0)
+                    lon_val = 0.0 if is_named else (float(lon_item.text()) if lon_item and lon_item.text() != "Named Waypoint" else 0.0)
+                except (ValueError, AttributeError):
+                    lat_val = 0.0
+                    lon_val = 0.0
+                
+                waypoint = {
+                    'name': name_item.text() if name_item else '',
+                    'lat': lat_val,
+                    'lon': lon_val,
+                    'alt': alt_item.text() if alt_item else '',
+                    'spd': spd_item.text() if spd_item else '',
+                    'is_named': is_named
+                }
+                new_waypoints.append(waypoint)
+            
+            self.waypoints = new_waypoints
+        except Exception as e:
+            print(f"Error updating waypoints from table: {e}")
+    
+    def _setup_simple_drag_drop(self):
+        """Setup simple drag and drop using Qt's built-in functionality."""
+        # Use a simple timer-based approach to detect changes
+        from PyQt6.QtCore import QTimer
+        self._sync_timer = QTimer()
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.timeout.connect(self._sync_waypoints_after_drag)
+        
+        # Monitor selection changes which happen after drag operations
+        self.waypoints_table.itemSelectionChanged.connect(self._schedule_sync)
+        
+        # Override drop event to only allow drops between rows
+        self._setup_between_rows_only_drop()
+    
+    def _setup_between_rows_only_drop(self):
+        """Setup drop event to only allow drops between rows, not on rows."""
+        original_drop_event = self.waypoints_table.dropEvent
+        original_drag_move_event = self.waypoints_table.dragMoveEvent
+        
+        def custom_drag_move_event(event):
+            """Control what areas accept drag operations."""
+            # Get drag position
+            drag_pos = event.position() if hasattr(event, 'position') else event.pos()
+            drag_point = drag_pos.toPoint()
+            
+            # Check if we're dragging over an item
+            item_at_drag = self.waypoints_table.itemAt(drag_point)
+            
+            if item_at_drag:
+                # We're dragging over a row - check if it's in a valid zone
+                row = self.waypoints_table.row(item_at_drag)
+                item_rect = self.waypoints_table.visualItemRect(item_at_drag)
+                
+                # Calculate relative position within the row
+                relative_y = drag_point.y() - item_rect.top()
+                row_height = item_rect.height()
+                
+                # Define stricter "between rows" zones (top and bottom 20% of each row)
+                between_zone_size = row_height * 0.2
+                
+                # Allow drag only if in the between-rows zones
+                if relative_y <= between_zone_size or relative_y >= (row_height - between_zone_size):
+                    # In between-rows zone - accept the drag
+                    event.accept()
+                else:
+                    # In middle of row - reject the drag
+                    event.ignore()
+                    return
+            else:
+                # Not dragging over any item - accept it
+                event.accept()
+            
+            # Call original if we accepted
+            if event.isAccepted():
+                original_drag_move_event(event)
+        
+        def custom_drop_event(event):
+            """Handle drop events with strict between-rows validation."""
+            # Get drop position
+            drop_pos = event.position() if hasattr(event, 'position') else event.pos()
+            drop_point = drop_pos.toPoint()
+            
+            # Double-check the drop position
+            item_at_drop = self.waypoints_table.itemAt(drop_point)
+            
+            if item_at_drop:
+                # We're dropping on a row - validate the position again
+                row = self.waypoints_table.row(item_at_drop)
+                item_rect = self.waypoints_table.visualItemRect(item_at_drop)
+                
+                # Calculate relative position within the row
+                relative_y = drop_point.y() - item_rect.top()
+                row_height = item_rect.height()
+                
+                # Use same strict zones as drag move
+                between_zone_size = row_height * 0.2
+                
+                # Only allow drop in between-rows zones
+                if relative_y <= between_zone_size or relative_y >= (row_height - between_zone_size):
+                    # Store the original state before drop
+                    original_row_count = self.waypoints_table.rowCount()
+                    
+                    # Allow the drop
+                    original_drop_event(event)
+                    
+                    # Check if a row was deleted (which shouldn't happen)
+                    if self.waypoints_table.rowCount() < original_row_count:
+                        print("Warning: Row deletion detected during drop - this shouldn't happen")
+                        # Could restore from backup here if needed
+                else:
+                    # Reject the drop completely
+                    event.ignore()
+                    # Show visual feedback that drop was rejected
+                    self.status_label.setText("Drop rejected - can only drop between rows")
+                    return
+            else:
+                # Not dropping on any item - allow it
+                original_drop_event(event)
+        
+        # Replace both events
+        self.waypoints_table.dragMoveEvent = custom_drag_move_event
+        self.waypoints_table.dropEvent = custom_drop_event
+    
+    def _schedule_sync(self):
+        """Schedule a sync operation after a short delay."""
+        self._sync_timer.start(100)  # 100ms delay
+    
+    def _sync_waypoints_after_drag(self):
+        """Synchronize waypoints list with current table order after drag operations."""
+        try:
+            # Only sync if table has same number of rows as our waypoints
+            if self.waypoints_table.rowCount() != len(self.waypoints):
+                return
+                
+            # Get current table order by reading waypoint names
+            new_waypoints = []
+            for row in range(self.waypoints_table.rowCount()):
+                name_item = self.waypoints_table.item(row, 0)
+                if name_item:
+                    waypoint_name = name_item.text()
+                    # Find this waypoint in our original list
+                    for wp in self.waypoints:
+                        if wp['name'] == waypoint_name:
+                            new_waypoints.append(wp.copy())
+                            break
+            
+            # Update our waypoints list if the order changed
+            if len(new_waypoints) == len(self.waypoints):
+                old_order = [wp['name'] for wp in self.waypoints]
+                new_order = [wp['name'] for wp in new_waypoints]
+                if old_order != new_order:
+                    self.waypoints = new_waypoints
+                    self.status_label.setText("Waypoints reordered")
+                    
+        except Exception as e:
+            print(f"Error syncing waypoints after drag: {e}")
+
+    def _setup_custom_drag_drop(self):
+        """Setup custom drag and drop behavior with visual feedback."""
+        # Disable the default drag-drop to implement our own
+        self.waypoints_table.setDragDropMode(QTableWidget.DragDropMode.NoDragDrop)
+        
+        # Enable row selection and store drag state
+        self.waypoints_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._drag_start_row = -1
+        self._drag_active = False
+        self._drag_highlight_widget = None
+        self._drop_indicator = None
+        self._drag_widget = None
+        
+        # Create drop indicator line
+        self._create_drop_indicator()
+        
+        # Override mouse events for custom drag-drop
+        original_mouse_press = self.waypoints_table.mousePressEvent
+        original_mouse_move = self.waypoints_table.mouseMoveEvent
+        original_mouse_release = self.waypoints_table.mouseReleaseEvent
+        original_paint = self.waypoints_table.paintEvent
+        
+        def custom_mouse_press(event):
+            if event.button() == Qt.MouseButton.LeftButton:
+                item = self.waypoints_table.itemAt(event.pos())
+                if item:
+                    self._drag_start_row = self.waypoints_table.row(item)
+                    self._drag_active = False
+                    # Store initial position for drag threshold
+                    self._drag_start_pos = event.pos()
+            original_mouse_press(event)
+        
+        def custom_mouse_move(event):
+            if (event.buttons() & Qt.MouseButton.LeftButton and 
+                self._drag_start_row >= 0):
+                
+                # Check if we've moved enough to start dragging
+                if not self._drag_active and (event.pos() - self._drag_start_pos).manhattanLength() > 10:
+                    self._drag_active = True
+                    self._start_drag_visual_feedback()
+                
+                if self._drag_active:
+                    # Clear any existing row highlights that Qt might have added
+                    self._clear_stray_highlights()
+                    # Update visual feedback during drag
+                    self._update_drag_visual_feedback(event.pos())
+                    
+            original_mouse_move(event)
+        
+        def custom_mouse_release(event):
+            if self._drag_active and self._drag_start_row >= 0:
+                # Calculate drop position between rows
+                drop_row = self._calculate_drop_position(event.pos())
+                
+                if drop_row >= 0 and drop_row != self._drag_start_row and drop_row != self._drag_start_row + 1:
+                    # Perform the move
+                    self._move_waypoint_to_position(self._drag_start_row, drop_row)
+                
+                # Clean up visual feedback
+                self._end_drag_visual_feedback()
+                
+                self._drag_active = False
+                self._drag_start_row = -1
+                
+            original_mouse_release(event)
+        
+        def custom_paint(event):
+            original_paint(event)
+            # Custom painting for drag effects is handled by separate widgets
+        
+        self.waypoints_table.mousePressEvent = custom_mouse_press
+        self.waypoints_table.mouseMoveEvent = custom_mouse_move
+        self.waypoints_table.mouseReleaseEvent = custom_mouse_release
+        self.waypoints_table.paintEvent = custom_paint
+    
+    def _create_drop_indicator(self):
+        """Create a visual indicator for drop position."""
+        self._drop_indicator = QFrame(self.waypoints_table)
+        self._drop_indicator.setFrameStyle(QFrame.Shape.HLine)
+        self._drop_indicator.setStyleSheet("""
+            QFrame {
+                background-color: #007ACC;
+                border: 2px solid #007ACC;
+                border-radius: 2px;
+            }
+        """)
+        self._drop_indicator.setFixedHeight(4)
+        self._drop_indicator.hide()
+    
+    def _start_drag_visual_feedback(self):
+        """Start visual feedback for dragging."""
+        if self._drag_start_row >= 0:
+            # Highlight the source row being dragged
+            self.waypoints_table.selectRow(self._drag_start_row)
+            
+            # Make the source row more prominent with semi-transparent overlay
+            for col in range(self.waypoints_table.columnCount()):
+                item = self.waypoints_table.item(self._drag_start_row, col)
+                if item:
+                    # Store original background for restoration
+                    if not hasattr(item, '_original_background'):
+                        item._original_background = item.background()
+                    if not hasattr(item, '_original_font'):
+                        item._original_font = item.font()
+                    
+                    # Apply drag styling
+                    item.setBackground(QColor(0, 122, 204, 150))  # More visible blue
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+            
+            # Create floating drag widget
+            self._create_drag_widget()
+    
+    def _create_drag_widget(self):
+        """Create a floating widget that follows the mouse during drag."""
+        if self._drag_start_row >= 0:
+            # Get the waypoint name being dragged
+            name_item = self.waypoints_table.item(self._drag_start_row, 0)
+            waypoint_name = name_item.text() if name_item else "Waypoint"
+            
+            # Create floating label
+            self._drag_widget = QLabel(f"📍 {waypoint_name}", self.waypoints_table.parent())
+            self._drag_widget.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(0, 122, 204, 200);
+                    color: white;
+                    border: 2px solid #005a9e;
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                    font-weight: bold;
+                    font-size: 12px;
+                }
+            """)
+            self._drag_widget.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+            self._drag_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self._drag_widget.show()
+    
+    def _update_drag_visual_feedback(self, mouse_pos):
+        """Update visual feedback during drag operation."""
+        # Calculate and show drop position
+        drop_row = self._calculate_drop_position(mouse_pos)
+        self._show_drop_indicator(drop_row)
+        
+        # Update cursor
+        self.waypoints_table.setCursor(Qt.CursorShape.ClosedHandCursor)
+        
+        # Update floating drag widget position
+        if hasattr(self, '_drag_widget') and self._drag_widget:
+            global_pos = self.waypoints_table.mapToGlobal(mouse_pos)
+            # Offset so it doesn't block the view
+            self._drag_widget.move(global_pos.x() + 15, global_pos.y() - 10)
+    
+    def _show_drop_indicator(self, drop_row):
+        """Show drop indicator at the specified position."""
+        if drop_row < 0:
+            self._drop_indicator.hide()
+            return
+        
+        # Calculate position for drop indicator
+        table_rect = self.waypoints_table.rect()
+        
+        if drop_row == 0:
+            # Before first row
+            if self.waypoints_table.rowCount() > 0:
+                first_item = self.waypoints_table.item(0, 0)
+                if first_item:
+                    item_rect = self.waypoints_table.visualItemRect(first_item)
+                    y_pos = item_rect.top() - 2
+                else:
+                    y_pos = 5
+            else:
+                y_pos = 5
+        elif drop_row >= self.waypoints_table.rowCount():
+            # After last row
+            if self.waypoints_table.rowCount() > 0:
+                last_item = self.waypoints_table.item(self.waypoints_table.rowCount() - 1, 0)
+                if last_item:
+                    item_rect = self.waypoints_table.visualItemRect(last_item)
+                    y_pos = item_rect.bottom() + 2
+                else:
+                    y_pos = table_rect.height() - 10
+            else:
+                y_pos = table_rect.height() - 10
+        else:
+            # Between rows - show line above the target row
+            target_item = self.waypoints_table.item(drop_row, 0)
+            if target_item:
+                target_rect = self.waypoints_table.visualItemRect(target_item)
+                y_pos = target_rect.top() - 2
+            else:
+                y_pos = drop_row * 30  # Fallback estimate
+        
+        # Position and show the drop indicator with enhanced styling
+        self._drop_indicator.setGeometry(5, y_pos, table_rect.width() - 10, 4)
+        
+        # Update styling to make it more prominent during drag
+        self._drop_indicator.setStyleSheet("""
+            QFrame {
+                background-color: #FF6B35;
+                border: 2px solid #FF4500;
+                border-radius: 2px;
+            }
+        """)
+        
+        self._drop_indicator.show()
+        self._drop_indicator.raise_()
+    
+    def _end_drag_visual_feedback(self):
+        """Clean up visual feedback after drag ends."""
+        # Hide drop indicator
+        self._drop_indicator.hide()
+        
+        # Reset cursor
+        self.waypoints_table.setCursor(Qt.CursorShape.ArrowCursor)
+        
+        # Clean up floating drag widget
+        if hasattr(self, '_drag_widget') and self._drag_widget:
+            self._drag_widget.hide()
+            self._drag_widget.deleteLater()
+            self._drag_widget = None
+        
+        # Clear ALL selections and highlights
+        self.waypoints_table.clearSelection()
+        
+        # Reset ALL row styling to ensure no permanent highlights
+        for row in range(self.waypoints_table.rowCount()):
+            for col in range(self.waypoints_table.columnCount()):
+                item = self.waypoints_table.item(row, col)
+                if item:
+                    # Restore original background and font
+                    if hasattr(item, '_original_background'):
+                        item.setBackground(item._original_background)
+                        delattr(item, '_original_background')
+                    else:
+                        item.setBackground(QColor())  # Reset to default
+                    
+                    if hasattr(item, '_original_font'):
+                        item.setFont(item._original_font)
+                        delattr(item, '_original_font')
+                    else:
+                        font = item.font()
+                        font.setBold(False)
+                        item.setFont(font)
+        
+        # Force table to repaint to clear any Qt-added highlights
+        self.waypoints_table.viewport().update()
+    
+    def _clear_stray_highlights(self):
+        """Clear any unwanted row highlights that Qt might add during drag operations."""
+        # Clear selection to prevent Qt's default highlighting
+        self.waypoints_table.clearSelection()
+        
+        # Ensure only our intended drag row stays highlighted
+        if self._drag_start_row >= 0:
+            self.waypoints_table.selectRow(self._drag_start_row)
+    
+    def _calculate_drop_position(self, pos):
+        """Calculate the position between rows where the item should be inserted."""
+        # Find which row the mouse is closest to
+        total_rows = self.waypoints_table.rowCount()
+        
+        if total_rows == 0:
+            return 0
+        
+        # Get the viewport position (scroll offset adjusted)
+        viewport_pos = self.waypoints_table.viewport().mapFromParent(pos)
+        
+        # Check each row to find the closest insertion point
+        for row in range(total_rows):
+            curr_item = self.waypoints_table.item(row, 0)
+            
+            if curr_item:
+                curr_rect = self.waypoints_table.visualItemRect(curr_item)
+                
+                # If mouse is above the center of current row, insert before it
+                if viewport_pos.y() < curr_rect.center().y():
+                    return row
+        
+        # If we get here, mouse is below all rows - insert at end
+        return total_rows
+    
+    def _move_waypoint_to_position(self, source_row, target_row):
+        """Move waypoint from source_row to target_row position."""
+        if source_row < 0 or source_row >= len(self.waypoints):
+            return
+        if target_row < 0 or target_row > len(self.waypoints):
+            return
+        
+        # Store the waypoint being moved
+        moved_waypoint = self.waypoints[source_row].copy()
+        
+        # Remove from source
+        self.waypoints.pop(source_row)
+        
+        # Adjust target if needed (if source was before target)
+        if source_row < target_row:
+            target_row -= 1
+        
+        # Insert at target
+        self.waypoints.insert(target_row, moved_waypoint)
+        
+        # Refresh table
+        self._populate_table()
+        
+        # Select the moved row
+        self.waypoints_table.selectRow(target_row)
+        
+        # Update status
+        self.status_label.setText(f"Moved '{moved_waypoint['name']}' to position {target_row + 1}")
     
     
 # --- old methods to remove ---
@@ -1097,42 +1842,35 @@ class ProcedureEditorDialog(QDialog):
                 self.waypoints[row]['spd'] = item.text()
     
     def _add_waypoint(self):
-        """Add a new waypoint manually."""
-        # Simple dialog to add waypoint
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Add Waypoint")
-        layout = QFormLayout(dialog)
+        """Add a new empty waypoint row for user input."""
+        # Create a new empty waypoint in undefined state
+        new_waypoint = {
+            'name': '',       # Empty name
+            'lat': None,      # No coordinates set yet
+            'lon': None,      # No coordinates set yet
+            'alt': '',        # User can enter altitude (optional)
+            'spd': '',        # User can enter speed (optional)
+            'is_named': None  # Undefined state - user will determine by first input
+        }
         
-        name_edit = QLineEdit(f"{self.polygon_name}WP{len(self.waypoints)+1:02d}")
-        lat_edit = QLineEdit()
-        lon_edit = QLineEdit()
-        alt_edit = QLineEdit()
-        spd_edit = QLineEdit()
+        # Add to waypoints list
+        self.waypoints.append(new_waypoint)
         
-        layout.addRow("Name:", name_edit)
-        layout.addRow("Latitude:", lat_edit)
-        layout.addRow("Longitude:", lon_edit)
-        layout.addRow("Altitude:", alt_edit)
-        layout.addRow("Speed:", spd_edit)
+        # Refresh table to show new row
+        self._populate_table()
         
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addRow(buttons)
+        # Select the new row and focus on the name field for editing
+        new_row_index = len(self.waypoints) - 1
+        self.waypoints_table.selectRow(new_row_index)
         
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            try:
-                waypoint = {
-                    'name': name_edit.text().strip(),
-                    'lat': float(lat_edit.text()),
-                    'lon': float(lon_edit.text()),
-                    'alt': alt_edit.text().strip(),
-                    'spd': spd_edit.text().strip()
-                }
-                self.waypoints.append(waypoint)
-                self._refresh_table_display()
-            except ValueError:
-                QMessageBox.warning(self, "Warning", "Invalid latitude or longitude value.")
+        # Focus on the name cell for immediate editing
+        name_item = self.waypoints_table.item(new_row_index, 0)
+        if name_item:
+            self.waypoints_table.setCurrentItem(name_item)
+            self.waypoints_table.editItem(name_item)
+        
+        # Update status
+        self.status_label.setText(f"Added new waypoint row {new_row_index + 1}. Enter name or coordinates.")
     
     def _remove_waypoint(self):
         """Remove selected waypoint."""
@@ -4819,27 +5557,24 @@ class ProcTab(QWidget):
         self.lst_proc = QListWidget()
         self.lst_proc.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         proc_btns = QWidget(); hbp = QHBoxLayout(proc_btns); hbp.setContentsMargins(0,0,0,0)
+        
+        # File management buttons (left side)
         btn_proc_add = QPushButton("Add procedure files…")
         btn_proc_rm  = QPushButton("Remove selected")
         btn_proc_clr = QPushButton("Clear all")
-        hbp.addWidget(btn_proc_add); hbp.addWidget(btn_proc_rm); hbp.addWidget(btn_proc_clr); hbp.addStretch(1)
+        hbp.addWidget(btn_proc_add); hbp.addWidget(btn_proc_rm); hbp.addWidget(btn_proc_clr)
+        
+        # Add stretch to push the procedure action buttons to the right
+        hbp.addStretch(1)
+        
+        # Procedure action buttons (right side)
+        create_proc_btn = QPushButton("Create New Procedure...")
+        edit_proc_btn = QPushButton("Edit Procedure...")
+        hbp.addWidget(create_proc_btn); hbp.addWidget(edit_proc_btn)
+        
         f1.addRow(QLabel("Procedure scenario files (.scn):"))
         f1.addRow(self.lst_proc)
         f1.addRow(proc_btns)
-
-        # Create Procedure buttons
-        proc_action_btns = QWidget()
-        proc_action_layout = QHBoxLayout(proc_action_btns)
-        proc_action_layout.setContentsMargins(0, 0, 0, 0)
-        
-        create_proc_btn = QPushButton("Create New Procedure...")
-        edit_proc_btn = QPushButton("Edit Procedure...")
-        
-        proc_action_layout.addWidget(create_proc_btn)
-        proc_action_layout.addWidget(edit_proc_btn)
-        proc_action_layout.addStretch(1)
-        
-        f1.addRow(proc_action_btns)
 
         # Set the form widget as the scroll area's widget
         files_scroll.setWidget(files_form_widget)
@@ -5853,6 +6588,7 @@ class ProcTab(QWidget):
             self.lst_proc.takeItem(row)
         self._refresh_sid_runway_rows()
         self._refresh_star_rate_rows()
+        self._refresh_generic_rate_rows()  # Add missing generic rate refresh
         self._sync_destination_edits()
         self._sync_origin_edits()
         self._update_dest_state()
@@ -5871,6 +6607,13 @@ class ProcTab(QWidget):
         self._star_rate_groups = {}
         if hasattr(self, "star_rate_basis"):
             self._star_basis_index = self.star_rate_basis.currentIndex()
+        self._clear_generic_rate_rows()  # Add missing generic rate clearing
+        self._generic_schedule_data.clear()
+        self._last_generic_sched_sent.clear()
+        self._generic_rate_values = {"initial": {}, "final": {}}
+        self._generic_rate_groups = {}
+        if hasattr(self, "generic_rate_basis"):
+            self._generic_basis_index = self.generic_rate_basis.currentIndex()
         self._destinations.clear()
         self._last_dest_sent.clear()
 

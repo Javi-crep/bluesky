@@ -1536,15 +1536,27 @@ def _proc_is_coordinate_based(proc_path: str) -> bool:
 
 def _proc_unified_first_waypoint(proc_path: str, fix_db: Optional[Dict[str, Tuple[float, float]]] = None) -> Optional[Tuple[float, float]]:
     """Get first waypoint coordinates, handling both coordinate-based and waypoint-based procedures."""
-    # Try coordinate-based first
-    coord = _proc_first_two_coordinates(proc_path)[0]
-    if coord:
-        return coord
+    # Always get the FIRST waypoint from the procedure file, regardless of format
+    try:
+        with open(proc_path, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except Exception:
+        return None
     
-    # Fall back to waypoint-based resolution
-    fix_names = _proc_fix_sequence(proc_path)
-    if fix_names:
-        return _resolve_fix_coord(fix_names[0], fix_db, proc_path=proc_path)
+    lines = txt.split('\n')
+    for line in lines:
+        if 'ADDWPT' in line:
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[1] == 'ADDWPT':
+                # Check if this is a coordinate-based waypoint
+                try:
+                    lat = float(parts[2])
+                    lon = float(parts[3]) if len(parts) >= 4 else 0.0
+                    return (lat, lon)
+                except (ValueError, IndexError):
+                    # This is a named waypoint - resolve it
+                    waypoint_name = parts[2]
+                    return _resolve_fix_coord(waypoint_name, fix_db, proc_path=proc_path)
     
     return None
 
