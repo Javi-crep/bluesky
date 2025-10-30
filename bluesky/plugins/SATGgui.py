@@ -1144,20 +1144,24 @@ class ProcedureEditorDialog(QDialog):
                             self.parent()._proc_widgets[self.filepath]["final_fix"] = final_fix
                             print(f"[DEBUG] Updated waypoints: initial={initial_fix}, final={final_fix}")
                 
-                # Update batch options using the same pattern as _add_proc and _rm_proc
+                # Update batch options using comprehensive refresh
                 if self.parent():
-                    if hasattr(self.parent(), '_refresh_sid_runway_rows'):
-                        self.parent()._refresh_sid_runway_rows()
-                    if hasattr(self.parent(), '_refresh_star_rate_rows'):
-                        self.parent()._refresh_star_rate_rows()
-                    if hasattr(self.parent(), '_refresh_generic_rate_rows'):
-                        self.parent()._refresh_generic_rate_rows()
-                    if hasattr(self.parent(), '_sync_destination_edits'):
-                        self.parent()._sync_destination_edits()
-                    if hasattr(self.parent(), '_sync_origin_edits'):
-                        self.parent()._sync_origin_edits()
-                    if hasattr(self.parent(), '_update_dest_state'):
-                        self.parent()._update_dest_state()
+                    if hasattr(self.parent(), '_refresh_all_batch_options'):
+                        self.parent()._refresh_all_batch_options()
+                    else:
+                        # Fallback to individual refresh functions
+                        if hasattr(self.parent(), '_refresh_sid_runway_rows'):
+                            self.parent()._refresh_sid_runway_rows()
+                        if hasattr(self.parent(), '_refresh_star_rate_rows'):
+                            self.parent()._refresh_star_rate_rows()
+                        if hasattr(self.parent(), '_refresh_generic_rate_rows'):
+                            self.parent()._refresh_generic_rate_rows()
+                        if hasattr(self.parent(), '_sync_destination_edits'):
+                            self.parent()._sync_destination_edits()
+                        if hasattr(self.parent(), '_sync_origin_edits'):
+                            self.parent()._sync_origin_edits()
+                        if hasattr(self.parent(), '_update_dest_state'):
+                            self.parent()._update_dest_state()
                     print(f"[DEBUG] Updated batch options after procedure reload")
                 
                 self.status_label.setText("Procedure saved and reloaded successfully!")
@@ -5713,8 +5717,8 @@ class ProcTab(QWidget):
         sid_alt_row = QWidget()
         sid_alt_layout = QHBoxLayout(sid_alt_row); sid_alt_layout.setContentsMargins(0, 0, 0, 0)
         sid_alt_layout.addWidget(self.sid_alt)
-        self.sid_override_initial_alt = QCheckBox("Override")
-        self.sid_override_initial_alt.setToolTip("Override initial altitude from procedure files")
+        self.sid_override_initial_alt = QCheckBox("Override Initial Command")
+        self.sid_override_initial_alt.setToolTip("Override initial altitude command from procedure files")
         sid_alt_layout.addWidget(self.sid_override_initial_alt)
         sid_alt_layout.addStretch(1)
         fs.addRow("Initial ALT [ft]:", sid_alt_row)
@@ -5724,8 +5728,8 @@ class ProcTab(QWidget):
         sid_spd_row = QWidget()
         sid_spd_layout = QHBoxLayout(sid_spd_row); sid_spd_layout.setContentsMargins(0, 0, 0, 0)
         sid_spd_layout.addWidget(self.sid_spd)
-        self.sid_override_initial_spd = QCheckBox("Override")
-        self.sid_override_initial_spd.setToolTip("Override initial speed from procedure files")
+        self.sid_override_initial_spd = QCheckBox("Override Initial Command")
+        self.sid_override_initial_spd.setToolTip("Override initial speed command from procedure files")
         sid_spd_layout.addWidget(self.sid_override_initial_spd)
         sid_spd_layout.addStretch(1)
         fs.addRow("Initial SPD [kt]:", sid_spd_row)
@@ -5967,7 +5971,10 @@ class ProcTab(QWidget):
             spin.setEnabled(not use_schedule)
 
     def _current_star_procs(self) -> List[str]:
-        return [path for path, data in self._proc_widgets.items() if data.get("is_star")]
+        """Return only currently loaded STAR procedures."""
+        # Filter to only include files that are actually in the loaded files list
+        return [path for path in self._proc_files 
+                if path in self._proc_widgets and self._proc_widgets[path].get("is_star")]
 
     def _basis_name(self, idx: int) -> str:
         return "final" if idx == 1 else "initial"
@@ -6031,18 +6038,30 @@ class ProcTab(QWidget):
 
     def _refresh_star_rate_rows(self):
         basis = self._current_star_basis()
-        # NOTE: Do NOT capture rates here - that should be done BEFORE calling this function
+        # Capture current rates before clearing
+        self._capture_star_rates(basis)
+        
+        # Get current active STAR procedures
+        active_star_paths = set(self._current_star_procs())
+        
+        # Build groups based on ONLY currently active STAR procedures
         groups = self._build_star_groups(basis)
         self._star_rate_groups = groups
+        
+        # Remove any rows for groups that no longer exist
         for key in list(self._star_rate_rows.keys()):
             if key not in groups:
                 self._remove_star_rate_row(key)
+        
+        # Add rows for new groups
         for key in groups.keys():
             self._ensure_star_rate_row(key, basis)
-        active_paths = set(self._current_star_procs())
+        
+        # Clean up schedule data for procedures that are no longer active
         for path in list(self._star_schedule_data.keys()):
-            if path not in active_paths:
+            if path not in active_star_paths:
                 self._star_schedule_data.pop(path, None)
+        
         self._update_star_mode_state()
 
     def _on_star_mode_changed(self, idx):
@@ -6103,7 +6122,10 @@ class ProcTab(QWidget):
 
     # Generic procedure helper methods
     def _current_generic_procs(self) -> List[str]:
-        return [path for path, data in self._proc_widgets.items() if data.get("is_generic")]
+        """Return only currently loaded generic procedures."""
+        # Filter to only include files that are actually in the loaded files list
+        return [path for path in self._proc_files 
+                if path in self._proc_widgets and self._proc_widgets[path].get("is_generic")]
 
     def _current_generic_basis(self) -> str:
         return self._basis_name(self._generic_basis_index)
@@ -6164,18 +6186,30 @@ class ProcTab(QWidget):
 
     def _refresh_generic_rate_rows(self):
         basis = self._current_generic_basis()
-        # NOTE: Do NOT capture rates here - that should be done BEFORE calling this function
+        # Capture current rates before clearing
+        self._capture_generic_rates(basis)
+        
+        # Get current active generic procedures
+        active_generic_paths = set(self._current_generic_procs())
+        
+        # Build groups based on ONLY currently active generic procedures
         groups = self._build_generic_groups(basis)
         self._generic_rate_groups = groups
+        
+        # Remove any rows for groups that no longer exist
         for key in list(self._generic_rate_rows.keys()):
             if key not in groups:
                 self._remove_generic_rate_row(key)
+        
+        # Add rows for new groups
         for key in groups.keys():
             self._ensure_generic_rate_row(key, basis)
-        active_paths = set(self._current_generic_procs())
+        
+        # Clean up schedule data for procedures that are no longer active
         for path in list(self._generic_schedule_data.keys()):
-            if path not in active_paths:
+            if path not in active_generic_paths:
                 self._generic_schedule_data.pop(path, None)
+        
         self._update_generic_mode_state()
 
     def _sync_generic_rates(self):
@@ -6564,12 +6598,9 @@ class ProcTab(QWidget):
                 final_fix = fixes[-1] if fixes else ""
                 self._proc_widgets[p]["initial_fix"] = initial_fix
                 self._proc_widgets[p]["final_fix"] = final_fix
-        self._refresh_sid_runway_rows()
-        self._refresh_star_rate_rows()
-        self._refresh_generic_rate_rows()
-        self._sync_destination_edits()
-        self._sync_origin_edits()
-        self._update_dest_state()
+        
+        # Ensure complete refresh after all additions
+        self._refresh_all_batch_options()
 
     def _rm_proc(self):
         sel = self.lst_proc.selectedItems()
@@ -6586,17 +6617,42 @@ class ProcTab(QWidget):
             self._proc_widgets.pop(p, None)
             row = self.lst_proc.row(item)
             self.lst_proc.takeItem(row)
+        
+        # Ensure complete refresh after all removals
+        self._refresh_all_batch_options()
+
+    def _refresh_all_batch_options(self):
+        """Comprehensive refresh of all batch options to ensure consistency."""
+        # Debug info
+        print(f"[DEBUG] Refreshing batch options - Current files: {len(self._proc_files)}")
+        print(f"[DEBUG] Proc widgets keys: {list(self._proc_widgets.keys())}")
+        
+        # Capture current rates before refreshing
+        if hasattr(self, '_generic_basis_index'):
+            basis = self._current_generic_basis()
+            self._capture_generic_rates(basis)
+        
+        if hasattr(self, '_star_basis_index'):
+            basis = self._current_star_basis()
+            self._capture_star_rates(basis)
+        
+        # Refresh all sections
         self._refresh_sid_runway_rows()
         self._refresh_star_rate_rows()
-        self._refresh_generic_rate_rows()  # Add missing generic rate refresh
+        self._refresh_generic_rate_rows()
         self._sync_destination_edits()
         self._sync_origin_edits()
         self._update_dest_state()
+        
+        # Debug info
+        print(f"[DEBUG] After refresh - Generic procs: {self._current_generic_procs()}")
+        print(f"[DEBUG] After refresh - STAR procs: {self._current_star_procs()}")
 
     def _clr_proc(self):
         if not self._proc_files: return
         _emit("SATG_PROC_CLEAR_PROC")
         self._proc_files.clear(); self.lst_proc.clear()
+        self._proc_widgets.clear()  # Clear procedure widgets dictionary
         self._clear_sid_runway_rows()
         self._sid_schedule_data.clear()
         self._last_sid_sched_sent.clear()
@@ -6616,6 +6672,7 @@ class ProcTab(QWidget):
             self._generic_basis_index = self.generic_rate_basis.currentIndex()
         self._destinations.clear()
         self._last_dest_sent.clear()
+        self._origins.clear()  # Also clear origins
 
     def _create_procedure(self):
         """Open the procedure creation dialog."""
