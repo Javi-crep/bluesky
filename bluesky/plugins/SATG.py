@@ -367,6 +367,7 @@ class _SATGState:
             "override_final_alt": False,
             "override_final_spd": False
         }
+        self.proc_generic_actypes: List[str] = ["A320", "B738", "A350"]
         self.proc_sid_cfg = {
             "flights": 0, 
             "alt_ft": 3000, 
@@ -374,6 +375,7 @@ class _SATGState:
             "override_initial_alt": False,
             "override_initial_spd": False
         }
+        self.proc_sid_actypes: List[str] = ["A320", "B738", "A350"]
         self.proc_star_cfg = {
             "flights": 20,
             "minsep": 90,
@@ -388,6 +390,7 @@ class _SATGState:
             "override_final_alt": False,
             "override_final_spd": False
         }
+        self.proc_star_actypes: List[str] = ["A320", "B738", "A350"]
         self.proc_sid_rates: Dict[str, float] = {}
         self.proc_star_rates: Dict[str, Dict[str, float]] = {"initial": {}, "final": {}}
         self.proc_generic_rates: Dict[str, Dict[str, float]] = {"initial": {}, "final": {}}
@@ -1319,6 +1322,28 @@ def _gc_rel_pick_actype(raw: Optional[str], rng: random.Random) -> str:
     if defaults:
         return rng.choice(defaults)
     return "A320"
+
+
+def _proc_pick_actype(proc_type: str, rng: random.Random) -> str:
+    """Pick a random aircraft type for the specified procedure type."""
+    if proc_type == "generic":
+        types = STATE.proc_generic_actypes
+    elif proc_type == "sid":
+        types = STATE.proc_sid_actypes
+    elif proc_type == "star":
+        types = STATE.proc_star_actypes
+    else:
+        types = ["A320"]  # Fallback
+    
+    # Clean and filter types
+    clean_types = [str(t).strip().upper() for t in types if str(t).strip()]
+    if not clean_types:
+        return "A320"  # Fallback
+    
+    if len(clean_types) == 1:
+        return clean_types[0]
+    
+    return rng.choice(clean_types)
 
 
 def _gc_rel_cre_block(state: Dict[str, float]) -> List[str]:
@@ -3802,6 +3827,129 @@ def SATG_PROC_CFG_GENERICRATE(proc_id: str, rate: float):
 
 
 @command
+def SATG_PROC_TYPES_GENERIC(*types):
+    """Configure aircraft types for generic procedures."""
+    cleaned: List[str] = []
+    for tok in types:
+        s = str(tok).strip().upper()
+        if not s:
+            continue
+        for part in re.split(r"[,\s]+", s):
+            part = part.strip().upper()
+            if part:
+                cleaned.append(part)
+    
+    if not cleaned:
+        _echo_err("SATG_PROC_TYPES_GENERIC: no valid aircraft types found")
+        return False, ""
+    
+    STATE.proc_generic_actypes = cleaned
+    _echo_ok(f"Generic aircraft types set: {', '.join(cleaned)}")
+    return True, ""
+
+
+@command  
+def SATG_PROC_TYPES_SID(*types):
+    """Configure aircraft types for SID procedures."""
+    cleaned: List[str] = []
+    for tok in types:
+        s = str(tok).strip().upper()
+        if not s:
+            continue
+        for part in re.split(r"[,\s]+", s):
+            part = part.strip().upper()
+            if part:
+                cleaned.append(part)
+    
+    if not cleaned:
+        _echo_err("SATG_PROC_TYPES_SID: no valid aircraft types found")
+        return False, ""
+    
+    STATE.proc_sid_actypes = cleaned
+    _echo_ok(f"SID aircraft types set: {', '.join(cleaned)}")
+    return True, ""
+
+
+@command
+def SATG_PROC_TYPES_STAR(*types):
+    """Configure aircraft types for STAR procedures."""
+    cleaned: List[str] = []
+    for tok in types:
+        s = str(tok).strip().upper()
+        if not s:
+            continue
+        for part in re.split(r"[,\s]+", s):
+            part = part.strip().upper()
+            if part:
+                cleaned.append(part)
+    
+    if not cleaned:
+        _echo_err("SATG_PROC_TYPES_STAR: no valid aircraft types found")
+        return False, ""
+    
+    STATE.proc_star_actypes = cleaned
+    _echo_ok(f"STAR aircraft types set: {', '.join(cleaned)}")
+    return True, ""
+
+
+def _get_available_aircraft_types():
+    """Get list of available aircraft types from the current performance model."""
+    try:
+        # Try to get from OpenAP performance model
+        if hasattr(bs.traf.perf, 'coeff') and hasattr(bs.traf.perf.coeff, 'actypes_fixwing'):
+            fixwing_types = sorted(bs.traf.perf.coeff.actypes_fixwing)
+            rotor_types = sorted(bs.traf.perf.coeff.actypes_rotor) if hasattr(bs.traf.perf.coeff, 'actypes_rotor') else []
+            return fixwing_types + rotor_types
+        
+        # Try BADA performance model
+        elif hasattr(bs.traf.perf, 'synonym') and hasattr(bs.traf.perf.synonym, 'ap_info'):
+            # BADA has synonym info - extract aircraft types
+            types = []
+            for synonym in bs.traf.perf.synonym.ap_info:
+                if hasattr(synonym, 'accode'):
+                    types.append(synonym.accode)
+            return sorted(list(set(types)))  # Remove duplicates and sort
+        
+        # Try legacy performance model
+        elif hasattr(bs.traf.perf, 'coeff') and hasattr(bs.traf.perf.coeff, 'atype'):
+            return sorted(bs.traf.perf.coeff.atype)
+        
+        # Fallback to common aircraft types
+        else:
+            return ["A320", "A321", "A330", "A340", "A350", "A380", 
+                   "B737", "B738", "B744", "B747", "B777", "B787", "B78X",
+                   "CRJ2", "E190", "E195", "MD11", "MD80"]
+    
+    except Exception as e:
+        # If anything fails, return common types
+        return ["A320", "A321", "A330", "A340", "A350", "A380", 
+               "B737", "B738", "B744", "B747", "B777", "B787", "B78X",
+               "CRJ2", "E190", "E195", "MD11", "MD80"]
+
+
+@command
+def SATG_AVAILABLE_ACTYPES():
+    """Get list of available aircraft types from performance model."""
+    try:
+        actypes = _get_available_aircraft_types()
+        if actypes:
+            # Format for display - group in rows of 8
+            grouped = []
+            for i in range(0, len(actypes), 8):
+                grouped.append(", ".join(actypes[i:i+8]))
+            
+            result = f"Available aircraft types ({len(actypes)} total):\n" + "\n".join(grouped)
+            _echo_ok(result)
+            return True, "|".join(actypes)  # Return pipe-separated for GUI consumption
+        else:
+            _echo_err("No aircraft types available from performance model")
+            return False, ""
+    except Exception as e:
+        _echo_err(f"Error getting aircraft types: {e}")
+        return False, ""
+
+
+@command
 def SATG_PROC_CFG_STARSCHED(proc_id: str, start_min: float, end_min: float, *caps):
     path = _resolve_proc_path(proc_id)
     if not path:
@@ -4172,7 +4320,7 @@ def SATG_PROC_MAKE(name: str,
             gen_alt_fl = max(0, int(gen_cfg.get("alt_fl", 360)))
             gen_mach = float(gen_cfg.get("mach", 0.79))
             gen_alt_ft = gen_alt_fl * 100
-            actype = "A320"
+            actype = _proc_pick_actype("generic", rng)
 
             hdg_cmd = int(round(hdg0)) % 360
             print(f"SATG DEBUG: Final hdg_cmd for CRE command: {hdg_cmd:03d}")
@@ -4302,7 +4450,7 @@ def SATG_PROC_MAKE(name: str,
 
             acid = _next_pr_acid()
 
-            actype = "A320"
+            actype = _proc_pick_actype("sid", rng)
             
             # Check for initial overrides - for SIDs, apply as commands after LNAV/VNAV
             sid_override_initial_alt = sid_cfg.get("override_initial_alt", False)
@@ -4375,7 +4523,7 @@ def SATG_PROC_MAKE(name: str,
 
                     acid = _next_pr_acid()
 
-                    actype = "A320"
+                    actype = _proc_pick_actype("sid", rng)
                     
                     # For SIDs, use simple CRE command and apply overrides as separate commands after LNAV/VNAV
                     f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
@@ -4515,7 +4663,7 @@ def SATG_PROC_MAKE(name: str,
             fix_keys.add(final_fix_up)
             ts = _fmt_ts(t_sec)
             acid = _next_pr_acid()
-            actype = "A320"
+            actype = _proc_pick_actype("star", rng)
             hdg_cmd = int(round(hdg0)) % 360
             
             # Extract initial altitude and speed from procedure file

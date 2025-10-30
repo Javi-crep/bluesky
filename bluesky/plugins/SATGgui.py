@@ -2172,6 +2172,7 @@ class TopStrip(QWidget):
         config['generic_override_initial_spd'] = tab_widget.generic_override_initial_spd.isChecked()
         config['generic_override_final_alt'] = tab_widget.generic_override_final_alt.isChecked()
         config['generic_override_final_spd'] = tab_widget.generic_override_final_spd.isChecked()
+        config['generic_actypes'] = tab_widget.generic_actypes.text()
         
         # SID parameters
         config['sid_flights'] = tab_widget.sid_flights.value()
@@ -2180,6 +2181,7 @@ class TopStrip(QWidget):
         config['sid_mode'] = tab_widget.sid_mode.currentIndex()
         config['sid_override_initial_alt'] = tab_widget.sid_override_initial_alt.isChecked()
         config['sid_override_initial_spd'] = tab_widget.sid_override_initial_spd.isChecked()
+        config['sid_actypes'] = tab_widget.sid_actypes.text()
         
         # STAR parameters
         config['star_flights'] = tab_widget.star_flights.value()
@@ -2193,6 +2195,7 @@ class TopStrip(QWidget):
         config['star_override_initial_spd'] = tab_widget.star_override_initial_spd.isChecked()
         config['star_override_final_alt'] = tab_widget.star_override_final_alt.isChecked()
         config['star_override_final_spd'] = tab_widget.star_override_final_spd.isChecked()
+        config['star_actypes'] = tab_widget.star_actypes.text()
         
         # Save SID scheduling data
         config['sid_rate_rows'] = {}
@@ -2272,6 +2275,8 @@ class TopStrip(QWidget):
                 tab_widget.generic_override_final_alt.setChecked(config_data['generic_override_final_alt'])
             if 'generic_override_final_spd' in config_data:
                 tab_widget.generic_override_final_spd.setChecked(config_data['generic_override_final_spd'])
+            if 'generic_actypes' in config_data:
+                tab_widget.generic_actypes.setText(config_data['generic_actypes'])
                 
             # Apply SID parameters
             if 'sid_flights' in config_data:
@@ -2286,6 +2291,8 @@ class TopStrip(QWidget):
                 tab_widget.sid_override_initial_alt.setChecked(config_data['sid_override_initial_alt'])
             if 'sid_override_initial_spd' in config_data:
                 tab_widget.sid_override_initial_spd.setChecked(config_data['sid_override_initial_spd'])
+            if 'sid_actypes' in config_data:
+                tab_widget.sid_actypes.setText(config_data['sid_actypes'])
                 
             # Apply STAR parameters
             if 'star_flights' in config_data:
@@ -2315,6 +2322,8 @@ class TopStrip(QWidget):
                 tab_widget.star_override_final_alt.setChecked(config_data['star_override_final_alt'])
             if 'star_override_final_spd' in config_data:
                 tab_widget.star_override_final_spd.setChecked(config_data['star_override_final_spd'])
+            if 'star_actypes' in config_data:
+                tab_widget.star_actypes.setText(config_data['star_actypes'])
                 
             # Apply scenario parameters
             if 'scn_name' in config_data:
@@ -3055,6 +3064,163 @@ class ConfigManagerDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to delete configuration:\n{str(e)}")
 
+# Aircraft Type Selection Dialog
+class AircraftTypeDialog(QDialog):
+    """Dialog for selecting aircraft types from available performance models."""
+    
+    def __init__(self, current_types: str = "", parent=None):
+        super().__init__(parent)
+        self.selected_types = []
+        self.setWindowTitle("Select Aircraft Types")
+        self.setMinimumSize(800, 600)
+        
+        layout = QVBoxLayout(self)
+        
+        # Info label
+        info_label = QLabel("Select aircraft types from the current performance model:")
+        layout.addWidget(info_label)
+        
+        # Get available aircraft types
+        self.available_types = []
+        self.checkboxes = {}
+        
+        # Parse currently selected types
+        current_set = set()
+        if current_types.strip():
+            current_set = {t.strip().upper() for t in current_types.split(',') if t.strip()}
+        
+        # Create scrollable area for checkboxes
+        scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # Get available types from performance model
+        try:
+            # Try to get directly from the loaded performance model
+            import bluesky as bs
+            if hasattr(bs, 'traf') and hasattr(bs.traf, 'perf'):
+                # Try OpenAP
+                if hasattr(bs.traf.perf, 'coeff') and hasattr(bs.traf.perf.coeff, 'actypes_fixwing'):
+                    fixwing = sorted(bs.traf.perf.coeff.actypes_fixwing)
+                    rotor = sorted(bs.traf.perf.coeff.actypes_rotor) if hasattr(bs.traf.perf.coeff, 'actypes_rotor') else []
+                    self.available_types = fixwing + rotor
+                else:
+                    self.available_types = self._get_fallback_types()
+            else:
+                self.available_types = self._get_fallback_types()
+        except:
+            self.available_types = self._get_fallback_types()
+        
+        # Group checkboxes by manufacturer (first letter)
+        manufacturers = {}
+        for actype in self.available_types:
+            first_letter = actype[0].upper()
+            if first_letter not in manufacturers:
+                manufacturers[first_letter] = []
+            manufacturers[first_letter].append(actype)
+        
+        # Sort manufacturers and their aircraft
+        for letter in manufacturers:
+            manufacturers[letter].sort()
+        
+        # Create group boxes for each manufacturer
+        for letter in sorted(manufacturers.keys()):
+            aircraft_list = manufacturers[letter]
+            group_box = QGroupBox(f"{letter}-series ({len(aircraft_list)} aircraft)")
+            group_layout = QHBoxLayout(group_box)
+            
+            # Organize aircraft in columns (max 4 columns per manufacturer)
+            cols_per_row = min(4, len(aircraft_list))
+            aircraft_per_col = (len(aircraft_list) + cols_per_row - 1) // cols_per_row  # Ceiling division
+            
+            for col in range(cols_per_row):
+                col_layout = QVBoxLayout()
+                start_idx = col * aircraft_per_col
+                end_idx = min(start_idx + aircraft_per_col, len(aircraft_list))
+                
+                for i in range(start_idx, end_idx):
+                    actype = aircraft_list[i]
+                    checkbox = QCheckBox(actype)
+                    if actype in current_set:
+                        checkbox.setChecked(True)
+                    self.checkboxes[actype] = checkbox
+                    col_layout.addWidget(checkbox)
+                
+                # Fill remaining space in column
+                col_layout.addStretch()
+                group_layout.addLayout(col_layout)
+            
+            scroll_layout.addWidget(group_box)
+        
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # Select/Deselect all buttons
+        button_layout = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(self._select_all)
+        clear_all_btn = QPushButton("Clear All")
+        clear_all_btn.clicked.connect(self._clear_all)
+        
+        # Common types buttons
+        common_btn = QPushButton("Common Types")
+        common_btn.clicked.connect(self._select_common)
+        
+        button_layout.addWidget(select_all_btn)
+        button_layout.addWidget(clear_all_btn)
+        button_layout.addWidget(common_btn)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # OK/Cancel buttons
+        button_box_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        
+        button_box_layout.addStretch()
+        button_box_layout.addWidget(ok_btn)
+        button_box_layout.addWidget(cancel_btn)
+        layout.addLayout(button_box_layout)
+    
+    def _get_fallback_types(self):
+        """Fallback list of common aircraft types."""
+        return [
+            "A318", "A319", "A320", "A321", "A330", "A340", "A350", "A380",
+            "B722", "B733", "B734", "B735", "B736", "B737", "B738", "B739",
+            "B744", "B747", "B748", "B752", "B753", "B757", "B762", "B763",
+            "B764", "B767", "B772", "B773", "B777", "B778", "B787", "B788", "B789", "B78X",
+            "CRJ1", "CRJ2", "CRJ7", "CRJ9", "CRJX",
+            "E135", "E145", "E170", "E175", "E190", "E195",
+            "F100", "F70", "MD11", "MD80", "MD81", "MD82", "MD83", "MD87", "MD88", "MD90"
+        ]
+    
+    def _select_all(self):
+        """Select all aircraft types."""
+        for checkbox in self.checkboxes.values():
+            checkbox.setChecked(True)
+    
+    def _clear_all(self):
+        """Clear all selections."""
+        for checkbox in self.checkboxes.values():
+            checkbox.setChecked(False)
+    
+    def _select_common(self):
+        """Select common aircraft types."""
+        common = {"A320", "A321", "A330", "A350", "B737", "B738", "B744", "B777", "B787", "E190"}
+        for actype, checkbox in self.checkboxes.items():
+            checkbox.setChecked(actype in common)
+    
+    def get_selected_types(self):
+        """Return comma-separated string of selected aircraft types."""
+        selected = []
+        for actype, checkbox in self.checkboxes.items():
+            if checkbox.isChecked():
+                selected.append(actype)
+        return ",".join(sorted(selected))
+
 # --- RL tab (Realistic Replay) --------------------------------------------
 
 class RLTab(QWidget):
@@ -3584,7 +3750,16 @@ class GCAbsolutePage(QWidget):
 
         self.gc_actypes = QLineEdit("A320,B738,A350,B78X")
         self.gc_actypes.setToolTip("Aircraft types to use, comma-separated (e.g. A320,B738,A350)")
-        f1.addRow("AC types:", self.gc_actypes)
+        gc_actypes_btn = QPushButton("Select...")
+        gc_actypes_btn.setMaximumWidth(70)
+        gc_actypes_btn.clicked.connect(lambda: self._select_aircraft_types_gc())
+        gc_actypes_layout = QHBoxLayout()
+        gc_actypes_layout.addWidget(self.gc_actypes)
+        gc_actypes_layout.addWidget(gc_actypes_btn)
+        gc_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        gc_actypes_widget = QWidget()
+        gc_actypes_widget.setLayout(gc_actypes_layout)
+        f1.addRow("AC types:", gc_actypes_widget)
 
         # CPA reference visualization option
         self.show_cpa_cb = QCheckBox("Show CPA reference on screen")
@@ -3944,6 +4119,14 @@ class GCAbsolutePage(QWidget):
         # Hide both coordinate and waypoint reference markers
         _emit(f"CIRCLE GC_CPA_REF_COORD 0 0 0")  # Hide coordinate marker
 
+    def _select_aircraft_types_gc(self):
+        """Open aircraft type selection dialog for geometric conflicts."""
+        current_types = self.gc_actypes.text()
+        dialog = AircraftTypeDialog(current_types, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_types = dialog.get_selected_types()
+            self.gc_actypes.setText(selected_types)
+
 
 class GCRelativePage(QWidget):
     def __init__(self, minima_panel: GCMinimaPanel, parent=None):
@@ -3990,7 +4173,16 @@ class GCRelativePage(QWidget):
         target_form.addRow("Target callsign:", self.target_acid)
         self.target_type = QLineEdit("A320,B738,A350,B78X")
         self.target_type.setClearButtonEnabled(True)
-        target_form.addRow("Aircraft type:", self.target_type)
+        target_actypes_btn = QPushButton("Select...")
+        target_actypes_btn.setMaximumWidth(70)
+        target_actypes_btn.clicked.connect(lambda: self._select_aircraft_types_target())
+        target_actypes_layout = QHBoxLayout()
+        target_actypes_layout.addWidget(self.target_type)
+        target_actypes_layout.addWidget(target_actypes_btn)
+        target_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        target_actypes_widget = QWidget()
+        target_actypes_widget.setLayout(target_actypes_layout)
+        target_form.addRow("Aircraft type:", target_actypes_widget)
 
         self.target_lat_value = QLineEdit("52.100")
         self.target_lat_value.setClearButtonEnabled(True)
@@ -4065,7 +4257,16 @@ class GCRelativePage(QWidget):
         intr_form.addRow("Intruder callsign (optional):", self.intr_acid)
         self.intr_type = QLineEdit("A320,B738,A350,B78X")
         self.intr_type.setClearButtonEnabled(True)
-        intr_form.addRow("Aircraft type:", self.intr_type)
+        intr_actypes_btn = QPushButton("Select...")
+        intr_actypes_btn.setMaximumWidth(70)
+        intr_actypes_btn.clicked.connect(lambda: self._select_aircraft_types_intruder())
+        intr_actypes_layout = QHBoxLayout()
+        intr_actypes_layout.addWidget(self.intr_type)
+        intr_actypes_layout.addWidget(intr_actypes_btn)
+        intr_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        intr_actypes_widget = QWidget()
+        intr_actypes_widget.setLayout(intr_actypes_layout)
+        intr_form.addRow("Aircraft type:", intr_actypes_widget)
 
         self.intr_dpsi_value = QLineEdit("90.0")
         self.intr_dpsi_value.setClearButtonEnabled(True)
@@ -4610,6 +4811,22 @@ class GCRelativePage(QWidget):
             return text if text and text != "-0" else "0"
         return str(int(round(value)))
 
+    def _select_aircraft_types_target(self):
+        """Open aircraft type selection dialog for target aircraft."""
+        current_types = self.target_type.text()
+        dialog = AircraftTypeDialog(current_types, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_types = dialog.get_selected_types()
+            self.target_type.setText(selected_types)
+
+    def _select_aircraft_types_intruder(self):
+        """Open aircraft type selection dialog for intruder aircraft."""
+        current_types = self.intr_type.text()
+        dialog = AircraftTypeDialog(current_types, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_types = dialog.get_selected_types()
+            self.intr_type.setText(selected_types)
+
 
 class GCTab(QWidget):
     def __init__(self, parent=None):
@@ -4819,8 +5036,17 @@ class RCTab(QWidget):
         )
 
         self.abs_actypes = QLineEdit("A320,B738,A350,B78X")
-
-        abs_form.addRow("Aircraft types:", self.abs_actypes)
+        self.abs_actypes.setToolTip("Aircraft types to use, comma-separated (e.g. A320,B738,A350)")
+        abs_actypes_btn = QPushButton("Select...")
+        abs_actypes_btn.setMaximumWidth(70)
+        abs_actypes_btn.clicked.connect(lambda: self._select_aircraft_types_rc())
+        abs_actypes_layout = QHBoxLayout()
+        abs_actypes_layout.addWidget(self.abs_actypes)
+        abs_actypes_layout.addWidget(abs_actypes_btn)
+        abs_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        abs_actypes_widget = QWidget()
+        abs_actypes_widget.setLayout(abs_actypes_layout)
+        abs_form.addRow("Aircraft types:", abs_actypes_widget)
 
         abs_scroll.setWidget(abs_form_widget)
         abs_layout.addWidget(abs_scroll)
@@ -4848,7 +5074,16 @@ class RCTab(QWidget):
         # Aircraft type field (copied from geometric conflicts intruder setup)
         self.rel_type = QLineEdit("A320,B738,A350,B78X")
         self.rel_type.setClearButtonEnabled(True)
-        rel_form.addRow("Aircraft type:", self.rel_type)
+        rel_actypes_btn = QPushButton("Select...")
+        rel_actypes_btn.setMaximumWidth(70)
+        rel_actypes_btn.clicked.connect(lambda: self._select_aircraft_types_rel())
+        rel_actypes_layout = QHBoxLayout()
+        rel_actypes_layout.addWidget(self.rel_type)
+        rel_actypes_layout.addWidget(rel_actypes_btn)
+        rel_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        rel_actypes_widget = QWidget()
+        rel_actypes_widget.setLayout(rel_actypes_layout)
+        rel_form.addRow("Aircraft type:", rel_actypes_widget)
 
         # Conflict angle dpsi (copied from geometric conflicts intruder setup)
         self.rel_dpsi_value = QLineEdit("90.0")
@@ -5497,6 +5732,22 @@ class RCTab(QWidget):
             return txt if txt and txt != "-0" else "0"
         else:
             return str(int(round(value)))
+
+    def _select_aircraft_types_rc(self):
+        """Open aircraft type selection dialog for random conflicts."""
+        current_types = self.abs_actypes.text()
+        dialog = AircraftTypeDialog(current_types, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_types = dialog.get_selected_types()
+            self.abs_actypes.setText(selected_types)
+
+    def _select_aircraft_types_rel(self):
+        """Open aircraft type selection dialog for relative conflicts."""
+        current_types = self.rel_type.text()
+        dialog = AircraftTypeDialog(current_types, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_types = dialog.get_selected_types()
+            self.rel_type.setText(selected_types)
         
 # --- Procedure Tab ----------------------------------------------------------
 class ProcTab(QWidget):
@@ -5687,6 +5938,21 @@ class ProcTab(QWidget):
         spd_layout_generic.addWidget(self.generic_override_final_spd)
         spd_layout_generic.addStretch(1)
         fg.addRow(spd_row_generic)
+        
+        # Aircraft types field for Generic procedures
+        self.generic_actypes = QLineEdit("A320,B738,A350")
+        self.generic_actypes.setToolTip("Aircraft types to use for generic procedures, comma-separated (e.g. A320,B738,A350)")
+        generic_actypes_btn = QPushButton("Select...")
+        generic_actypes_btn.setMaximumWidth(70)
+        generic_actypes_btn.clicked.connect(lambda: self._select_aircraft_types("generic"))
+        generic_actypes_layout = QHBoxLayout()
+        generic_actypes_layout.addWidget(self.generic_actypes)
+        generic_actypes_layout.addWidget(generic_actypes_btn)
+        generic_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        generic_actypes_widget = QWidget()
+        generic_actypes_widget.setLayout(generic_actypes_layout)
+        fg.addRow("Aircraft types:", generic_actypes_widget)
+        
         self.generic_sched_btn = QPushButton("Configure schedule…")
         self.generic_sched_btn.clicked.connect(self._configure_generic_schedule)
         fg.addRow(self.generic_sched_btn)
@@ -5733,6 +5999,21 @@ class ProcTab(QWidget):
         sid_spd_layout.addWidget(self.sid_override_initial_spd)
         sid_spd_layout.addStretch(1)
         fs.addRow("Initial SPD [kt]:", sid_spd_row)
+        
+        # Aircraft types field for SID procedures
+        self.sid_actypes = QLineEdit("A320,B738,A350")
+        self.sid_actypes.setToolTip("Aircraft types to use for SID procedures, comma-separated (e.g. A320,B738,A350)")
+        sid_actypes_btn = QPushButton("Select...")
+        sid_actypes_btn.setMaximumWidth(70)
+        sid_actypes_btn.clicked.connect(lambda: self._select_aircraft_types("sid"))
+        sid_actypes_layout = QHBoxLayout()
+        sid_actypes_layout.addWidget(self.sid_actypes)
+        sid_actypes_layout.addWidget(sid_actypes_btn)
+        sid_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        sid_actypes_widget = QWidget()
+        sid_actypes_widget.setLayout(sid_actypes_layout)
+        fs.addRow("Aircraft types:", sid_actypes_widget)
+        
         self.sid_sched_btn = QPushButton("Configure schedule…")
         self.sid_sched_btn.clicked.connect(self._configure_sid_schedule)
         fs.addRow(self.sid_sched_btn)
@@ -5813,6 +6094,21 @@ class ProcTab(QWidget):
         spd_layout.addWidget(self.star_override_final_spd)
         spd_layout.addStretch(1)
         ft.addRow(spd_row)
+        
+        # Aircraft types field for STAR procedures
+        self.star_actypes = QLineEdit("A320,B738,A350")
+        self.star_actypes.setToolTip("Aircraft types to use for STAR procedures, comma-separated (e.g. A320,B738,A350)")
+        star_actypes_btn = QPushButton("Select...")
+        star_actypes_btn.setMaximumWidth(70)
+        star_actypes_btn.clicked.connect(lambda: self._select_aircraft_types("star"))
+        star_actypes_layout = QHBoxLayout()
+        star_actypes_layout.addWidget(self.star_actypes)
+        star_actypes_layout.addWidget(star_actypes_btn)
+        star_actypes_layout.setContentsMargins(0, 0, 0, 0)
+        star_actypes_widget = QWidget()
+        star_actypes_widget.setLayout(star_actypes_layout)
+        ft.addRow("Aircraft types:", star_actypes_widget)
+        
         self.star_sched_btn = QPushButton("Configure schedule…")
         self.star_sched_btn.clicked.connect(self._configure_star_schedule)
         ft.addRow(self.star_sched_btn)
@@ -6836,12 +7132,18 @@ class ProcTab(QWidget):
         gen_override_final_spd = int(self.generic_override_final_spd.isChecked())
         _emit(f"SATG_PROC_OVERRIDE_GENERIC {gen_override_initial_alt} {gen_override_initial_spd} {gen_override_final_alt} {gen_override_final_spd}")
         
+        # Send aircraft types for generic procedures
+        self._emit_proc_types_generic()
+        
         _emit(f"SATG_PROC_CFG_SID {sid_n} {sid_alt} {sid_spd}")
         
         # Send override settings for SID procedures
         sid_override_initial_alt = int(self.sid_override_initial_alt.isChecked())
         sid_override_initial_spd = int(self.sid_override_initial_spd.isChecked())
         _emit(f"SATG_PROC_OVERRIDE_SID {sid_override_initial_alt} {sid_override_initial_spd}")
+        
+        # Send aircraft types for SID procedures
+        self._emit_proc_types_sid()
         _emit(f"SATG_PROC_USE_DEST {1 if self.dest_enable.isChecked() else 0}")
         active_runways = self._current_sid_runways()
         current_sched_sent = set()
@@ -6963,6 +7265,9 @@ class ProcTab(QWidget):
         star_override_final_alt = int(self.star_override_final_alt.isChecked())
         star_override_final_spd = int(self.star_override_final_spd.isChecked())
         _emit(f"SATG_PROC_OVERRIDE_STAR {star_override_initial_alt} {star_override_initial_spd} {star_override_final_alt} {star_override_final_spd}")
+        
+        # Send aircraft types for STAR procedures
+        self._emit_proc_types_star()
 
         rate_store = self._star_rate_values.setdefault(basis_name, {})
         for key in sorted(self._star_rate_rows.keys()):
@@ -7020,6 +7325,63 @@ class ProcTab(QWidget):
     def _make_and_run(self):
         if self._make():
             self._run_only()
+
+    def _emit_proc_types_generic(self):
+        raw = self.generic_actypes.text().strip()
+        if not raw:
+            _emit("SATG_PROC_TYPES_GENERIC")
+            return
+        parts = [seg.strip().upper() for seg in re.split(r"[,\s]+", raw.replace("|", " ")) if seg.strip()]
+        if not parts:
+            _emit("SATG_PROC_TYPES_GENERIC")
+            return
+        cmd = "SATG_PROC_TYPES_GENERIC " + " ".join(parts)
+        _emit(cmd)
+
+    def _emit_proc_types_sid(self):
+        raw = self.sid_actypes.text().strip()
+        if not raw:
+            _emit("SATG_PROC_TYPES_SID")
+            return
+        parts = [seg.strip().upper() for seg in re.split(r"[,\s]+", raw.replace("|", " ")) if seg.strip()]
+        if not parts:
+            _emit("SATG_PROC_TYPES_SID")
+            return
+        cmd = "SATG_PROC_TYPES_SID " + " ".join(parts)
+        _emit(cmd)
+
+    def _emit_proc_types_star(self):
+        raw = self.star_actypes.text().strip()
+        if not raw:
+            _emit("SATG_PROC_TYPES_STAR")
+            return
+        parts = [seg.strip().upper() for seg in re.split(r"[,\s]+", raw.replace("|", " ")) if seg.strip()]
+        if not parts:
+            _emit("SATG_PROC_TYPES_STAR")
+            return
+        cmd = "SATG_PROC_TYPES_STAR " + " ".join(parts)
+        _emit(cmd)
+
+    def _select_aircraft_types(self, proc_type: str):
+        """Open aircraft type selection dialog for the specified procedure type."""
+        # Get current value from the appropriate field
+        if proc_type == "generic":
+            current_types = self.generic_actypes.text()
+            field = self.generic_actypes
+        elif proc_type == "sid":
+            current_types = self.sid_actypes.text()
+            field = self.sid_actypes
+        elif proc_type == "star":
+            current_types = self.star_actypes.text()
+            field = self.star_actypes
+        else:
+            return
+        
+        # Open dialog
+        dialog = AircraftTypeDialog(current_types, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected = dialog.get_selected_types()
+            field.setText(selected)
 
 # --- Help tab -------------------------------------------------------------
 class HelpTab(QWidget):
