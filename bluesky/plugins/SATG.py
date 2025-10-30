@@ -1543,7 +1543,24 @@ def _proc_unified_first_waypoint(proc_path: str, fix_db: Optional[Dict[str, Tupl
     except Exception:
         return None
     
+    # First pass: try to establish geographical context from known waypoints in the procedure
+    ref_lat, ref_lon = None, None
+    known_waypoints = ["EHAM", "EGLL", "LFPG", "EDDF", "LEMD", "LIRF", "LOWW"]  # Major European airports
+    
     lines = txt.split('\n')
+    for line in lines:
+        if 'ADDWPT' in line:
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[1] == 'ADDWPT':
+                waypoint_name = parts[2]
+                if waypoint_name in known_waypoints:
+                    # Found a known waypoint - use it for context
+                    context_coord = _resolve_fix_coord(waypoint_name, fix_db, proc_path=proc_path)
+                    if context_coord:
+                        ref_lat, ref_lon = context_coord
+                        break
+    
+    # Second pass: find the actual first waypoint with established context
     for line in lines:
         if 'ADDWPT' in line:
             parts = line.strip().split()
@@ -1554,9 +1571,9 @@ def _proc_unified_first_waypoint(proc_path: str, fix_db: Optional[Dict[str, Tupl
                     lon = float(parts[3]) if len(parts) >= 4 else 0.0
                     return (lat, lon)
                 except (ValueError, IndexError):
-                    # This is a named waypoint - resolve it
+                    # This is a named waypoint - resolve it with context
                     waypoint_name = parts[2]
-                    return _resolve_fix_coord(waypoint_name, fix_db, proc_path=proc_path)
+                    return _resolve_fix_coord(waypoint_name, fix_db, ref_lat, ref_lon, proc_path=proc_path)
     
     return None
 
