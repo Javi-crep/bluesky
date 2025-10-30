@@ -4304,50 +4304,40 @@ def SATG_PROC_MAKE(name: str,
 
             actype = "A320"
             
-            # Check for initial overrides to modify CRE command
+            # Check for initial overrides - for SIDs, apply as commands after LNAV/VNAV
             sid_override_initial_alt = sid_cfg.get("override_initial_alt", False)
             sid_override_initial_spd = sid_cfg.get("override_initial_spd", False)
             
-            # Extract initial altitude and speed from procedure file
+            # Extract initial altitude and speed from procedure file for potential commands
             proc_alt_ft, proc_spd_val = _proc_extract_initial_alt_spd(proc_path)
             
-            # Build CRE command with or without altitude/speed overrides
-            if sid_override_initial_alt:
-                cre_alt = int(sid_cfg.get('alt_ft', 5000))
-            else:
-                cre_alt = proc_alt_ft  # Use procedure file altitude (can be None)
-                
-            if sid_override_initial_spd:
-                cre_spd = int(sid_cfg.get('spd_kt', 250))
-            else:
-                # Use procedure file speed (can be None)
-                if proc_spd_val is not None:
-                    if proc_spd_val < 1.0:  # Mach number
-                        cre_spd = f"M{proc_spd_val:.2f}"
-                    else:  # Knots
-                        cre_spd = int(proc_spd_val)
-                else:
-                    cre_spd = None
-            
-            # Handle placeholder cases for partial overrides
-            if (sid_override_initial_spd or cre_spd is not None) and (not sid_override_initial_alt and cre_alt is None):
-                # Only speed override/available - use placeholder for altitude
-                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} ,, {cre_spd}\n")
-            elif (sid_override_initial_alt or cre_alt is not None) and (not sid_override_initial_spd and cre_spd is None):
-                # Only altitude override/available - use placeholder for speed
-                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} ,,\n")
-            elif (sid_override_initial_alt or cre_alt is not None) and (sid_override_initial_spd or cre_spd is not None):
-                # Both available
-                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} {cre_spd}\n")
-            else:
-                # No overrides and no procedure values - use standard format
-                f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+            # For SIDs: Always use simple CRE command (no altitude/speed in CRE)
+            # Let aircraft take off naturally, then apply overrides as commands
+            f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
                 
             f.write(f"{ts}ADDWPT {acid} {icao}/{rw_tag}\n")
             f.write(f"{ts}ADDWPT {acid} TAKEOFF\n")
             f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
             f.write(f"{ts}LNAV {acid} ON\n")
             f.write(f"{ts}VNAV {acid} ON\n")
+            
+            # Apply overrides as separate commands after LNAV/VNAV activation
+            if sid_override_initial_alt:
+                override_alt = int(sid_cfg.get('alt_ft', 5000))
+                f.write(f"{ts}ALT {acid} {override_alt}\n")
+            elif proc_alt_ft is not None:
+                # Use procedure file altitude if available and no override
+                f.write(f"{ts}ALT {acid} {int(proc_alt_ft)}\n")
+                
+            if sid_override_initial_spd:
+                override_spd = int(sid_cfg.get('spd_kt', 250))
+                f.write(f"{ts}SPD {acid} {override_spd}\n")
+            elif proc_spd_val is not None:
+                # Use procedure file speed if available and no override
+                if proc_spd_val < 1.0:  # Mach number
+                    f.write(f"{ts}SPD {acid} M{proc_spd_val:.2f}\n")
+                else:  # Knots
+                    f.write(f"{ts}SPD {acid} {int(proc_spd_val)}\n")
             
             if STATE.proc_destinations_enabled:
                 dests = STATE.proc_destinations.get(proc_path)
@@ -4387,50 +4377,23 @@ def SATG_PROC_MAKE(name: str,
 
                     actype = "A320"
                     
-                    # Check for initial overrides to modify CRE command
-                    sid_override_initial_alt = sid_cfg.get("override_initial_alt", False)
-                    sid_override_initial_spd = sid_cfg.get("override_initial_spd", False)
-                    
-                    # Extract initial altitude and speed from procedure file
-                    proc_alt_ft, proc_spd_val = _proc_extract_initial_alt_spd(proc_path)
-                    
-                    # Build CRE command with or without altitude/speed overrides
-                    if sid_override_initial_alt:
-                        cre_alt = int(sid_cfg.get('alt_ft', 5000))
-                    else:
-                        cre_alt = proc_alt_ft  # Use procedure file altitude (can be None)
-                        
-                    if sid_override_initial_spd:
-                        cre_spd = int(sid_cfg.get('spd_kt', 250))
-                    else:
-                        # Use procedure file speed (can be None)
-                        if proc_spd_val is not None:
-                            if proc_spd_val < 1.0:  # Mach number
-                                cre_spd = f"M{proc_spd_val:.2f}"
-                            else:  # Knots
-                                cre_spd = int(proc_spd_val)
-                        else:
-                            cre_spd = None
-                    
-                    # Handle placeholder cases for partial overrides
-                    if (sid_override_initial_spd or cre_spd is not None) and (not sid_override_initial_alt and cre_alt is None):
-                        # Only speed override/available - use placeholder for altitude
-                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} ,, {cre_spd}\n")
-                    elif (sid_override_initial_alt or cre_alt is not None) and (not sid_override_initial_spd and cre_spd is None):
-                        # Only altitude override/available - use placeholder for speed
-                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} ,,\n")
-                    elif (sid_override_initial_alt or cre_alt is not None) and (sid_override_initial_spd or cre_spd is not None):
-                        # Both available
-                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag} {cre_alt} {cre_spd}\n")
-                    else:
-                        # No overrides and no procedure values - use standard format
-                        f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
+                    # For SIDs, use simple CRE command and apply overrides as separate commands after LNAV/VNAV
+                    f.write(f"{ts}CRE {acid} {actype} {icao} {rw_tag}\n")
                         
                     f.write(f"{ts}ADDWPT {acid} {icao}/{rw_tag}\n")
                     f.write(f"{ts}ADDWPT {acid} TAKEOFF\n")
                     f.write(f"{ts}PCALL {_cmd_path(proc_path)} {acid}\n")
                     f.write(f"{ts}LNAV {acid} ON\n")
                     f.write(f"{ts}VNAV {acid} ON\n")
+                    
+                    # Apply SID overrides as separate commands after LNAV/VNAV activation
+                    if sid_cfg.get("override_initial_alt", False):
+                        override_alt = int(sid_cfg.get('alt_ft', 5000))
+                        f.write(f"{ts}ALT {acid} {override_alt}\n")
+                    
+                    if sid_cfg.get("override_initial_spd", False):
+                        override_spd = int(sid_cfg.get('spd_kt', 250))
+                        f.write(f"{ts}SPD {acid} {override_spd}\n")
                     
                     if STATE.proc_destinations_enabled:
                         dests = STATE.proc_destinations.get(proc_path)
