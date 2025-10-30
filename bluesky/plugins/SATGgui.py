@@ -73,6 +73,85 @@ def _kv(key: str, val):
 def _join_tokens(*tokens):
     return " ".join([t for t in tokens if t])
 
+def _validate_waypoint_name_conflict(name: str, is_coordinate_waypoint: bool) -> tuple[bool, str]:
+    """
+    Validate if there's a conflict between waypoint name and type.
+    Returns (is_valid, warning_message)
+    """
+    if not name:
+        return True, ""
+    
+    name_upper = name.strip().upper()
+    is_known_navaid = _is_known_named_waypoint(name_upper)
+    
+    if is_coordinate_waypoint and is_known_navaid:
+        return False, (f"Warning: '{name_upper}' is a known navaid/airport. "
+                      f"Using this name will override your coordinates with the navaid's position. "
+                      f"Consider using a different name for your coordinate waypoint.")
+    
+    return True, ""
+
+
+def _validate_waypoint_name(name: str) -> bool:
+    """Validate waypoint name: alphanumeric only, no spaces."""
+    if not name or not isinstance(name, str):
+        return False
+    return name.replace('_', '').replace('-', '').isalnum() and ' ' not in name
+
+def _extract_procedure_name_from_path(filepath: str) -> str:
+    """Extract procedure name from file path for auto-naming waypoints."""
+    if not filepath:
+        return "PROC"
+    import os
+    base_name = os.path.splitext(os.path.basename(filepath))[0]
+    # Clean up the name to be a valid waypoint prefix
+    clean_name = ''.join(c for c in base_name.upper() if c.isalnum() or c in '_-')
+    return clean_name if clean_name else "PROC"
+
+def _is_coordinate_waypoint(lat_str: str, lon_str: str) -> bool:
+    """Check if the given strings represent valid coordinates."""
+    try:
+        lat = float(lat_str)
+        lon = float(lon_str)
+        return -90 <= lat <= 90 and -180 <= lon <= 180
+    except (ValueError, TypeError):
+        return False
+
+def _generate_auto_waypoint_name(proc_name: str, index: int) -> str:
+    """Generate auto waypoint name in format PROCNAME_WP{index}."""
+    return f"{proc_name}_WP{index + 1}"
+
+def _is_known_named_waypoint(name: str) -> bool:
+    """Check if a waypoint name is a known navigation waypoint (airport, navaid, etc.)."""
+    if not name:
+        return False
+    
+    name = name.upper().strip()
+    
+    # Common airports and navaids in the Netherlands/Europe
+    known_waypoints = {
+        # Major airports
+        'EHAM', 'SCHIPHOL', 'AMS',
+        'EHRD', 'ROTTERDAM', 'RTM',
+        'EHEH', 'EINDHOVEN', 'EIN',
+        'EBBR', 'BRUSSELS', 'BRU',
+        'EGLL', 'HEATHROW', 'LHR',
+        'LFPG', 'CHARLES_DE_GAULLE', 'CDG',
+        'EDDF', 'FRANKFURT', 'FRA',
+        
+        # Common navaids and waypoints in Netherlands
+        'LAK', 'LOPIK', 'GV', 'SSB', 'ARTIP', 'RIVER', 'HELEN', 'ANDIK',
+        'BERGI', 'LUMBO', 'HELEN', 'RENDI', 'NICKY', 'WOODY', 'TIGER',
+        
+        # Add more as needed
+    }
+    
+    # Also check if it looks like an ICAO code (4 letters starting with E for Europe)
+    if len(name) == 4 and name.startswith('E') and name.isalpha():
+        return True
+    
+    return name in known_waypoints
+
 _SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.IGNORECASE)
 DEFAULT_STAR_RATE = 20
 
@@ -818,11 +897,30 @@ class ProcedureEditorDialog(QDialog):
             with open(proc_file_path, 'r') as f:
                 content = f.read()
             
-            # Find ADDWPT commands line by line
+            # Parse waypoint definitions and procedure commands
             lines = content.split('\n')
-            addwpt_lines = [line for line in lines if '00:00:00.00>%0 ADDWPT' in line]
+            waypoint_definitions = {}  # name -> (lat, lon)
+            addwpt_lines = []
+            
+            # First pass: collect DEFWPT commands
+            for line in lines:
+                if '00:00:00.00> DEFWPT' in line:
+                    parts = line.strip().split()
+                    if len(parts) >= 4 and parts[1] == 'DEFWPT':
+                        try:
+                            name = parts[2]
+                            lat = float(parts[3])
+                            lon = float(parts[4])
+                            waypoint_definitions[name] = (lat, lon)
+                        except (ValueError, IndexError) as e:
+                            print(f"Error parsing DEFWPT line '{line}': {e}")
+                            continue
+                elif '00:00:00.00>%0 ADDWPT' in line:
+                    addwpt_lines.append(line)
             
             waypoints = []
+            needs_conversion = False  # Track if we found old format
+            
             for i, line in enumerate(addwpt_lines):
                 # Split the line and extract components
                 parts = line.strip().split()
@@ -831,71 +929,86 @@ class ProcedureEditorDialog(QDialog):
                         # Check if this is a coordinate-based waypoint (lat/lon numbers) or named waypoint
                         waypoint_identifier = parts[2]
                         
-                        # Try to parse as coordinates first
+                        # Try to parse as coordinates first (old format)
                         try:
                             lat = float(waypoint_identifier)
                             lon = float(parts[3]) if len(parts) > 3 else 0.0
                             
-                            # This is a coordinate waypoint
+                            # This is OLD FORMAT coordinate waypoint - needs conversion
+                            needs_conversion = True
+                            proc_name = _extract_procedure_name_from_path(proc_file_path)
+                            auto_name = _generate_auto_waypoint_name(proc_name, i)
+                            
                             waypoint = {
-                                'name': f"WPT{i+1}",  # Generate a name for coordinate waypoints
+                                'name': auto_name,  # Auto-generate name, user can edit
                                 'lat': lat,
                                 'lon': lon,
                                 'alt': '',
                                 'spd': '',
-                                'is_named': False
+                                'is_named': False,
+                                'needs_name_validation': True  # Flag for user to confirm names
                             }
                             
                             # Look for optional altitude and speed in remaining parts
                             remaining_parts = parts[4:]
-                            for j, part in enumerate(remaining_parts):
-                                # Skip empty or comma-only parts
-                                if not part or part == ',,':
-                                    continue
-                                
-                                # Altitude indicators: FL (flight level), A (altitude), or larger numbers (>=1000 likely altitude)
-                                if part.startswith('FL') or part.startswith('A') or (part.isdigit() and int(part) >= 1000):
-                                    waypoint['alt'] = part
-                                # Speed indicators: M (Mach), smaller numbers (speed), or decimal numbers
-                                elif part.startswith('M') or (part.replace('.', '').isdigit() and float(part) <= 999):
-                                    waypoint['spd'] = part
-                                # For ambiguous pure numbers, use position: first number = altitude, second = speed
-                                elif part.isdigit():
-                                    if not waypoint['alt']:  # First number goes to altitude
-                                        waypoint['alt'] = part
-                                    elif not waypoint['spd']:  # Second number goes to speed
-                                        waypoint['spd'] = part
-                                    
+                            
                         except (ValueError, IndexError):
-                            # This is a named waypoint (like EHAM, LAK, etc.)
-                            waypoint = {
-                                'name': waypoint_identifier,
-                                'lat': 0.0,  # Named waypoints don't store coordinates in procedure file
-                                'lon': 0.0,
-                                'alt': '',
-                                'spd': '',
-                                'is_named': True
-                            }
+                            # This is a named waypoint (new format)
+                            waypoint_name = waypoint_identifier
+                            
+                            # Check if it's a coordinate waypoint with DEFWPT definition
+                            if waypoint_name in waypoint_definitions:
+                                lat, lon = waypoint_definitions[waypoint_name]
+                                waypoint = {
+                                    'name': waypoint_name,
+                                    'lat': lat,
+                                    'lon': lon,
+                                    'alt': '',
+                                    'spd': '',
+                                    'is_named': False  # It's a coordinate waypoint with definition
+                                }
+                            elif _is_known_named_waypoint(waypoint_name):
+                                # This is a known named waypoint (like EHAM, LAK) - don't define with DEFWPT
+                                waypoint = {
+                                    'name': waypoint_name,
+                                    'lat': 0.0,  # Named waypoints don't store coordinates
+                                    'lon': 0.0,
+                                    'alt': '',
+                                    'spd': '',
+                                    'is_named': True
+                                }
+                            else:
+                                # This is a user-defined named waypoint without coordinates
+                                waypoint = {
+                                    'name': waypoint_name,
+                                    'lat': 0.0,
+                                    'lon': 0.0,
+                                    'alt': '',
+                                    'spd': '',
+                                    'is_named': True
+                                }
                             
                             # Look for optional altitude and speed in remaining parts
                             remaining_parts = parts[3:]
-                            for j, part in enumerate(remaining_parts):
-                                # Skip empty or comma-only parts
-                                if not part or part == ',,':
-                                    continue
-                                
-                                # Altitude indicators: FL (flight level), A (altitude), or larger numbers (>1000 likely altitude)
-                                if part.startswith('FL') or part.startswith('A') or (part.isdigit() and int(part) >= 1000):
+                        
+                        # Parse altitude and speed for both formats
+                        for j, part in enumerate(remaining_parts):
+                            # Skip empty or comma-only parts
+                            if not part or part == ',,':
+                                continue
+                            
+                            # Altitude indicators: FL (flight level), A (altitude), or larger numbers (>=1000 likely altitude)
+                            if part.startswith('FL') or part.startswith('A') or (part.isdigit() and int(part) >= 1000):
+                                waypoint['alt'] = part
+                            # Speed indicators: M (Mach), smaller numbers (speed), or decimal numbers
+                            elif part.startswith('M') or (part.replace('.', '').isdigit() and float(part) <= 999):
+                                waypoint['spd'] = part
+                            # For ambiguous pure numbers, use position: first number = altitude, second = speed
+                            elif part.isdigit():
+                                if not waypoint['alt']:  # First number goes to altitude
                                     waypoint['alt'] = part
-                                # Speed indicators: M (Mach), smaller numbers (speed), or decimal numbers
-                                elif part.startswith('M') or (part.replace('.', '').isdigit() and float(part) <= 999):
+                                elif not waypoint['spd']:  # Second number goes to speed
                                     waypoint['spd'] = part
-                                # For ambiguous pure numbers, use position: first number = altitude, second = speed
-                                elif part.isdigit():
-                                    if not waypoint['alt']:  # First number goes to altitude
-                                        waypoint['alt'] = part
-                                    elif not waypoint['spd']:  # Second number goes to speed
-                                        waypoint['spd'] = part
                         
                         waypoints.append(waypoint)
                         
@@ -906,6 +1019,16 @@ class ProcedureEditorDialog(QDialog):
             if waypoints:
                 self.waypoints = waypoints
                 self.filepath = proc_file_path  # Set the filepath for saving
+                
+                # If old format detected, warn user
+                if needs_conversion:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.information(self, "Old Format Detected", 
+                                          f"This procedure uses the old coordinate format.\n\n"
+                                          f"Auto-generated waypoint names have been created.\n"
+                                          f"You can edit the names in the table before saving.\n\n"
+                                          f"The procedure will be converted to the new format when saved.")
+                
                 self._populate_table()
                 self.status_label.setText(f"Loaded {len(waypoints)} waypoints from {self.proc_name}")
             else:
@@ -914,18 +1037,24 @@ class ProcedureEditorDialog(QDialog):
         except Exception as e:
             self.status_label.setText(f"Error loading procedure: {e}")
             print(f"Error in _load_procedure_data: {e}")
-            self.status_label.setText(f"Error loading procedure: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _populate_table(self):
         """Populate the table with waypoint data."""
         # Temporarily disconnect the signal to prevent recursion
-        self.waypoints_table.itemChanged.disconnect()
+        try:
+            self.waypoints_table.itemChanged.disconnect(self._on_table_changed)
+        except TypeError:
+            # No connection exists, continue
+            pass
         
         self.waypoints_table.setRowCount(len(self.waypoints))
         
         # Define colors for different cell types
-        readonly_color = QColor(255, 230, 230)  # Light red for read-only cells
+        readonly_color = QColor(230, 230, 230)  # Light gray for read-only cells
         editable_color = QColor(255, 255, 255)  # White for editable cells
+        warning_color = QColor(255, 255, 200)   # Light yellow for fields needing attention
         
         for i, wp in enumerate(self.waypoints):
             # Create items for all columns
@@ -935,9 +1064,10 @@ class ProcedureEditorDialog(QDialog):
             
             # Check waypoint type
             is_named = wp.get('is_named', None)
+            needs_name_validation = wp.get('needs_name_validation', False)
             
             if is_named is True:
-                # Named waypoint: name is editable, coordinates are read-only
+                # Named waypoint (like EHAM, LAK): only name, altitude, and speed are editable
                 lat_item = QTableWidgetItem("Named Waypoint")
                 lon_item = QTableWidgetItem("Named Waypoint")
                 
@@ -951,15 +1081,18 @@ class ProcedureEditorDialog(QDialog):
                 name_item.setBackground(editable_color)
                 
             elif is_named is False:
-                # Coordinate waypoint: coordinates are editable, name shows coordinates
+                # Coordinate waypoint: both name and coordinates are editable
                 lat_item = QTableWidgetItem(f"{wp['lat']:.6f}")
                 lon_item = QTableWidgetItem(f"{wp['lon']:.6f}")
                 
-                # Make name read-only with gray background (auto-generated)
-                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                name_item.setBackground(readonly_color)
+                # Both name and coordinates are editable
+                if needs_name_validation:
+                    # Highlight auto-generated names that user should review
+                    name_item.setBackground(warning_color)
+                    name_item.setToolTip("Auto-generated name - please review and edit if needed")
+                else:
+                    name_item.setBackground(editable_color)
                 
-                # Coordinates are editable with white background
                 lat_item.setBackground(editable_color)
                 lon_item.setBackground(editable_color)
                 
@@ -994,117 +1127,210 @@ class ProcedureEditorDialog(QDialog):
         
         if row < len(self.waypoints):
             # Temporarily disconnect to prevent recursion during updates
-            self.waypoints_table.itemChanged.disconnect()
+            try:
+                self.waypoints_table.itemChanged.disconnect(self._on_table_changed)
+            except TypeError:
+                pass  # No connection exists
             
             try:
                 if col == 0:  # Name column
-                    new_name = item.text().strip()
-                    if new_name:
-                        # User entered a name - switch to named waypoint mode
-                        self.waypoints[row]['name'] = new_name
-                        self.waypoints[row]['is_named'] = True
-                        # Update lat/lon cells to show "Named Waypoint"
-                        lat_item = self.waypoints_table.item(row, 1)
-                        lon_item = self.waypoints_table.item(row, 2)
-                        if lat_item:
-                            lat_item.setText("Named Waypoint")
-                            lat_item.setFlags(lat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                            lat_item.setBackground(QColor(255, 230, 230))
-                        if lon_item:
-                            lon_item.setText("Named Waypoint")
-                            lon_item.setFlags(lon_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                            lon_item.setBackground(QColor(255, 230, 230))
-                    else:
-                        # User cleared the name - reset to undefined if it was named
-                        if self.waypoints[row].get('is_named') is True:
-                            self.waypoints[row]['name'] = ''
-                            self.waypoints[row]['is_named'] = None
-                            # Set default coordinates
-                            if self.waypoints[row].get('lat') is None:
-                                self.waypoints[row]['lat'] = 0.0
-                            if self.waypoints[row].get('lon') is None:
-                                self.waypoints[row]['lon'] = 0.0
-                            # Update lat/lon cells to be editable and empty
-                            lat_item = self.waypoints_table.item(row, 1)
-                            lon_item = self.waypoints_table.item(row, 2)
-                            if lat_item:
-                                lat_item.setText("")
-                                lat_item.setFlags(lat_item.flags() | Qt.ItemFlag.ItemIsEditable)
-                                lat_item.setBackground(QColor(255, 255, 255))
-                            if lon_item:
-                                lon_item.setText("")
-                                lon_item.setFlags(lon_item.flags() | Qt.ItemFlag.ItemIsEditable)
-                                lon_item.setBackground(QColor(255, 255, 255))
-                            
-                elif col == 1:  # Latitude column
-                    new_lat = item.text().strip()
-                    if new_lat:
-                        try:
-                            lat_value = float(new_lat)
-                            # User entered coordinates - switch to coordinate mode
-                            self.waypoints[row]['lat'] = lat_value
-                            self.waypoints[row]['is_named'] = False
-                            # Clear name and make it read-only
-                            name_item = self.waypoints_table.item(row, 0)
-                            if name_item:
-                                name_item.setText("")
-                                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                                name_item.setBackground(QColor(255, 230, 230))
-                            # Set default longitude if needed
-                            if self.waypoints[row].get('lon') is None:
-                                self.waypoints[row]['lon'] = 0.0
-                                lon_item = self.waypoints_table.item(row, 2)
-                                if lon_item:
-                                    lon_item.setText("0.000000")
-                        except ValueError:
-                            # Invalid latitude - reset
-                            if self.waypoints[row].get('lat') is not None:
-                                item.setText(f"{self.waypoints[row]['lat']:.6f}")
-                            else:
-                                item.setText("")
+                    new_name = item.text().strip().upper()  # Convert to uppercase
+                    old_waypoint = self.waypoints[row].copy()
                     
-                elif col == 2:  # Longitude column
-                    new_lon = item.text().strip()
-                    if new_lon:
-                        try:
-                            lon_value = float(new_lon)
-                            # User entered coordinates - switch to coordinate mode
-                            self.waypoints[row]['lon'] = lon_value
-                            self.waypoints[row]['is_named'] = False
-                            # Clear name and make it read-only
-                            name_item = self.waypoints_table.item(row, 0)
-                            if name_item:
-                                name_item.setText("")
-                                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                                name_item.setBackground(QColor(255, 230, 230))
-                            # Set default latitude if needed
-                            if self.waypoints[row].get('lat') is None:
-                                self.waypoints[row]['lat'] = 0.0
-                                lat_item = self.waypoints_table.item(row, 1)
-                                if lat_item:
-                                    lat_item.setText("0.000000")
-                        except ValueError:
-                            # Invalid longitude - reset
-                            if self.waypoints[row].get('lon') is not None:
-                                item.setText(f"{self.waypoints[row]['lon']:.6f}")
-                            else:
-                                item.setText("")
+                    if new_name:
+                        # First check for validation conflicts
+                        has_coords = (self.waypoints[row].get('lat', 0) != 0 or 
+                                    self.waypoints[row].get('lon', 0) != 0 or
+                                    not self.waypoints[row].get('is_named', True))
                         
-                elif col == 3:  # Altitude column (always editable)
+                        is_valid, warning_msg = _validate_waypoint_name_conflict(new_name, has_coords)
+                        
+                        if not is_valid:
+                            # Show warning dialog
+                            reply = QMessageBox.warning(self, "Waypoint Name Conflict", 
+                                                       warning_msg + "\n\nDo you want to:\n" +
+                                                       "• YES: Use this name as a named waypoint (will use nav database coordinates)\n" +
+                                                       "• NO: Choose a different name for your coordinate waypoint", 
+                                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                            
+                            if reply == QMessageBox.StandardButton.No:
+                                # Revert to old name
+                                item.setText(old_waypoint.get('name', ''))
+                                self.waypoints_table.itemChanged.connect(self._on_table_changed)
+                                return
+                            # If YES, continue with the logic below to convert to named waypoint
+                        
+                        # Check if this is a known named waypoint (like EHAM, LAK, etc.)
+                        # These are waypoints that exist in BlueSky's navigation database
+                        if _is_known_named_waypoint(new_name):
+                            # This is a known named waypoint - don't define with DEFWPT
+                            self.waypoints[row]['name'] = new_name
+                            self.waypoints[row]['is_named'] = True
+                            self.waypoints[row]['lat'] = 0.0
+                            self.waypoints[row]['lon'] = 0.0
+                            # Clear any validation flags
+                            self.waypoints[row]['needs_name_validation'] = False
+                            
+                            # Update lat/lon cells to show read-only status
+                            self._update_coordinate_cells_readonly(row)
+                            
+                        else:
+                            # Check if coordinates are present to determine waypoint type
+                            has_coords = (self.waypoints[row].get('lat', 0) != 0 or 
+                                        self.waypoints[row].get('lon', 0) != 0 or
+                                        (self.waypoints_table.item(row, 1) and 
+                                         self.waypoints_table.item(row, 1).text().strip() and
+                                         self.waypoints_table.item(row, 1).text() != "Named Waypoint") or
+                                        (self.waypoints_table.item(row, 2) and 
+                                         self.waypoints_table.item(row, 2).text().strip() and
+                                         self.waypoints_table.item(row, 2).text() != "Named Waypoint"))
+                            
+                            if has_coords:
+                                # This is a coordinate waypoint with a custom name
+                                # VALIDATE: Check for name conflicts
+                                is_valid, warning_msg = _validate_waypoint_name_conflict(new_name, True)
+                                if not is_valid:
+                                    # Show warning dialog
+                                    reply = QMessageBox.warning(
+                                        self, 
+                                        "Waypoint Name Conflict", 
+                                        warning_msg + "\n\nDo you want to:\n"
+                                        "• YES: Keep this name (will use navaid coordinates)\n"
+                                        "• NO: Change to a different name",
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                        QMessageBox.StandardButton.No
+                                    )
+                                    
+                                    if reply == QMessageBox.StandardButton.No:
+                                        # Revert to old name or suggest alternative
+                                        old_name = old_waypoint.get('name', '')
+                                        suggested_name = f"{new_name}_WP" if old_name == new_name else old_name
+                                        item.setText(suggested_name)
+                                        self.waypoints[row]['name'] = suggested_name
+                                        item.setBackground(QColor(255, 200, 200))  # Light red for attention
+                                        item.setToolTip("Please choose a different name to avoid conflicts")
+                                        return  # Exit early
+                                    else:
+                                        # User chose to keep the conflicting name - convert to named waypoint
+                                        self.waypoints[row]['is_named'] = True
+                                        self.waypoints[row]['lat'] = 0.0
+                                        self.waypoints[row]['lon'] = 0.0
+                                        self._update_coordinate_cells_readonly(row)
+                                
+                                self.waypoints[row]['name'] = new_name
+                                self.waypoints[row]['is_named'] = False
+                                # Clear validation flag since user has reviewed the name
+                                self.waypoints[row]['needs_name_validation'] = False
+                                # Update visual styling
+                                item.setBackground(QColor(255, 255, 255))  # White for normal editing
+                                item.setToolTip("")
+                            else:
+                                # User-defined named waypoint (like a custom name without coordinates)
+                                self.waypoints[row]['name'] = new_name
+                                self.waypoints[row]['is_named'] = True
+                                self.waypoints[row]['lat'] = 0.0
+                                self.waypoints[row]['lon'] = 0.0
+                                
+                                # Update lat/lon cells to show read-only status
+                                self._update_coordinate_cells_readonly(row)
+                    else:
+                        # Name cleared - keep as undefined for now
+                        self.waypoints[row]['name'] = ''
+                        
+                elif col in [1, 2]:  # Latitude or Longitude columns
+                    new_value = item.text().strip()
+                    
+                    if new_value and new_value != "Named Waypoint":
+                        try:
+                            float_value = float(new_value)
+                            
+                            # Update the coordinate
+                            if col == 1:  # Latitude
+                                self.waypoints[row]['lat'] = float_value
+                            else:  # Longitude
+                                self.waypoints[row]['lon'] = float_value
+                            
+                            # Switch to coordinate waypoint mode
+                            self.waypoints[row]['is_named'] = False
+                            
+                            # If no name exists, generate one
+                            if not self.waypoints[row]['name']:
+                                proc_name = _extract_procedure_name_from_path(self.filepath or "PROC")
+                                auto_name = _generate_auto_waypoint_name(proc_name, row)
+                                self.waypoints[row]['name'] = auto_name
+                                self.waypoints[row]['needs_name_validation'] = True
+                                
+                                # Update name cell
+                                name_item = self.waypoints_table.item(row, 0)
+                                if name_item:
+                                    name_item.setText(auto_name)
+                                    name_item.setBackground(QColor(255, 255, 200))  # Yellow warning
+                                    name_item.setToolTip("Auto-generated name - please review and edit if needed")
+                            
+                        except ValueError:
+                            # Invalid coordinate - revert
+                            old_value = self.waypoints[row].get('lat' if col == 1 else 'lon', 0.0)
+                            item.setText(f"{old_value:.6f}")
+                    
+                elif col == 3:  # Altitude column
                     self.waypoints[row]['alt'] = item.text().strip()
                     
-                elif col == 4:  # Speed column (always editable)
+                elif col == 4:  # Speed column
                     self.waypoints[row]['spd'] = item.text().strip()
                     
+            except Exception as e:
+                print(f"Error in _on_table_changed: {e}")
+                
             finally:
                 # Always reconnect the signal
                 self.waypoints_table.itemChanged.connect(self._on_table_changed)
     
+    def _update_coordinate_cells_readonly(self, row):
+        """Update coordinate cells to show read-only status for named waypoints."""
+        readonly_color = QColor(230, 230, 230)
+        
+        lat_item = self.waypoints_table.item(row, 1)
+        lon_item = self.waypoints_table.item(row, 2)
+        
+        if lat_item:
+            lat_item.setText("Named Waypoint")
+            lat_item.setFlags(lat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            lat_item.setBackground(readonly_color)
+        
+        if lon_item:
+            lon_item.setText("Named Waypoint")
+            lon_item.setFlags(lon_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            lon_item.setBackground(readonly_color)
+
     def _save_procedure(self):
-        """Save the procedure file with updated constraints."""
+        """Save the procedure file with updated constraints in the new DEFWPT format."""
         try:
             # Update waypoints from table to capture any reordering
             self._update_waypoints_from_table()
+            
+            # Validate waypoint names before saving
+            validation_errors = []
+            for i, wp in enumerate(self.waypoints):
+                name = wp.get('name', '').strip()
+                if not name:
+                    validation_errors.append(f"Row {i+1}: Waypoint name is required")
+                elif not _validate_waypoint_name(name):
+                    validation_errors.append(f"Row {i+1}: Invalid waypoint name '{name}' (alphanumeric and -_ only, no spaces)")
+                
+                # Check for coordinate waypoints with coordinates
+                if not wp.get('is_named', True):  # Coordinate waypoint
+                    try:
+                        lat = float(wp.get('lat', 0))
+                        lon = float(wp.get('lon', 0))
+                        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                            validation_errors.append(f"Row {i+1}: Invalid coordinates for '{name}'")
+                    except (ValueError, TypeError):
+                        validation_errors.append(f"Row {i+1}: Invalid coordinates for '{name}'")
+            
+            if validation_errors:
+                QMessageBox.warning(self, "Validation Errors", 
+                                   "Please fix the following errors:\n\n" + "\n".join(validation_errors))
+                return
             
             from datetime import datetime
             
@@ -1112,7 +1338,7 @@ class ProcedureEditorDialog(QDialog):
                 QMessageBox.warning(self, "Warning", "No file path available")
                 return
             
-            # Create updated file content
+            # Create updated file content with new DEFWPT format
             content = []
             content.append(f"# Procedure: {self.proc_name}")
             content.append(f"# Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1120,44 +1346,35 @@ class ProcedureEditorDialog(QDialog):
             content.append(f"# Waypoints: {len(self.waypoints)}")
             content.append("#")
             
+            # Step 1: Add DEFWPT commands for coordinate waypoints
+            coordinate_waypoints = [wp for wp in self.waypoints if not wp.get('is_named', True)]
+            if coordinate_waypoints:
+                content.append("# Waypoint Definitions")
+                for wp in coordinate_waypoints:
+                    defwpt_line = f"00:00:00.00> DEFWPT {wp['name']} {wp['lat']:.6f} {wp['lon']:.6f}"
+                    content.append(defwpt_line)
+                content.append("#")
+            
+            # Step 2: Add ADDWPT commands (all waypoints referenced by name now)
+            content.append("# Procedure Commands")
             for wp in self.waypoints:
-                # Check if this is a named waypoint or coordinate waypoint
-                if wp.get('is_named', False):
-                    # Named waypoint: use waypoint name instead of coordinates
-                    line = f"00:00:00.00>%0 ADDWPT {wp['name']}"
-                    
-                    # Add constraints if present
-                    has_alt = wp['alt'].strip()
-                    has_spd = wp['spd'].strip()
-                    
-                    if has_alt and has_spd:
-                        # Both altitude and speed
-                        line += f" {wp['alt']} {wp['spd']}"
-                    elif has_alt and not has_spd:
-                        # Only altitude
-                        line += f" {wp['alt']}"
-                    elif not has_alt and has_spd:
-                        # Only speed - use comma placeholders
-                        line += f" ,, {wp['spd']}"
-                    # If neither, just leave as waypoint name only
-                    
-                else:
-                    # Coordinate waypoint: use lat/lon coordinates
-                    line = f"00:00:00.00>%0 ADDWPT {wp['lat']:.6f} {wp['lon']:.6f}"
-                    
-                    has_alt = wp['alt'].strip()
-                    has_spd = wp['spd'].strip()
-                    
-                    if has_alt and has_spd:
-                        # Both altitude and speed
-                        line += f" {wp['alt']} {wp['spd']}"
-                    elif has_alt and not has_spd:
-                        # Only altitude
-                        line += f" {wp['alt']}"
-                    elif not has_alt and has_spd:
-                        # Only speed - use comma placeholders
-                        line += f" ,, {wp['spd']}"
-                    # If neither, just leave as coordinates only
+                # All waypoints now use names in ADDWPT commands
+                line = f"00:00:00.00>%0 ADDWPT {wp['name']}"
+                
+                # Add constraints if present
+                has_alt = wp['alt'].strip() if wp['alt'] else ""
+                has_spd = wp['spd'].strip() if wp['spd'] else ""
+                
+                if has_alt and has_spd:
+                    # Both altitude and speed
+                    line += f" {has_alt} {has_spd}"
+                elif has_alt and not has_spd:
+                    # Only altitude
+                    line += f" {has_alt}"
+                elif not has_alt and has_spd:
+                    # Only speed - use comma placeholders
+                    line += f" ,, {has_spd}"
+                # If neither, just leave as waypoint name only
                 
                 content.append(line)
             
@@ -1362,7 +1579,7 @@ class ProcedureEditorDialog(QDialog):
             error_msg = f"Error saving procedure: {e}"
             self.status_label.setText(error_msg)
             QMessageBox.critical(self, "Error", error_msg)
-    
+
     def _add_waypoint(self):
         """Add a new waypoint to the procedure."""
         # Create new waypoint dialog
@@ -1391,25 +1608,30 @@ class ProcedureEditorDialog(QDialog):
                 self._populate_table()
                 self.status_label.setText(f"Added named waypoint: {name.strip().upper()}")
         else:
-            # Coordinate waypoint
+            # Coordinate waypoint - auto-generate name based on procedure
             lat, ok = QInputDialog.getDouble(self, "Add Coordinate Waypoint", "Enter latitude:", 0.0, -90.0, 90.0, 6)
             if not ok:
                 return
             lon, ok = QInputDialog.getDouble(self, "Add Coordinate Waypoint", "Enter longitude:", 0.0, -180.0, 180.0, 6)
             if not ok:
                 return
+            
+            # Generate auto name
+            proc_name = _extract_procedure_name_from_path(self.filepath or "PROC")
+            auto_name = _generate_auto_waypoint_name(proc_name, len(self.waypoints))
                 
             new_waypoint = {
-                'name': f"WPT{len(self.waypoints)+1}",
+                'name': auto_name,
                 'lat': lat,
                 'lon': lon,
                 'alt': '',
                 'spd': '',
-                'is_named': False
+                'is_named': False,
+                'needs_name_validation': True  # Mark as needing user review
             }
             self.waypoints.append(new_waypoint)
             self._populate_table()
-            self.status_label.setText(f"Added coordinate waypoint: {lat:.6f}, {lon:.6f}")
+            self.status_label.setText(f"Added coordinate waypoint: {auto_name} ({lat:.6f}, {lon:.6f})")
     
     def _delete_waypoint(self):
         """Delete the selected waypoint from the procedure."""

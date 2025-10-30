@@ -1,8 +1,0 @@
-# Procedure: STAR-TEST
-# Updated: 2025-01-05 00:00:00
-# Type: Custom Track Procedure
-# Waypoints: 3
-#
-00:00:00.00>%0 ADDWPT ALPHA FL200 M0.6
-00:00:00.00>%0 ADDWPT BRAVO 8000 250
-00:00:00.00>%0 ADDWPT CHARLIE

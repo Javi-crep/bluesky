@@ -1742,6 +1742,28 @@ def _build_proc_coord_db(proc_path: str) -> Dict[str, Tuple[float, float]]:
     return coord_db
 
 
+def _get_defwpt_coordinate(waypoint_name: str, proc_path: str) -> Optional[Tuple[float, float]]:
+    """Get coordinates for a waypoint from DEFWPT definitions in procedure file."""
+    try:
+        with open(proc_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        target_name = waypoint_name.upper()
+        
+        for line in lines:
+            if 'DEFWPT' in line.upper():
+                parsed = _parse_defwpt_line(line)
+                if parsed:
+                    name, lat, lon = parsed
+                    if name.upper() == target_name:
+                        return (lat, lon)
+    except Exception:
+        pass
+    
+    return None
+
+
 def _resolve_fix_coord(name: Optional[str],
                        fix_db: Optional[Dict[str, Tuple[float, float]]],
                        ref_lat: Optional[float] = None,
@@ -1753,7 +1775,15 @@ def _resolve_fix_coord(name: Optional[str],
     if not key:
         return None
     
-    # First check if it's a coordinate-based waypoint from our procedure
+    # PRIORITY 1: Check DEFWPT definitions in procedure file first
+    if proc_path:
+        defwpt_coord = _get_defwpt_coordinate(key, proc_path)
+        if defwpt_coord:
+            if fix_db is not None:
+                fix_db[key] = defwpt_coord
+            return defwpt_coord
+    
+    # PRIORITY 2: Check legacy coordinate-based waypoint format 
     if proc_path and key.startswith("WP") and len(key) == 4:
         proc_coord_db = _build_proc_coord_db(proc_path)
         if key in proc_coord_db:
@@ -1762,7 +1792,7 @@ def _resolve_fix_coord(name: Optional[str],
                 fix_db[key] = coord
             return coord
     
-    # Then check the provided fix database
+    # PRIORITY 3: Check the provided fix database
     if fix_db is not None and key in fix_db:
         return fix_db[key]
     
