@@ -2933,7 +2933,6 @@ class TopStrip(QWidget):
         # Jitter settings
         config['j_on'] = tab_widget.j_on.isChecked()
         config['j_dist'] = tab_widget.j_dist.currentIndex()
-        config['j_seed'] = tab_widget.j_seed.value()
         config['j_dt'] = tab_widget.j_dt.value()
         config['j_dlat'] = tab_widget.j_dlat.value()
         config['j_dlon'] = tab_widget.j_dlon.value()
@@ -2976,8 +2975,6 @@ class TopStrip(QWidget):
                 tab_widget.j_on.setChecked(config_data['j_on'])
             if 'j_dist' in config_data:
                 tab_widget.j_dist.setCurrentIndex(config_data['j_dist'])
-            if 'j_seed' in config_data:
-                tab_widget.j_seed.setValue(config_data['j_seed'])
             if 'j_dt' in config_data:
                 tab_widget.j_dt.setValue(config_data['j_dt'])
             if 'j_dlat' in config_data:
@@ -3740,9 +3737,6 @@ class RLTab(QWidget):
         self.j_on = QCheckBox("Enable jitter"); self.j_on.setChecked(False)
         self.j_dist = QComboBox(); self.j_dist.addItems(["uniform", "normal"])
         self.j_dist.setToolTip("Distribution type for random jitter: uniform (flat) or normal (bell curve)")
-        self.j_seed = QSpinBox(); self.j_seed.setRange(-2**31, 2**31-1); self.j_seed.setSpecialValueText("")
-        self.j_seed.setValue(0)
-        self.j_seed.setToolTip("Random seed for jitter generation (0 = use random seed)")
 
         self.j_dt   = QDoubleSpinBox(); self.j_dt.setDecimals(3); self.j_dt.setRange(0.0, 1e6); self.j_dt.setValue(0.0); _configure_decimal_separator(self.j_dt)
         self.j_dt.setToolTip("Time jitter in seconds (0 = no time offset)")
@@ -3765,7 +3759,6 @@ class RLTab(QWidget):
         fj.addRow(desc2)
         fj.addRow(self.j_on)
         fj.addRow("dist:", self.j_dist)
-        fj.addRow("seed:", self.j_seed)
         fj.addRow("dt [s]:", self.j_dt)
         fj.addRow("dlat [deg]:", self.j_dlat)
         fj.addRow("dlon [deg]:", self.j_dlon)
@@ -3934,10 +3927,8 @@ class RLTab(QWidget):
         dist = self.j_dist.currentText() if hasattr(self, "j_dist") else "normal"
 
         # Use zeros for unset numeric fields so the parser is happy and backend treats them as no-noise.
-        # Use scenario seed if jitter seed is 0 and scenario seed is set
-        jitter_seed = int(self.j_seed.value()) if hasattr(self, "j_seed") else 0
-        if jitter_seed == 0 and hasattr(self, "rl_seed"):
-            jitter_seed = int(self.rl_seed.value())
+        # Use scenario seed for jitter generation
+        jitter_seed = int(self.rl_seed.value()) if hasattr(self, "rl_seed") else 0
         
         seed = jitter_seed
         dt   = float(self.j_dt.value())   if hasattr(self, "j_dt")   else 0.0
