@@ -6,9 +6,7 @@
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-GORLO.scn",
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-KUDAD.scn",
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-LOPIK.scn",
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn",
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK.scn",
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK-1T.scn"
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn"
   ],
   "wpt_files": [
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/DEFFIX.scn"
@@ -20,56 +18,85 @@
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-GORLO.scn": "EHAM",
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-KUDAD.scn": "EHAM",
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-LOPIK.scn": "EHAM",
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn": "EHAM",
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK.scn": "EHAM",
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK-1T.scn": "EHAM"
+    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn": "EHAM"
   },
   "destinations": {
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ANDIK.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ],
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-ARNEM.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ],
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-BERGI.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ],
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-GORLO.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ],
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-KUDAD.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ],
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-LOPIK.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ],
     "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-04-RENDI.scn": [
-      "EHAM",
-      "LEMD"
-    ],
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK.scn": [
-      "EHAM",
-      "LEMD"
-    ],
-    "C:/Users/javie/OneDrive/Desktop/bluesky/scenario/EHAM/SID-06-ANDIK-1T.scn": [
-      "EHAM",
-      "LEMD"
+      "LEMD",
+      "EKBI",
+      "EGPD",
+      "EPGD",
+      "EIDW",
+      "LKPR"
     ]
   },
   "gen_flights": 20,
-  "gen_minsep": 90,
-  "spawn_r": 5.0,
-  "spawn_env": 40.0,
-  "sid_flights": 50,
-  "sid_alt": 3000,
-  "sid_spd": 300,
+  "generic_alt_fl": 360,
+  "generic_mach": 0.79,
+  "generic_mode": 0,
+  "generic_rate_basis": 0,
+  "generic_final_alt_fl": 100,
+  "generic_final_spd": 240,
+  "generic_override_initial_alt": false,
+  "generic_override_initial_spd": false,
+  "generic_override_final_alt": false,
+  "generic_override_final_spd": false,
+  "generic_actypes": "A320,B738,A350",
+  "sid_flights": 30,
+  "sid_alt": 10000,
+  "sid_spd": 210,
   "sid_mode": 0,
+  "sid_override_initial_alt": true,
+  "sid_override_initial_spd": true,
+  "sid_actypes": "A320,A321,A330,A350,B737,B738,B744,B777,B787,E190",
   "star_flights": 20,
   "star_alt_fl": 360,
   "star_mach": 0.79,
@@ -77,10 +104,29 @@
   "star_rate_basis": 0,
   "star_final_alt_fl": 100,
   "star_final_spd": 240,
+  "star_override_initial_alt": false,
+  "star_override_initial_spd": false,
+  "star_override_final_alt": false,
+  "star_override_final_spd": false,
+  "star_actypes": "A320,B738,A350",
+  "sid_rate_rows": {
+    "04": 40
+  },
+  "sid_schedule_data": {},
+  "star_rate_values": {
+    "initial": {},
+    "final": {}
+  },
+  "star_schedule_data": {},
+  "generic_rate_values": {
+    "initial": {},
+    "final": {}
+  },
+  "generic_schedule_data": {},
   "scn_name": "proc_scn",
   "seed": 0,
   "overwrite": true,
   "dest_enable": true,
-  "saved_at": "2025-10-27T19:24:19.597032",
+  "saved_at": "2025-10-30T14:36:51.486317",
   "tab_type": "Procedures"
 }

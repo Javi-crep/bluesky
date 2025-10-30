@@ -564,13 +564,14 @@ class ProcedureCreatorDialog(QDialog):
         
         layout.addWidget(step2_group)
         
-        # Step 3: Load for Editing
+        # Step 3: Edit Procedures
         step3_group = QGroupBox("Step 3: Edit Constraints")
         step3_layout = QVBoxLayout(step3_group)
         
         edit_buttons = QHBoxLayout()
-        self.load_for_edit_btn = QPushButton("Load for Editing")
+        self.load_for_edit_btn = QPushButton("Edit Procedure...")
         self.load_for_edit_btn.clicked.connect(self._load_for_editing)
+        self.load_for_edit_btn.setToolTip("Edit the created procedure or select from loaded procedures")
         edit_buttons.addWidget(self.load_for_edit_btn)
         edit_buttons.addStretch()
         step3_layout.addLayout(edit_buttons)
@@ -633,7 +634,7 @@ class ProcedureCreatorDialog(QDialog):
             proc_file = os.path.join("c:\\Users\\javie\\OneDrive\\Desktop\\bluesky\\satg_data\\procedures", f"{self.polygon_name}.scn")
             
             if os.path.exists(proc_file):
-                self.create_status.setText(f"Basic procedure \"{self.polygon_name}\" created successfully!\nFile: {proc_file}\nClick \"Load for Editing\" to add constraints.")
+                self.create_status.setText(f"Basic procedure \"{self.polygon_name}\" created successfully!\nFile: {proc_file}\nClick \"Edit Procedure...\" to add constraints.")
                 self.load_for_edit_btn.setEnabled(True)
             else:
                 # Check if any messages were shown in console
@@ -644,27 +645,71 @@ class ProcedureCreatorDialog(QDialog):
     
     def _load_for_editing(self):
         """Load the created procedure for editing constraints."""
-        if not self.polygon_name:
-            QMessageBox.warning(self, "Warning", "No procedure name set.")
+        # Get the parent procedures tab to access loaded procedure files
+        procedures_tab = self.parent()
+        
+        # Ensure we have the correct parent with _proc_files attribute
+        if not procedures_tab or not hasattr(procedures_tab, '_proc_files'):
+            QMessageBox.information(self, "No Procedures", 
+                                  "Cannot access procedure files from parent tab.\n"
+                                  "Please use the main Edit Procedure button instead.")
             return
-            
-        try:
-            # Open a new dialog for editing constraints
-            editor_dialog = ProcedureEditorDialog(self.polygon_name, self)
-            editor_dialog.show()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error opening editor: {e}")
+        
+        # First check if the current procedure was created and exists
+        if self.polygon_name:
+            try:
+                # Construct the direct file path for the newly created procedure
+                import os
+                proc_file_path = os.path.abspath(os.path.join("satg_data", "procedures", f"{self.polygon_name}.scn"))
+                
+                # Open the procedure editor dialog with the direct file path
+                editor_dialog = ProcedureEditorDialog(self.polygon_name, procedures_tab, file_path=proc_file_path)
+                editor_dialog.exec()  # Use exec() for modal dialog instead of show()
+                return
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Error opening editor for created procedure: {e}")
+                return
+        
+        # If no procedure was created in this session, behave like the main edit procedure button
+        if not procedures_tab._proc_files:
+            QMessageBox.information(self, "No Procedures", 
+                                  "No procedure files are currently loaded.\n"
+                                  "Please add procedure files first or create a new procedure.")
+            return
+        
+        # Create a simple selection dialog for loaded procedures
+        from PyQt6.QtWidgets import QInputDialog
+        
+        # Get list of procedure names from loaded files
+        proc_names = [os.path.splitext(os.path.basename(filepath))[0] for filepath in procedures_tab._proc_files]
+        
+        if not proc_names:
+            QMessageBox.information(self, "No Procedures", "No procedures available for editing.")
+            return
+        
+        # Let user select which procedure to edit
+        proc_name, ok = QInputDialog.getItem(self, "Select Procedure to Edit", 
+                                           "Choose a procedure to edit:", 
+                                           proc_names, 0, False)
+        
+        if ok and proc_name:
+            # Open the procedure editor dialog with the procedures tab as parent
+            try:
+                editor_dialog = ProcedureEditorDialog(proc_name, procedures_tab)
+                editor_dialog.exec()  # Use exec() for modal dialog instead of show()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Error opening editor: {e}")
 
 
 class ProcedureEditorDialog(QDialog):
     """Dialog for editing procedure waypoint constraints."""
     
-    def __init__(self, proc_name, parent=None):
+    def __init__(self, proc_name, parent=None, file_path=None):
         super().__init__(parent)
         self.proc_name = proc_name
         self.waypoints = []
         self.filepath = ""
+        self.direct_file_path = file_path  # Optional direct file path for newly created procedures
         
         self.setWindowTitle(f"Edit Procedure: {proc_name}")
         self.setModal(True)  # Make it modal
@@ -748,12 +793,18 @@ class ProcedureEditorDialog(QDialog):
         try:
             import re
             
-            # Find the procedure file path from loaded files
+            # Determine the procedure file path
             proc_file_path = None
-            for filepath in self.parent()._proc_files:
-                if os.path.splitext(os.path.basename(filepath))[0] == self.proc_name:
-                    proc_file_path = filepath
-                    break
+            
+            # If a direct file path was provided (for newly created procedures), use it
+            if self.direct_file_path:
+                proc_file_path = self.direct_file_path
+            else:
+                # Find the procedure file path from loaded files (for existing procedures)
+                for filepath in self.parent()._proc_files:
+                    if os.path.splitext(os.path.basename(filepath))[0] == self.proc_name:
+                        proc_file_path = filepath
+                        break
             
             if not proc_file_path:
                 self.status_label.setText("Error: Procedure file not found in loaded files")
@@ -1123,11 +1174,11 @@ class ProcedureEditorDialog(QDialog):
                 from bluesky import stack
                 
                 # Step 1: Unload the old version
-                stack.stack(f"SATG_PROC_UNLOAD_PROC {self.filepath}")
+                stack.stack(_join_tokens("SATG_PROC_UNLOAD_PROC", _qpath(self.filepath)))
                 print(f"[DEBUG] Unloaded old version: {self.filepath}")
                 
                 # Step 2: Reload the new version
-                stack.stack(f"SATG_PROC_LOAD_PROC {self.filepath}")
+                stack.stack(_join_tokens("SATG_PROC_LOAD_PROC", _qpath(self.filepath)))
                 print(f"[DEBUG] Reloaded updated version: {self.filepath}")
                 
                 # Update the procedure widget's waypoint information with new sequence
@@ -1162,9 +1213,144 @@ class ProcedureEditorDialog(QDialog):
                             self.parent()._sync_origin_edits()
                         if hasattr(self.parent(), '_update_dest_state'):
                             self.parent()._update_dest_state()
+                    
+                    # Force rate basis refresh to ensure initial/final waypoint changes take effect
+                    if hasattr(self.parent(), '_on_star_basis_changed') and hasattr(self.parent(), '_star_basis_index'):
+                        current_star_basis = self.parent()._star_basis_index
+                        self.parent()._on_star_basis_changed(current_star_basis)
+                        print(f"[DEBUG] Forced STAR rate basis refresh")
+                    
+                    if hasattr(self.parent(), '_on_generic_basis_changed') and hasattr(self.parent(), '_generic_basis_index'):
+                        current_generic_basis = self.parent()._generic_basis_index
+                        self.parent()._on_generic_basis_changed(current_generic_basis)
+                        print(f"[DEBUG] Forced Generic rate basis refresh")
+                    
                     print(f"[DEBUG] Updated batch options after procedure reload")
                 
                 self.status_label.setText("Procedure saved and reloaded successfully!")
+                
+                # Check if this is a newly created procedure that needs to be added to the GUI
+                if (self.parent() and hasattr(self.parent(), '_proc_files') and 
+                    self.filepath not in self.parent()._proc_files):
+                    
+                    # This is a newly created procedure - add it to the procedures tab
+                    try:
+                        # Load the procedure into the backend first
+                        from bluesky import stack
+                        stack.stack(_join_tokens("SATG_PROC_LOAD_PROC", _qpath(self.filepath)))
+                        
+                        # Add to the procedures tab file list
+                        self.parent()._proc_files.append(self.filepath)
+                        
+                        # Trigger the procedures tab to refresh its GUI by simulating the file addition
+                        # This will recreate all the GUI elements properly
+                        procedures_tab = self.parent()
+                        
+                        # Use the same logic as in _add_proc to add the GUI entry
+                        from PyQt6.QtWidgets import QListWidgetItem, QWidget, QHBoxLayout, QLineEdit, QPushButton, QLabel
+                        from PyQt6.QtCore import Qt
+                        from typing import Optional
+                        
+                        item = QListWidgetItem(procedures_tab.lst_proc)
+                        item.setData(Qt.ItemDataRole.UserRole, self.filepath)
+                        container = QWidget(procedures_tab.lst_proc)
+                        row_layout = QHBoxLayout(container)
+                        row_layout.setContentsMargins(0, 0, 0, 0)
+                        is_sid = procedures_tab._is_sid_file(self.filepath)
+                        is_star = procedures_tab._is_star_file(self.filepath)
+                        is_generic = not is_sid and not is_star
+
+                        origin_edit: Optional[QLineEdit] = None
+                        origin_all_btn: Optional[QPushButton] = None
+                        if is_sid:
+                            origin_edit = QLineEdit(container)
+                            origin_edit.setPlaceholderText("Origin ICAO")
+                            origin_edit.setMaxLength(4)
+                            origin_edit.setMaximumWidth(90)
+                            origin_edit.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc;")
+                            if procedures_tab._origins.get(self.filepath):
+                                origin_edit.setText(procedures_tab._origins[self.filepath])
+                                procedures_tab._update_origin_entry(self.filepath, procedures_tab._origins[self.filepath])
+                            origin_edit.editingFinished.connect(lambda path=self.filepath, ref=origin_edit: procedures_tab._update_origin_entry(path, ref.text()))
+
+                            origin_all_btn = QPushButton("Origin -> all", container)
+                            origin_all_btn.setAutoDefault(False)
+                            origin_all_btn.clicked.connect(lambda _, path=self.filepath: procedures_tab._apply_origin_to_all(path))
+
+                            row_layout.addWidget(origin_edit)
+                            row_layout.addWidget(origin_all_btn)
+
+                        label = QLabel(self.filepath, container)
+                        label.setStyleSheet("color: #555;")
+                        row_layout.addWidget(label, 2)
+
+                        dest_edit = QLineEdit(container)
+                        dest_edit.setPlaceholderText("Destinations (comma separated)")
+                        dest_edit.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc;")
+                        existing = procedures_tab._destinations.get(self.filepath, [])
+                        if existing:
+                            dest_edit.setText(", ".join(existing))
+                            procedures_tab._update_destination_entry(self.filepath, ", ".join(existing))
+                        dest_edit.editingFinished.connect(lambda path=self.filepath, ref=dest_edit: procedures_tab._update_destination_entry(path, ref.text()))
+
+                        dest_all_btn = QPushButton("Dest -> all", container)
+                        dest_all_btn.setAutoDefault(False)
+                        dest_all_btn.clicked.connect(lambda _, path=self.filepath: procedures_tab._apply_dest_to_all(path))
+
+                        row_layout.addWidget(dest_edit, 1)
+                        row_layout.addWidget(dest_all_btn)
+
+                        item.setSizeHint(container.sizeHint())
+                        procedures_tab.lst_proc.setItemWidget(item, container)
+                        
+                        # Add to the _proc_widgets dictionary
+                        procedures_tab._proc_widgets[self.filepath] = {
+                            "item": item,
+                            "origin": origin_edit,
+                            "origin_all": origin_all_btn,
+                            "dest": dest_edit,
+                            "dest_all": dest_all_btn,
+                            "is_sid": is_sid,
+                            "is_star": is_star,
+                            "is_generic": is_generic,
+                        }
+                        
+                        # Extract initial and final waypoints for rate scheduling (STAR and Generic procedures)
+                        if is_star or is_generic:
+                            fixes = procedures_tab._proc_fix_sequence(self.filepath)
+                            initial_fix = fixes[0] if fixes else ""
+                            final_fix = fixes[-1] if fixes else ""
+                            procedures_tab._proc_widgets[self.filepath]["initial_fix"] = initial_fix
+                            procedures_tab._proc_widgets[self.filepath]["final_fix"] = final_fix
+                            print(f"[DEBUG] Extracted waypoints for newly created procedure: initial={initial_fix}, final={final_fix}")
+                        
+                        # Refresh all related GUI components
+                        procedures_tab._refresh_sid_runway_rows()
+                        procedures_tab._refresh_star_rate_rows()
+                        procedures_tab._refresh_generic_rate_rows()
+                        procedures_tab._sync_destination_edits()
+                        procedures_tab._sync_origin_edits()
+                        procedures_tab._update_dest_state()
+                        
+                        # Force rate basis refresh to ensure initial/final waypoint changes take effect
+                        if is_star and hasattr(procedures_tab, '_on_star_basis_changed') and hasattr(procedures_tab, '_star_basis_index'):
+                            current_star_basis = procedures_tab._star_basis_index
+                            procedures_tab._on_star_basis_changed(current_star_basis)
+                            print(f"[DEBUG] Forced STAR rate basis refresh for newly created procedure")
+                        
+                        if is_generic and hasattr(procedures_tab, '_on_generic_basis_changed') and hasattr(procedures_tab, '_generic_basis_index'):
+                            current_generic_basis = procedures_tab._generic_basis_index
+                            procedures_tab._on_generic_basis_changed(current_generic_basis)
+                            print(f"[DEBUG] Forced Generic rate basis refresh for newly created procedure")
+                        
+                        print(f"[DEBUG] Added newly created procedure to GUI: {self.filepath}")
+                        self.status_label.setText("Procedure saved, reloaded, and added to procedures list!")
+                        
+                    except Exception as e:
+                        print(f"[DEBUG] Error adding procedure to GUI: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.status_label.setText("Procedure saved and reloaded, but couldn't add to GUI automatically. Use 'Add Proc Files' to load it manually.")
                 QMessageBox.information(self, "Success", f"Procedure saved and reloaded: {self.filepath}")
                 
             except Exception as load_error:
@@ -2332,8 +2518,6 @@ class TopStrip(QWidget):
                 tab_widget.seed.setValue(config_data['seed'])
             if 'overwrite' in config_data:
                 tab_widget.overwrite.setChecked(config_data['overwrite'])
-            if 'dest_enable' in config_data:
-                tab_widget.dest_enable.setChecked(config_data['dest_enable'])
                 
             # Restore origins and destinations data BEFORE loading files
             if 'origins' in config_data:
@@ -2406,6 +2590,15 @@ class TopStrip(QWidget):
                 tab_widget._sync_destination_edits()
                 tab_widget._sync_origin_edits()
                 tab_widget._update_dest_state()
+            else:
+                # Even without procedure files, we may need to call _update_dest_state()
+                tab_widget._update_dest_state()
+                
+            # Restore dest_enable setting AFTER _update_dest_state() to prevent it from being reset
+            if 'dest_enable' in config_data:
+                tab_widget.dest_enable.setChecked(config_data['dest_enable'])
+                # IMPORTANT: Update backend state to match GUI state
+                _emit(f"SATG_PROC_USE_DEST {1 if config_data['dest_enable'] else 0}")
                 
             # Restore SID rate rows after refresh (which rebuilds the GUI controls)
             if 'sid_rate_rows' in config_data:
@@ -6591,7 +6784,10 @@ class ProcTab(QWidget):
             self._update_sid_mode_state()
 
     def _on_dest_toggle(self, checked: bool):
+        # Update GUI state
         self._update_dest_state()
+        # IMPORTANT: Update backend state to match GUI state
+        _emit(f"SATG_PROC_USE_DEST {1 if checked else 0}")
 
     def _configure_destinations(self):
         if not self._proc_files:
@@ -7000,7 +7196,7 @@ class ProcTab(QWidget):
         
         if ok and proc_name:
             # Open the procedure editor dialog with the selected procedure name
-            # This follows the same pattern as the "Load for Editing" button
+            # This follows the same pattern as the enhanced "Edit Procedure..." button
             try:
                 editor_dialog = ProcedureEditorDialog(proc_name, self)
                 editor_dialog.exec()  # Use exec() for modal dialog instead of show()
