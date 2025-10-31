@@ -130,7 +130,7 @@ def _echo_err(msg: str):
     for line in str(msg).splitlines(): _echo_lines([f"[SATG][ERR] {line}"])
 
 def _fmt_alt_token(fl: int) -> str:
-    return "0" if int(fl) <= 0 else f"FL{int(fl)}"
+    return "0" if int(fl) <= 0 else f"FL{int(fl):03d}"
 
 def _sanitize_name(name: str) -> str:
     s = re.sub(r'[^A-Za-z0-9_]', '_', name)
@@ -324,6 +324,23 @@ class _SATGState:
         # Jitter coverage (percentage of flights to jitter) 
         self.jitter_pct: float = 100.0
         self.jitter_subset: Optional[set] = None  # set of ACIDs to jitter (None => compute on the fly)
+
+        # Flight phase-based jitter configuration
+        self.phase_jitter_enabled: bool = False
+        self.phase_altitudes = {
+            'takeoff': {'min_fl': 0, 'max_fl': 15},      # Ground to initial climb
+            'climb': {'min_fl': 15, 'max_fl': 250},      # Climbing phase
+            'cruise': {'min_fl': 250, 'max_fl': 450},    # Cruise altitude
+            'descent': {'min_fl': 50, 'max_fl': 250},    # Descending from cruise  
+            'approach': {'min_fl': 0, 'max_fl': 50}      # Final approach
+        }
+        self.phase_configs = {
+            'takeoff': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0},
+            'climb': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0},
+            'cruise': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0},
+            'descent': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0},
+            'approach': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0}
+        }
 
         self.dt_max: float = 0.0
         self.dlat_max: float = 0.0
@@ -571,7 +588,11 @@ def _draw_noise(rng: random.Random, delta: float, dist: str, nsig: float) -> flo
 def _get_points_for_run() -> Dict[str, List[dict]]:
     if not STATE.base_points: return {}
     pts = {acid: [dict(p) for p in plist] for acid, plist in STATE.base_points.items()}
-    if not STATE.jitter_on: return pts
+    
+    # Check if any jitter is enabled (global or phase-based)
+    jitter_enabled = STATE.jitter_on or STATE.phase_jitter_enabled
+    if not jitter_enabled: return pts
+    
     rng = random.Random(STATE.j_seed) if STATE.j_seed is not None else random.Random()
     dist = STATE.jitter_dist.lower(); nsig = STATE.nsig
 
@@ -598,22 +619,154 @@ def _get_points_for_run() -> Dict[str, List[dict]]:
         rng_local = random.Random((seed_base << 32) ^ (hash(acid) & 0xffffffff))
         return (rng_local.random() * 100.0) < p
 
+    def _get_flight_phase(fl: int, waypoint_sequence: list, current_index: int) -> str:
+        """Determine flight phase based on local altitude progression context
+        
+        Enhanced to handle temporary level-offs and small altitude variations
+        by looking at a wider context window around the current waypoint.
+        
+        Args:
+            fl: Current flight level
+            waypoint_sequence: List of waypoints with 'fl' field
+            current_index: Index of current waypoint in the sequence
+            
+        Returns:
+            Flight phase: 'takeoff', 'climb', 'cruise', 'descent', or 'approach'
+        """
+        # Safety checks
+        if not waypoint_sequence or current_index >= len(waypoint_sequence):
+            return 'cruise'
+        
+        current_fl = fl
+        
+        # Look at wider context to handle temporary variations
+        # Get altitudes from a window around current position
+        window_size = 2  # Look 2 waypoints before/after when possible
+        
+        # Get previous context (up to window_size waypoints back)
+        prev_altitudes = []
+        for i in range(max(0, current_index - window_size), current_index):
+            prev_altitudes.append(waypoint_sequence[i]['fl'])
+        
+        # Get next context (up to window_size waypoints ahead)  
+        next_altitudes = []
+        for i in range(current_index + 1, min(len(waypoint_sequence), current_index + window_size + 1)):
+            next_altitudes.append(waypoint_sequence[i]['fl'])
+        
+        # Calculate overall trend from wider context
+        start_altitude = prev_altitudes[0] if prev_altitudes else current_fl
+        end_altitude = next_altitudes[-1] if next_altitudes else current_fl
+        
+        # Also look at immediate neighbors for local context
+        prev_fl = waypoint_sequence[current_index - 1]['fl'] if current_index > 0 else current_fl
+        next_fl = waypoint_sequence[current_index + 1]['fl'] if current_index < len(waypoint_sequence) - 1 else current_fl
+        
+        # Calculate trends
+        immediate_from_prev = current_fl - prev_fl if current_index > 0 else 0
+        immediate_to_next = next_fl - current_fl if current_index < len(waypoint_sequence) - 1 else 0
+        overall_trend = end_altitude - start_altitude
+        
+        # Determine if generally ascending or descending
+        # Priority: overall trend > immediate trend
+        trend_threshold = 10  # FL difference to consider significant
+        
+        if abs(overall_trend) >= trend_threshold:
+            # Strong overall trend - use that
+            is_ascending = overall_trend > 0
+            is_descending = overall_trend < 0
+        else:
+            # Weak overall trend - use immediate context
+            is_ascending = (immediate_from_prev > 0) or (immediate_to_next > 0)
+            is_descending = (immediate_from_prev < 0) or (immediate_to_next < 0)
+            
+            # Handle conflicting immediate signals
+            if is_ascending and is_descending:
+                net_immediate = immediate_from_prev + immediate_to_next
+                is_ascending = net_immediate >= 0
+                is_descending = net_immediate < 0
+            elif not is_ascending and not is_descending:
+                # Level flight - use position in sequence
+                flight_progress = current_index / len(waypoint_sequence)
+                is_ascending = flight_progress < 0.5
+                is_descending = flight_progress >= 0.5
+        
+        # Simple altitude thresholds for phase distinction
+        low_altitude = 50   # Below FL050
+        high_altitude = 200 # Above FL200
+        
+        # Phase determination based on altitude trend + altitude level
+        if is_ascending:
+            if current_fl <= low_altitude:
+                return 'takeoff'
+            elif current_fl >= high_altitude:
+                return 'cruise'  # High altitude ascending = cruise climb
+            else:
+                return 'climb'   # Medium altitude ascending = climb
+        else:  # is_descending
+            if current_fl <= low_altitude:
+                return 'approach'
+            elif current_fl >= high_altitude:
+                return 'descent'  # High altitude descending = descent
+            else:
+                return 'descent'  # Medium altitude descending = descent
+
+    def _get_phase_jitter_params(phase: str) -> dict:
+        """Get jitter parameters for a specific flight phase"""
+        if not STATE.phase_jitter_enabled or phase not in STATE.phase_configs:
+            return {'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0}
+        
+        phase_config = STATE.phase_configs[phase]
+        if not phase_config.get('enabled', False):
+            return {'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0}
+        
+        return {
+            'dt_max': phase_config.get('dt_max', 0.0),
+            'dlat_max': phase_config.get('dlat_max', 0.0),
+            'dlon_max': phase_config.get('dlon_max', 0.0),
+            'dfl_max': phase_config.get('dfl_max', 0)
+        }
+
     for acid, plist in pts.items():
         plist.sort(key=lambda r: r['seq'])
 
-        # NEW: only jitter this flight if selected
-        if not _should_jitter(acid):
-            continue
+        # Check if this flight should be jittered (for global jitter)
+        apply_global_jitter = _should_jitter(acid)
 
         last_t: Optional[float] = None
-        for p in plist:
-            p['t']  = max(0.0, p['t'] + _draw_noise(rng, STATE.dt_max,   dist, nsig))
-            if last_t is not None:
-                p['t'] = max(p['t'], last_t)
-            p['lat'] += _draw_noise(rng, STATE.dlat_max, dist, nsig)
-            p['lon'] += _draw_noise(rng, STATE.dlon_max, dist, nsig)
-            p['fl']   = max(0, int(round(p['fl'] + _draw_noise(rng, float(STATE.dfl_max), dist, nsig))))
-            last_t = p['t']
+        for i, p in enumerate(plist):
+            # Determine jitter parameters
+            if STATE.phase_jitter_enabled:
+                # Use phase-based jitter with trajectory context
+                phase = _get_flight_phase(p['fl'], plist, i)
+                jitter_params = _get_phase_jitter_params(phase)
+                apply_jitter = jitter_params['dt_max'] > 0 or jitter_params['dlat_max'] > 0 or jitter_params['dlon_max'] > 0 or jitter_params['dfl_max'] > 0
+            elif apply_global_jitter:
+                # Use global jitter parameters
+                jitter_params = {
+                    'dt_max': STATE.dt_max,
+                    'dlat_max': STATE.dlat_max,
+                    'dlon_max': STATE.dlon_max,
+                    'dfl_max': STATE.dfl_max
+                }
+                apply_jitter = True
+            else:
+                apply_jitter = False
+                jitter_params = {'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0}
+
+            # Apply jitter if enabled
+            if apply_jitter:
+                p['t'] = max(0.0, p['t'] + _draw_noise(rng, jitter_params['dt_max'], dist, nsig))
+                if last_t is not None:
+                    p['t'] = max(p['t'], last_t)
+                p['lat'] += _draw_noise(rng, jitter_params['dlat_max'], dist, nsig)
+                p['lon'] += _draw_noise(rng, jitter_params['dlon_max'], dist, nsig)
+                p['fl'] = max(0, int(round(p['fl'] + _draw_noise(rng, float(jitter_params['dfl_max']), dist, nsig))))
+                last_t = p['t']
+            else:
+                # Ensure time ordering even without jitter
+                if last_t is not None:
+                    p['t'] = max(p['t'], last_t)
+                last_t = p['t']
 
     return pts
 
@@ -794,8 +947,8 @@ def _write_rl_scn(out_path: str, append: bool = False):
         if not append:
             # Write scenario header
             header = _generate_scenario_header("Realistic Replay",
-                jitter_enabled="Yes" if STATE.rl_jitter_on else "No",
-                autodel_enabled="Yes" if STATE.rl_autodel_on else "No"
+                jitter_enabled="Yes" if STATE.jitter_on else "No",
+                autodel_enabled="Yes" if STATE.autodel else "No"
             )
             for line in header:
                 f.write(f"{line}\n")
@@ -2041,6 +2194,77 @@ def SATG_RL_AUTODEL(mode: str):
     STATE.autodel = (m == "on")
     _echo_ok(f"Auto-delete at last waypoint {'ENABLED' if STATE.autodel else 'DISABLED'}",
              nxt="Now: SATG_RL_RUN [SCNNAME]")
+    return True, ""
+
+@command
+def SATG_RL_PHASE_JITTER(mode: str):
+    """SATG_RL_PHASE_JITTER mode
+      mode: on|off
+    Enable/disable flight phase-based jitter system.
+    """
+    m = mode.strip().lower()
+    if m not in ("on","off"):
+        _echo_err("Usage: SATG_RL_PHASE_JITTER on|off"); return False, ""
+    STATE.phase_jitter_enabled = (m == "on")
+    status = "ENABLED" if STATE.phase_jitter_enabled else "DISABLED"
+    _echo_ok(f"Phase-based jitter {status}",
+             nxt="Use SATG_RL_PHASE_CONFIG to configure individual phases")
+    return True, ""
+
+@command  
+def SATG_RL_PHASE_CONFIG(phase: str, enabled: str=None, dt: float=None, dlat: float=None, dlon: float=None, dfl: int=None):
+    """SATG_RL_PHASE_CONFIG phase [enabled] [dt] [dlat] [dlon] [dfl]
+    Configure jitter parameters for a specific flight phase.
+      phase: takeoff|climb|cruise|descent|approach
+      enabled: on|off
+      dt: seconds (± range for time)
+      dlat: degrees (± range latitude) 
+      dlon: degrees (± range longitude)
+      dfl: flight levels (± range)
+    """
+    p = phase.strip().lower()
+    if p not in STATE.phase_configs:
+        _echo_err(f"Invalid phase '{phase}'. Valid phases: takeoff, climb, cruise, descent, approach")
+        return False, ""
+    
+    config = STATE.phase_configs[p]
+    
+    if enabled is not None:
+        e = enabled.strip().lower()
+        if e not in ("on","off"):
+            _echo_err("enabled must be 'on' or 'off'"); return False, ""
+        config['enabled'] = (e == "on")
+    
+    if dt is not None: config['dt_max'] = float(dt)
+    if dlat is not None: config['dlat_max'] = float(dlat) 
+    if dlon is not None: config['dlon_max'] = float(dlon)
+    if dfl is not None: config['dfl_max'] = int(dfl)
+    
+    status = "ENABLED" if config['enabled'] else "DISABLED"
+    msg = (f"Phase '{phase}' {status} — dt={config['dt_max']}, dlat={config['dlat_max']}, "
+           f"dlon={config['dlon_max']}, dfl={config['dfl_max']}")
+    _echo_ok(msg)
+    return True, ""
+
+@command
+def SATG_RL_PHASE_ALTITUDES(phase: str, min_fl: int=None, max_fl: int=None):
+    """SATG_RL_PHASE_ALTITUDES phase [min_fl] [max_fl]
+    Configure altitude boundaries for flight phases.
+      phase: takeoff|climb|cruise|descent|approach
+      min_fl: minimum flight level
+      max_fl: maximum flight level
+    """
+    p = phase.strip().lower()
+    if p not in STATE.phase_altitudes:
+        _echo_err(f"Invalid phase '{phase}'. Valid phases: takeoff, climb, cruise, descent, approach")
+        return False, ""
+    
+    if min_fl is not None: STATE.phase_altitudes[p]['min_fl'] = int(min_fl)
+    if max_fl is not None: STATE.phase_altitudes[p]['max_fl'] = int(max_fl)
+    
+    bounds = STATE.phase_altitudes[p]
+    msg = f"Phase '{phase}' altitude bounds: FL{bounds['min_fl']:03d} to FL{bounds['max_fl']:03d}"
+    _echo_ok(msg)
     return True, ""
 
 @command

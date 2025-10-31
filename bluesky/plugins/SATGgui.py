@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
     QDialog, QDialogButtonBox, QTimeEdit, QScrollArea, QRadioButton, QButtonGroup,
     QInputDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QFrame
+    QAbstractItemView, QFrame, QSplitter
 )
 from PyQt6 import sip
 from bluesky import stack
@@ -2940,6 +2940,15 @@ class TopStrip(QWidget):
         config['j_nsig'] = tab_widget.j_nsig.value()
         config['j_pct'] = tab_widget.j_pct.value()
         
+        # Phase-based jitter settings
+        config['phase_jitter_enabled'] = getattr(tab_widget, 'phase_jitter_enabled', False)
+        if hasattr(tab_widget, 'phase_altitudes'):
+            config['phase_altitudes'] = dict(tab_widget.phase_altitudes)
+        if hasattr(tab_widget, 'phase_configs'):
+            config['phase_configs'] = {}
+            for phase, cfg in tab_widget.phase_configs.items():
+                config['phase_configs'][phase] = dict(cfg)
+        
         # Options
         config['autodel_chk'] = tab_widget.autodel_chk.isChecked()
         
@@ -2987,6 +2996,16 @@ class TopStrip(QWidget):
                 tab_widget.j_nsig.setValue(config_data['j_nsig'])
             if 'j_pct' in config_data:
                 tab_widget.j_pct.setValue(config_data['j_pct'])
+            
+            # Restore phase-based jitter settings
+            if 'phase_jitter_enabled' in config_data:
+                tab_widget.phase_jitter_enabled = config_data['phase_jitter_enabled']
+            if 'phase_altitudes' in config_data:
+                tab_widget.phase_altitudes = dict(config_data['phase_altitudes'])
+            if 'phase_configs' in config_data:
+                tab_widget.phase_configs = {}
+                for phase, cfg in config_data['phase_configs'].items():
+                    tab_widget.phase_configs[phase] = dict(cfg)
             
             # Restore options
             if 'autodel_chk' in config_data:
@@ -3038,6 +3057,46 @@ class TopStrip(QWidget):
             config['gc_seed'] = abs_page.gc_seed.value()
             config['gc_overwrite_cb'] = abs_page.gc_overwrite_cb.isChecked()
             config['show_cpa_cb'] = abs_page.show_cpa_cb.isChecked()
+        
+        # Relative page settings
+        if hasattr(tab_widget, '_relative_page'):
+            rel_page = tab_widget._relative_page
+            # Target aircraft settings
+            config['target_combo'] = rel_page.target_combo.currentText()
+            config['include_target_cb'] = rel_page.include_target_cb.isChecked()
+            config['target_acid'] = rel_page.target_acid.text()
+            config['target_type'] = rel_page.target_type.text()
+            config['target_lat_value'] = rel_page.target_lat_value.text()
+            config['target_lat_range'] = rel_page.target_lat_range.text()
+            config['target_lon_value'] = rel_page.target_lon_value.text()
+            config['target_lon_range'] = rel_page.target_lon_range.text()
+            config['target_hdg_value'] = rel_page.target_hdg_value.text()
+            config['target_hdg_range'] = rel_page.target_hdg_range.text()
+            config['target_alt_value'] = rel_page.target_alt_value.text()
+            config['target_alt_range'] = rel_page.target_alt_range.text()
+            config['target_spd_value'] = rel_page.target_spd_value.text()
+            config['target_spd_range'] = rel_page.target_spd_range.text()
+            
+            # Intruder aircraft settings
+            config['intr_acid'] = rel_page.intr_acid.text()
+            config['intr_type'] = rel_page.intr_type.text()
+            config['intr_dpsi_value'] = rel_page.intr_dpsi_value.text()
+            config['intr_dpsi_range'] = rel_page.intr_dpsi_range.text()
+            config['intr_dcpa_value'] = rel_page.intr_dcpa_value.text()
+            config['intr_dcpa_range'] = rel_page.intr_dcpa_range.text()
+            config['intr_tlosh_value'] = rel_page.intr_tlosh_value.text()
+            config['intr_tlosh_range'] = rel_page.intr_tlosh_range.text()
+            config['intr_dh_value'] = rel_page.intr_dh_value.text()
+            config['intr_dh_range'] = rel_page.intr_dh_range.text()
+            config['intr_tlosv_value'] = rel_page.intr_tlosv_value.text()
+            config['intr_tlosv_range'] = rel_page.intr_tlosv_range.text()
+            config['intr_spd_value'] = rel_page.intr_spd_value.text()
+            config['intr_spd_range'] = rel_page.intr_spd_range.text()
+            
+            # Scenario settings for relative
+            config['rel_scn_name'] = rel_page.scn_name.text()
+            config['gc_rel_seed'] = rel_page.gc_rel_seed.value()
+            config['rel_overwrite_cb'] = rel_page.overwrite_cb.isChecked()
         
         return config
     
@@ -3095,6 +3154,80 @@ class TopStrip(QWidget):
                     abs_page.gc_overwrite_cb.setChecked(config_data['gc_overwrite_cb'])
                 if 'show_cpa_cb' in config_data:
                     abs_page.show_cpa_cb.setChecked(config_data['show_cpa_cb'])
+            
+            # Relative page settings
+            if hasattr(tab_widget, '_relative_page'):
+                rel_page = tab_widget._relative_page
+                # Target aircraft settings
+                if 'target_combo' in config_data:
+                    # Find and set the combo box text if it exists
+                    index = rel_page.target_combo.findText(config_data['target_combo'])
+                    if index >= 0:
+                        rel_page.target_combo.setCurrentIndex(index)
+                if 'include_target_cb' in config_data:
+                    rel_page.include_target_cb.setChecked(config_data['include_target_cb'])
+                if 'target_acid' in config_data:
+                    rel_page.target_acid.setText(config_data['target_acid'])
+                if 'target_type' in config_data:
+                    rel_page.target_type.setText(config_data['target_type'])
+                if 'target_lat_value' in config_data:
+                    rel_page.target_lat_value.setText(config_data['target_lat_value'])
+                if 'target_lat_range' in config_data:
+                    rel_page.target_lat_range.setText(config_data['target_lat_range'])
+                if 'target_lon_value' in config_data:
+                    rel_page.target_lon_value.setText(config_data['target_lon_value'])
+                if 'target_lon_range' in config_data:
+                    rel_page.target_lon_range.setText(config_data['target_lon_range'])
+                if 'target_hdg_value' in config_data:
+                    rel_page.target_hdg_value.setText(config_data['target_hdg_value'])
+                if 'target_hdg_range' in config_data:
+                    rel_page.target_hdg_range.setText(config_data['target_hdg_range'])
+                if 'target_alt_value' in config_data:
+                    rel_page.target_alt_value.setText(config_data['target_alt_value'])
+                if 'target_alt_range' in config_data:
+                    rel_page.target_alt_range.setText(config_data['target_alt_range'])
+                if 'target_spd_value' in config_data:
+                    rel_page.target_spd_value.setText(config_data['target_spd_value'])
+                if 'target_spd_range' in config_data:
+                    rel_page.target_spd_range.setText(config_data['target_spd_range'])
+                
+                # Intruder aircraft settings
+                if 'intr_acid' in config_data:
+                    rel_page.intr_acid.setText(config_data['intr_acid'])
+                if 'intr_type' in config_data:
+                    rel_page.intr_type.setText(config_data['intr_type'])
+                if 'intr_dpsi_value' in config_data:
+                    rel_page.intr_dpsi_value.setText(config_data['intr_dpsi_value'])
+                if 'intr_dpsi_range' in config_data:
+                    rel_page.intr_dpsi_range.setText(config_data['intr_dpsi_range'])
+                if 'intr_dcpa_value' in config_data:
+                    rel_page.intr_dcpa_value.setText(config_data['intr_dcpa_value'])
+                if 'intr_dcpa_range' in config_data:
+                    rel_page.intr_dcpa_range.setText(config_data['intr_dcpa_range'])
+                if 'intr_tlosh_value' in config_data:
+                    rel_page.intr_tlosh_value.setText(config_data['intr_tlosh_value'])
+                if 'intr_tlosh_range' in config_data:
+                    rel_page.intr_tlosh_range.setText(config_data['intr_tlosh_range'])
+                if 'intr_dh_value' in config_data:
+                    rel_page.intr_dh_value.setText(config_data['intr_dh_value'])
+                if 'intr_dh_range' in config_data:
+                    rel_page.intr_dh_range.setText(config_data['intr_dh_range'])
+                if 'intr_tlosv_value' in config_data:
+                    rel_page.intr_tlosv_value.setText(config_data['intr_tlosv_value'])
+                if 'intr_tlosv_range' in config_data:
+                    rel_page.intr_tlosv_range.setText(config_data['intr_tlosv_range'])
+                if 'intr_spd_value' in config_data:
+                    rel_page.intr_spd_value.setText(config_data['intr_spd_value'])
+                if 'intr_spd_range' in config_data:
+                    rel_page.intr_spd_range.setText(config_data['intr_spd_range'])
+                
+                # Scenario settings for relative
+                if 'rel_scn_name' in config_data:
+                    rel_page.scn_name.setText(config_data['rel_scn_name'])
+                if 'gc_rel_seed' in config_data:
+                    rel_page.gc_rel_seed.setValue(config_data['gc_rel_seed'])
+                if 'rel_overwrite_cb' in config_data:
+                    rel_page.overwrite_cb.setChecked(config_data['rel_overwrite_cb'])
             
             return True
         except Exception as e:
@@ -3716,63 +3849,134 @@ class RLTab(QWidget):
         
         main.addWidget(gb_load)
 
-        # 2) Jitter (Optional)
-        gb_j = QGroupBox("2) Jitter - Optional")
+        # 2) Flight Phase Jitter (Optional)
+        gb_j = QGroupBox("2) Flight Phase Jitter - Optional")
         gb_j_layout = QVBoxLayout(gb_j)
         
-        # Create a scroll area for jitter section
-        jitter_scroll = QScrollArea()
-        jitter_scroll.setWidgetResizable(True)
-        jitter_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        jitter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        jitter_scroll.setMaximumHeight(350)  # Limit height to trigger scrolling
-        
-        # Create the form widget that will go inside the scroll area
-        jitter_form_widget = QWidget()
-        fj = QFormLayout(jitter_form_widget)
-        fj.setContentsMargins(5, 5, 5, 5)
-        desc2 = QLabel("Apply noise to time/position/FL")
+        # Description and altitude config button
+        header_layout = QHBoxLayout()
+        desc2 = QLabel("Apply noise to waypoints based on flight phase")
         desc2.setStyleSheet("color: #666; font-style: italic;")
-
-        self.j_on = QCheckBox("Enable jitter"); self.j_on.setChecked(False)
-        self.j_dist = QComboBox(); self.j_dist.addItems(["uniform", "normal"])
-        self.j_dist.setToolTip("Distribution type for random jitter: uniform (flat) or normal (bell curve)")
-
-        self.j_dt   = QDoubleSpinBox(); self.j_dt.setDecimals(3); self.j_dt.setRange(0.0, 1e6); self.j_dt.setValue(0.0); _configure_decimal_separator(self.j_dt)
-        self.j_dt.setToolTip("Time jitter in seconds (0 = no time offset)")
-        self.j_dlat = QDoubleSpinBox(); self.j_dlat.setDecimals(6); self.j_dlat.setRange(0.0, 10.0); self.j_dlat.setValue(0.0); _configure_decimal_separator(self.j_dlat)
-        self.j_dlat.setToolTip("Latitude jitter in degrees (0 = no position offset)")
-        self.j_dlon = QDoubleSpinBox(); self.j_dlon.setDecimals(6); self.j_dlon.setRange(0.0, 10.0); self.j_dlon.setValue(0.0); _configure_decimal_separator(self.j_dlon)
-        self.j_dlon.setToolTip("Longitude jitter in degrees (0 = no position offset)")
-        self.j_dfl  = QSpinBox();       self.j_dfl.setRange(0, 5000); self.j_dfl.setValue(0)
-        self.j_dfl.setToolTip("Flight level jitter in feet (0 = no altitude offset)")
-        self.j_nsig = QDoubleSpinBox(); self.j_nsig.setDecimals(2); self.j_nsig.setRange(0.0, 10.0); self.j_nsig.setValue(0.0); _configure_decimal_separator(self.j_nsig)
-        self.j_nsig.setToolTip("Standard deviation for normal distribution (only used when dist=normal)")
-
+        
+        self.btn_configure_altitudes = QPushButton("Configure Phase Altitudes...")
+        self.btn_configure_altitudes.setToolTip("Set flight level boundaries for each flight phase")
+        self.btn_configure_altitudes.clicked.connect(self._configure_phase_altitudes)
+        
+        header_layout.addWidget(desc2)
+        header_layout.addStretch()
+        header_layout.addWidget(self.btn_configure_altitudes)
+        gb_j_layout.addLayout(header_layout)
+        
+        # Initialize default phase altitude boundaries (in flight levels)
+        self.phase_altitudes = {
+            'takeoff': {'min_fl': 0, 'max_fl': 15},      # Ground to initial climb
+            'climb': {'min_fl': 15, 'max_fl': 250},      # Climbing phase
+            'cruise': {'min_fl': 250, 'max_fl': 450},    # Cruise altitude
+            'descent': {'min_fl': 50, 'max_fl': 250},    # Descending from cruise  
+            'approach': {'min_fl': 0, 'max_fl': 50}      # Final approach
+        }
+        
+        # Create 5-column layout for flight phases
+        phases_scroll = QScrollArea()
+        phases_scroll.setWidgetResizable(True)
+        phases_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        phases_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        phases_scroll.setMaximumHeight(400)
+        
+        phases_widget = QWidget()
+        phases_layout = QHBoxLayout(phases_widget)
+        phases_layout.setContentsMargins(5, 5, 5, 5)
+        phases_layout.setSpacing(10)
+        
+        # Flight phase names and default settings
+        self.phases = ['takeoff', 'climb', 'cruise', 'descent', 'approach']
+        self.phase_configs = {}
+        
+        for phase in self.phases:
+            # Create phase column
+            phase_group = QGroupBox(phase.title())
+            phase_layout = QFormLayout(phase_group)
+            phase_layout.setContentsMargins(5, 5, 5, 5)
+            
+            # Store phase widgets
+            phase_widgets = {}
+            
+            # Enable checkbox
+            phase_widgets['enabled'] = QCheckBox("Enable")
+            phase_widgets['enabled'].setChecked(False)
+            phase_layout.addRow(phase_widgets['enabled'])
+            
+            # Distribution type
+            phase_widgets['dist'] = QComboBox()
+            phase_widgets['dist'].addItems(["uniform", "normal"])
+            phase_widgets['dist'].setToolTip("Distribution type for random jitter")
+            phase_layout.addRow("Distribution:", phase_widgets['dist'])
+            
+            # Time jitter
+            phase_widgets['dt'] = QDoubleSpinBox()
+            phase_widgets['dt'].setDecimals(3)
+            phase_widgets['dt'].setRange(0.0, 1e6)
+            phase_widgets['dt'].setValue(0.0)
+            _configure_decimal_separator(phase_widgets['dt'])
+            phase_widgets['dt'].setToolTip("Time jitter in seconds")
+            phase_layout.addRow("dt [s]:", phase_widgets['dt'])
+            
+            # Position jitter
+            phase_widgets['dlat'] = QDoubleSpinBox()
+            phase_widgets['dlat'].setDecimals(6)
+            phase_widgets['dlat'].setRange(0.0, 10.0)
+            phase_widgets['dlat'].setValue(0.0)
+            _configure_decimal_separator(phase_widgets['dlat'])
+            phase_widgets['dlat'].setToolTip("Latitude jitter in degrees")
+            phase_layout.addRow("dlat [deg]:", phase_widgets['dlat'])
+            
+            phase_widgets['dlon'] = QDoubleSpinBox()
+            phase_widgets['dlon'].setDecimals(6)
+            phase_widgets['dlon'].setRange(0.0, 10.0)
+            phase_widgets['dlon'].setValue(0.0)
+            _configure_decimal_separator(phase_widgets['dlon'])
+            phase_widgets['dlon'].setToolTip("Longitude jitter in degrees")
+            phase_layout.addRow("dlon [deg]:", phase_widgets['dlon'])
+            
+            # Altitude jitter
+            phase_widgets['dfl'] = QSpinBox()
+            phase_widgets['dfl'].setRange(0, 5000)
+            phase_widgets['dfl'].setValue(0)
+            phase_widgets['dfl'].setToolTip("Flight level jitter in feet")
+            phase_layout.addRow("dfl [ft]:", phase_widgets['dfl'])
+            
+            # Normal distribution sigma
+            phase_widgets['nsig'] = QDoubleSpinBox()
+            phase_widgets['nsig'].setDecimals(2)
+            phase_widgets['nsig'].setRange(0.0, 10.0)
+            phase_widgets['nsig'].setValue(0.0)
+            _configure_decimal_separator(phase_widgets['nsig'])
+            phase_widgets['nsig'].setToolTip("Standard deviation for normal distribution")
+            phase_layout.addRow("nsig:", phase_widgets['nsig'])
+            
+            self.phase_configs[phase] = phase_widgets
+            phases_layout.addWidget(phase_group)
+        
+        phases_scroll.setWidget(phases_widget)
+        gb_j_layout.addWidget(phases_scroll)
+        
+        # Global jitter percentage (applies to all phases)
+        global_controls = QHBoxLayout()
+        global_controls.setContentsMargins(5, 5, 5, 5)
+        
+        global_label = QLabel("Jitter % of flights:")
         self.j_pct = QSlider(Qt.Orientation.Horizontal)
         self.j_pct.setRange(0, 100)
-        self.j_pct.setValue(100)     
+        self.j_pct.setValue(100)
         self.j_pct.setSingleStep(1)
         self.j_pct_label = QLabel("100%")
         self.j_pct.valueChanged.connect(lambda v: self.j_pct_label.setText(f"{v}%"))
-
-        fj.addRow(desc2)
-        fj.addRow(self.j_on)
-        fj.addRow("dist:", self.j_dist)
-        fj.addRow("dt [s]:", self.j_dt)
-        fj.addRow("dlat [deg]:", self.j_dlat)
-        fj.addRow("dlon [deg]:", self.j_dlon)
-        fj.addRow("dfl [FL]:", self.j_dfl)
-        fj.addRow("nsig (normal):", self.j_nsig)
-        row_pct = QWidget(); hb_pct = QHBoxLayout(row_pct); hb_pct.setContentsMargins(0,0,0,0)
-        hb_pct.addWidget(self.j_pct, 1); hb_pct.addWidget(self.j_pct_label)
-        fj.addRow("Jitter % of flights:", row_pct)
-
-        # Set the form widget as the scroll area's widget
-        jitter_scroll.setWidget(jitter_form_widget)
         
-        # Add the scroll area to the group box
-        gb_j_layout.addWidget(jitter_scroll)
+        global_controls.addWidget(global_label)
+        global_controls.addWidget(self.j_pct, 1)
+        global_controls.addWidget(self.j_pct_label)
+        gb_j_layout.addLayout(global_controls)
+        
         main.addWidget(gb_j)
 
         # 3) Options
@@ -3920,27 +4124,58 @@ class RLTab(QWidget):
 
         if not self.j_on.isChecked():
             _emit("SATG_RL_JITTER off")
-            return
+        else:
+            # Collect values (positional order)
+            mode = "on"
+            dist = self.j_dist.currentText() if hasattr(self, "j_dist") else "normal"
 
-        # Collect values (positional order)
-        mode = "on"
-        dist = self.j_dist.currentText() if hasattr(self, "j_dist") else "normal"
+            # Use zeros for unset numeric fields so the parser is happy and backend treats them as no-noise.
+            # Use scenario seed for jitter generation
+            jitter_seed = int(self.rl_seed.value()) if hasattr(self, "rl_seed") else 0
+            
+            seed = jitter_seed
+            dt   = float(self.j_dt.value())   if hasattr(self, "j_dt")   else 0.0
+            dlat = float(self.j_dlat.value()) if hasattr(self, "j_dlat") else 0.0
+            dlon = float(self.j_dlon.value()) if hasattr(self, "j_dlon") else 0.0
+            dfl  = int(self.j_dfl.value())    if hasattr(self, "j_dfl")  else 0
+            nsig = float(self.j_nsig.value()) if hasattr(self, "j_nsig") else 0.0
+            pct  = int(self.j_pct.value())    if hasattr(self, "j_pct")  else 100
 
-        # Use zeros for unset numeric fields so the parser is happy and backend treats them as no-noise.
-        # Use scenario seed for jitter generation
-        jitter_seed = int(self.rl_seed.value()) if hasattr(self, "rl_seed") else 0
+            # Build a strictly positional command; no key=value anywhere.
+            cmd = f"SATG_RL_JITTER {mode} {dist} {seed} {dt} {dlat} {dlon} {dfl} {nsig} {pct}"
+            _emit(cmd)
         
-        seed = jitter_seed
-        dt   = float(self.j_dt.value())   if hasattr(self, "j_dt")   else 0.0
-        dlat = float(self.j_dlat.value()) if hasattr(self, "j_dlat") else 0.0
-        dlon = float(self.j_dlon.value()) if hasattr(self, "j_dlon") else 0.0
-        dfl  = int(self.j_dfl.value())    if hasattr(self, "j_dfl")  else 0
-        nsig = float(self.j_nsig.value()) if hasattr(self, "j_nsig") else 0.0
-        pct  = int(self.j_pct.value())    if hasattr(self, "j_pct")  else 100
+        # Also emit phase-based jitter configuration
+        self._emit_phase_jitter_config()
 
-        # Build a strictly positional command; no key=value anywhere.
-        cmd = f"SATG_RL_JITTER {mode} {dist} {seed} {dt} {dlat} {dlon} {dfl} {nsig} {pct}"
-        _emit(cmd)
+    def _emit_phase_jitter_config(self):
+        """Emit phase-based jitter configuration to backend."""
+        if not hasattr(self, 'phase_jitter_enabled'):
+            return
+        
+        # Enable/disable phase-based jitter
+        mode = "on" if self.phase_jitter_enabled else "off"
+        _emit(f"SATG_RL_PHASE_JITTER {mode}")
+        
+        if not self.phase_jitter_enabled:
+            return
+        
+        # Send altitude boundaries
+        if hasattr(self, 'phase_altitudes'):
+            for phase, bounds in self.phase_altitudes.items():
+                min_fl = bounds['min_fl']
+                max_fl = bounds['max_fl']
+                _emit(f"SATG_RL_PHASE_ALTITUDES {phase} {min_fl} {max_fl}")
+        
+        # Send phase configurations
+        if hasattr(self, 'phase_configs'):
+            for phase, config in self.phase_configs.items():
+                enabled = "on" if config.get('enabled', False) else "off"
+                dt_max = config.get('dt_max', 0.0)
+                dlat_max = config.get('dlat_max', 0.0)
+                dlon_max = config.get('dlon_max', 0.0)
+                dfl_max = config.get('dfl_max', 0)
+                _emit(f"SATG_RL_PHASE_CONFIG {phase} {enabled} {dt_max} {dlat_max} {dlon_max} {dfl_max}")
 
     def _emit_autodel_from_toggle(self):
         """Emit SATG_RL_AUTODEL based on the checkbox state."""
@@ -4008,6 +4243,405 @@ class RLTab(QWidget):
         ow = 1 if self.rl_overwrite.isChecked() else 0
         data_files = self._get_data_files_for_backend()
         _emit(f"SATG_RL_RUN {name} {ow} {data_files}")
+
+    def _configure_phase_altitudes(self):
+        """Open dialog to configure flight phase altitude boundaries"""
+        dialog = PhaseAltitudeConfigDialog(self.phase_altitudes, self._chosen_flights_files, self._chosen_tracks_files, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.phase_altitudes = dialog.get_phase_altitudes()
+
+
+# --- Flight Phase Altitude Configuration Dialog ----------------------------
+
+class PhaseAltitudeConfigDialog(QDialog):
+    def __init__(self, current_altitudes, flights_files, tracks_files, parent=None):
+        super().__init__(parent)
+        self.current_altitudes = current_altitudes.copy()
+        self.flights_files = flights_files
+        self.tracks_files = tracks_files
+        
+        self.setWindowTitle("Configure Flight Phase Altitudes")
+        self.setModal(True)
+        self.resize(600, 500)
+        
+        layout = QVBoxLayout(self)
+        
+        # Description
+        desc = QLabel("Define altitude boundaries for flight phases.")
+        desc.setStyleSheet("color: #666; margin-bottom: 15px; font-size: 11px;")
+        layout.addWidget(desc)
+        
+        # Visual phase graph
+        self.phase_canvas = PhaseVisualizationWidget()
+        self.phase_canvas.setMinimumHeight(300)
+        layout.addWidget(self.phase_canvas)
+        
+        # Simple input fields in a row
+        input_layout = QHBoxLayout()
+        input_layout.setSpacing(15)
+        
+        # Extract current values
+        takeoff_upper = self.current_altitudes.get('takeoff', {}).get('max_fl', 15)
+        climb_upper = self.current_altitudes.get('climb', {}).get('max_fl', 250)
+        cruise_upper = self.current_altitudes.get('cruise', {}).get('max_fl', 400)
+        descent_upper = self.current_altitudes.get('descent', {}).get('max_fl', 400)
+        approach_upper = self.current_altitudes.get('approach', {}).get('max_fl', 50)
+        
+        # Takeoff upper bound
+        takeoff_layout = QVBoxLayout()
+        takeoff_layout.addWidget(QLabel("Takeoff Upper FL:"))
+        self.takeoff_spin = QSpinBox()
+        self.takeoff_spin.setRange(0, 999)
+        self.takeoff_spin.setValue(takeoff_upper)
+        self.takeoff_spin.setKeyboardTracking(False)
+        self.takeoff_spin.lineEdit().returnPressed.connect(lambda: self.takeoff_spin.interpretText())
+        self.takeoff_spin.valueChanged.connect(self._update_visualization)
+        takeoff_layout.addWidget(self.takeoff_spin)
+        input_layout.addLayout(takeoff_layout)
+        
+        # Climb upper bound
+        climb_layout = QVBoxLayout()
+        climb_layout.addWidget(QLabel("Climb Upper FL:"))
+        self.climb_spin = QSpinBox()
+        self.climb_spin.setRange(0, 999)
+        self.climb_spin.setValue(climb_upper)
+        self.climb_spin.setKeyboardTracking(False)
+        self.climb_spin.lineEdit().returnPressed.connect(lambda: self.climb_spin.interpretText())
+        self.climb_spin.valueChanged.connect(self._update_visualization)
+        climb_layout.addWidget(self.climb_spin)
+        input_layout.addLayout(climb_layout)
+        
+        # Cruise upper bound
+        cruise_layout = QVBoxLayout()
+        cruise_layout.addWidget(QLabel("Cruise Upper FL:"))
+        self.cruise_spin = QSpinBox()
+        self.cruise_spin.setRange(0, 999)
+        self.cruise_spin.setValue(cruise_upper)
+        self.cruise_spin.setKeyboardTracking(False)
+        self.cruise_spin.lineEdit().returnPressed.connect(lambda: self.cruise_spin.interpretText())
+        self.cruise_spin.valueChanged.connect(self._update_visualization)
+        cruise_layout.addWidget(self.cruise_spin)
+        input_layout.addLayout(cruise_layout)
+        
+        # Descent upper bound
+        descent_layout = QVBoxLayout()
+        descent_layout.addWidget(QLabel("Descent Upper FL:"))
+        self.descent_spin = QSpinBox()
+        self.descent_spin.setRange(0, 999)
+        self.descent_spin.setValue(descent_upper)
+        self.descent_spin.setKeyboardTracking(False)
+        self.descent_spin.lineEdit().returnPressed.connect(lambda: self.descent_spin.interpretText())
+        self.descent_spin.valueChanged.connect(self._update_visualization)
+        descent_layout.addWidget(self.descent_spin)
+        input_layout.addLayout(descent_layout)
+        
+        # Approach upper bound
+        approach_layout = QVBoxLayout()
+        approach_layout.addWidget(QLabel("Approach Upper FL:"))
+        self.approach_spin = QSpinBox()
+        self.approach_spin.setRange(0, 999)
+        self.approach_spin.setValue(approach_upper)
+        self.approach_spin.setKeyboardTracking(False)
+        self.approach_spin.lineEdit().returnPressed.connect(lambda: self.approach_spin.interpretText())
+        self.approach_spin.valueChanged.connect(self._update_visualization)
+        approach_layout.addWidget(self.approach_spin)
+        input_layout.addLayout(approach_layout)
+        
+        layout.addLayout(input_layout)
+        
+        # Dialog buttons
+        button_layout = QHBoxLayout()
+        
+        self.reset_btn = QPushButton("Reset to Defaults")
+        self.reset_btn.clicked.connect(self._reset_to_defaults)
+        
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        button_layout.addWidget(self.reset_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(self.ok_btn)
+        button_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Initial visualization update
+        self._update_visualization()
+    
+    def _reset_to_defaults(self):
+        """Reset altitude boundaries to default values"""
+        self.takeoff_spin.setValue(15)
+        self.climb_spin.setValue(250)
+        self.cruise_spin.setValue(400)
+        self.descent_spin.setValue(400)
+        self.approach_spin.setValue(50)
+    
+    def _update_visualization(self):
+        """Update the phase visualization when values change"""
+        ranges = self._calculate_ranges()
+        self.phase_canvas.update_phases(ranges)
+    
+    def _calculate_ranges(self):
+        """Calculate actual phase ranges based on the 5 input values"""
+        takeoff_upper = self.takeoff_spin.value()
+        climb_upper = self.climb_spin.value()
+        cruise_upper = self.cruise_spin.value()
+        descent_upper = self.descent_spin.value()
+        approach_upper = self.approach_spin.value()
+        
+        ranges = {
+            'takeoff': {'min_fl': 0, 'max_fl': takeoff_upper},
+            'climb': {'min_fl': takeoff_upper, 'max_fl': climb_upper},
+            'cruise': {'min_fl': climb_upper, 'max_fl': cruise_upper},
+            'descent': {'min_fl': approach_upper, 'max_fl': descent_upper},
+            'approach': {'min_fl': 0, 'max_fl': approach_upper}
+        }
+        
+        return ranges
+    
+    def get_phase_altitudes(self):
+        """Return the configured phase altitudes in the expected format"""
+        return self._calculate_ranges()
+
+
+class PhaseVisualizationWidget(QWidget):
+    """Simplified widget to draw the flight phase visualization graph"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.phase_ranges = {}
+        self.phase_colors = {
+            'takeoff': '#8B4513',    # Brown
+            'climb': '#FF6B35',      # Orange-red
+            'cruise': '#F7931E',     # Orange
+            'descent': '#4A90E2',    # Blue
+            'approach': '#7B68EE'    # Purple
+        }
+        
+    def update_phases(self, phase_ranges):
+        """Update the phase data and redraw"""
+        self.phase_ranges = phase_ranges
+        self.update()  # Trigger repaint
+        
+    def paintEvent(self, event):
+        """Custom paint event to draw the phase graph"""
+        from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+        from PyQt6.QtCore import Qt, QRectF
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        if not self.phase_ranges:
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No phase data")
+            return
+        
+        # Get widget dimensions with better margins
+        width = self.width() - 80  # More margin for Y-axis labels
+        height = self.height() - 100  # More margin for X-axis labels
+        start_x = 60  # More space for Y-axis labels
+        start_y = 20
+        
+        # Find max altitude for scaling
+        max_alt = max(max(r['max_fl'], r['min_fl']) for r in self.phase_ranges.values())
+        if max_alt == 0:
+            max_alt = 100  # Prevent division by zero
+        
+        # Draw flight profile curve
+        phases = ['takeoff', 'climb', 'cruise', 'descent', 'approach']
+        
+        # Create accurate flight profile points based on actual phase boundaries
+        profile_points = []
+        
+        # Get actual altitude values from phase ranges
+        takeoff_upper = self.phase_ranges['takeoff']['max_fl']
+        climb_upper = self.phase_ranges['climb']['max_fl']
+        cruise_upper = self.phase_ranges['cruise']['max_fl']
+        approach_upper = self.phase_ranges['approach']['max_fl']
+        
+        # Takeoff: 0 to takeoff upper (0% to 15% of flight)
+        profile_points.extend([
+            (0.0, 0),
+            (0.15, takeoff_upper)
+        ])
+        
+        # Climb: takeoff upper to climb upper (15% to 35% of flight)
+        profile_points.append((0.35, climb_upper))
+        
+        # Cruise: climb upper to cruise upper (35% to 65% of flight)
+        profile_points.extend([
+            (0.4, cruise_upper),
+            (0.65, cruise_upper)
+        ])
+        
+        # Descent: cruise upper to approach upper (65% to 85% of flight)
+        profile_points.append((0.85, approach_upper))
+        
+        # Approach: approach upper to 0 (85% to 100% of flight)
+        profile_points.append((1.0, 0))
+        profile_points.append((1.0, 0))
+        
+        # Draw phase background regions that follow the flight profile
+        for i, phase in enumerate(phases):
+            if phase not in self.phase_ranges:
+                continue
+                
+            # Get actual altitude values for accurate positioning
+            takeoff_upper = self.phase_ranges['takeoff']['max_fl']
+            climb_upper = self.phase_ranges['climb']['max_fl']
+            cruise_upper = self.phase_ranges['cruise']['max_fl']
+            approach_upper = self.phase_ranges['approach']['max_fl']
+                
+            # Calculate phase time boundaries and corresponding profile points
+            if phase == 'takeoff':
+                time_start, time_end = 0.0, 0.15
+                start_alt, end_alt = 0, takeoff_upper
+            elif phase == 'climb':
+                time_start, time_end = 0.15, 0.35
+                start_alt, end_alt = takeoff_upper, climb_upper
+            elif phase == 'cruise':
+                time_start, time_end = 0.35, 0.65
+                start_alt = climb_upper
+                end_alt = cruise_upper
+            elif phase == 'descent':
+                time_start, time_end = 0.65, 0.85
+                start_alt, end_alt = cruise_upper, approach_upper
+            else:  # approach
+                time_start, time_end = 0.85, 1.0
+                start_alt, end_alt = approach_upper, 0
+            
+            # Draw phase region that follows the profile curve
+            x_start = start_x + (time_start * width)
+            x_end = start_x + (time_end * width)
+            
+            # For ground level and profile-following regions
+            if phase in ['takeoff', 'climb', 'descent', 'approach']:
+                # Create a polygon that follows the flight profile
+                from PyQt6.QtGui import QPolygonF
+                from PyQt6.QtCore import QPointF
+                
+                y_start = start_y + height - (start_alt / max_alt * height)
+                y_end = start_y + height - (end_alt / max_alt * height)
+                y_ground = start_y + height
+                
+                # Create polygon points
+                points = [
+                    QPointF(x_start, y_ground),  # Ground start
+                    QPointF(x_start, y_start),   # Profile start
+                    QPointF(x_end, y_end),       # Profile end
+                    QPointF(x_end, y_ground),    # Ground end
+                ]
+                
+                polygon = QPolygonF(points)
+                
+                # Fill the polygon
+                color = QColor(self.phase_colors[phase])
+                color.setAlpha(120)  # Semi-transparent
+                painter.setBrush(color)
+                painter.setPen(QPen(color, 1))
+                painter.drawPolygon(polygon)
+                
+            else:  # cruise - rectangular region
+                y_top = start_y + height - (cruise_upper / max_alt * height)
+                y_bottom = start_y + height
+                
+                color = QColor(self.phase_colors[phase])
+                color.setAlpha(120)
+                painter.fillRect(QRectF(x_start, y_top, x_end - x_start, y_bottom - y_top), color)
+        
+        # Draw flight profile line
+        painter.setPen(QPen(QColor("#000000"), 3))
+        prev_point = None
+        for i, (time_frac, altitude) in enumerate(profile_points):
+            x = start_x + (time_frac * width)
+            y = start_y + height - (altitude / max_alt * height)
+            
+            if prev_point:
+                painter.drawLine(int(prev_point[0]), int(prev_point[1]), int(x), int(y))
+            
+            # Draw altitude markers
+            painter.setPen(QPen(QColor("#FF0000"), 2))
+            painter.drawEllipse(int(x-3), int(y-3), 6, 6)
+            painter.setPen(QPen(QColor("#000000"), 3))
+            
+            prev_point = (x, y)
+        
+        # Draw improved altitude scale with better Y-axis
+        painter.setPen(QPen(QColor("#333333"), 2))
+        font = QFont()
+        font.setPointSize(9)
+        painter.setFont(font)
+        
+        # Draw main Y-axis line
+        painter.drawLine(start_x, start_y, start_x, start_y + height)
+        
+        # Calculate nice scale intervals
+        if max_alt <= 100:
+            interval = 10
+        elif max_alt <= 200:
+            interval = 20
+        elif max_alt <= 500:
+            interval = 50
+        else:
+            interval = 100
+        
+        # Y-axis labels with major and minor ticks
+        for i in range(0, int(max_alt) + interval, interval):
+            if i > max_alt:
+                break
+                
+            y = start_y + height - (i / max_alt * height)
+            
+            # Major tick
+            painter.setPen(QPen(QColor("#333333"), 2))
+            painter.drawLine(start_x - 8, int(y), start_x, int(y))
+            
+            # Grid line (light)
+            if i > 0:
+                painter.setPen(QPen(QColor("#E0E0E0"), 1))
+                painter.drawLine(start_x, int(y), start_x + width, int(y))
+            
+            # Label
+            painter.setPen(QPen(QColor("#333333"), 2))
+            painter.drawText(0, int(y - 8), start_x - 12, 16, 
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, 
+                           f"FL{i:03d}")
+        
+        # Add minor ticks between major intervals
+        minor_interval = interval // 2
+        if minor_interval >= 5:  # Only show minor ticks if they're meaningful
+            painter.setPen(QPen(QColor("#666666"), 1))
+            for i in range(minor_interval, int(max_alt) + minor_interval, minor_interval):
+                if i % interval != 0 and i <= max_alt:  # Skip major tick positions
+                    y = start_y + height - (i / max_alt * height)
+                    painter.drawLine(start_x - 4, int(y), start_x, int(y))
+        
+        # X-axis with better styling
+        painter.setPen(QPen(QColor("#333333"), 2))
+        painter.drawLine(start_x, start_y + height, start_x + width, start_y + height)
+        
+        # Phase names on X-axis
+        painter.setFont(QFont("Arial", 10))
+        painter.setPen(QPen(QColor("#333333"), 2))
+        
+        phase_positions = [
+            (0.075, "Takeoff"),   # Center of takeoff phase (0-15%)
+            (0.25, "Climb"),      # Center of climb phase (15-35%)
+            (0.5, "Cruise"),      # Center of cruise phase (35-65%)
+            (0.75, "Descent"),    # Center of descent phase (65-85%)
+            (0.925, "Approach")   # Center of approach phase (85-100%)
+        ]
+        
+        for pos, name in phase_positions:
+            x_pos = start_x + (pos * width)
+            painter.drawText(int(x_pos - 30), start_y + height + 10, 60, 20,
+                           Qt.AlignmentFlag.AlignCenter, name)
+        
+        # X-axis main label
+        painter.drawText(start_x, start_y + height + 40, width, 20,
+                        Qt.AlignmentFlag.AlignCenter, "Flight Progress")
 
 
 # --- GC tab (Geometric Conflicts) ------------------------------------------
@@ -5257,7 +5891,8 @@ class GCTab(QWidget):
         rel_box = QGroupBox("Relative (creconfs)", self)
         rel_layout = QVBoxLayout(rel_box)
         rel_layout.setContentsMargins(8, 8, 8, 8)
-        rel_layout.addWidget(GCRelativePage(self._minima, rel_box))
+        self._relative_page = GCRelativePage(self._minima, rel_box)  # Store reference
+        rel_layout.addWidget(self._relative_page)
 
         cols.addWidget(abs_box, 1)
         cols.addWidget(rel_box, 1)
