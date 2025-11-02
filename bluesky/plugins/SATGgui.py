@@ -3853,7 +3853,7 @@ class RLTab(QWidget):
         gb_j = QGroupBox("2) Flight Phase Jitter - Optional")
         gb_j_layout = QVBoxLayout(gb_j)
         
-        # Description and altitude config button
+        # Description and altitude config button  
         header_layout = QHBoxLayout()
         desc2 = QLabel("Apply noise to waypoints based on flight phase")
         desc2.setStyleSheet("color: #666; font-style: italic;")
@@ -3875,6 +3875,9 @@ class RLTab(QWidget):
             'descent': {'min_fl': 50, 'max_fl': 250},    # Descending from cruise  
             'approach': {'min_fl': 0, 'max_fl': 50}      # Final approach
         }
+        
+        # Track-specific phase configurations (populated when configured)
+        self.track_phase_configurations = {}
         
         # Create 5-column layout for flight phases
         phases_scroll = QScrollArea()
@@ -4118,35 +4121,113 @@ class RLTab(QWidget):
         return "|".join(all_files)
 
 
-    def _emit_jitter_if_needed(self):
-        if not hasattr(self, "j_on"):
-            return
-
-        if not self.j_on.isChecked():
-            _emit("SATG_RL_JITTER off")
-        else:
-            # Collect values (positional order)
-            mode = "on"
-            dist = self.j_dist.currentText() if hasattr(self, "j_dist") else "normal"
-
-            # Use zeros for unset numeric fields so the parser is happy and backend treats them as no-noise.
-            # Use scenario seed for jitter generation
-            jitter_seed = int(self.rl_seed.value()) if hasattr(self, "rl_seed") else 0
+    def _configure_phase_altitudes(self):
+        """Open dialog to configure flight phase altitude boundaries per track"""
+        dialog = PhaseAltitudeConfigDialog(self.phase_altitudes, self._chosen_flights_files, self._chosen_tracks_files, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            # Get all track configurations
+            track_configs = dialog.get_all_track_configurations()
             
-            seed = jitter_seed
-            dt   = float(self.j_dt.value())   if hasattr(self, "j_dt")   else 0.0
-            dlat = float(self.j_dlat.value()) if hasattr(self, "j_dlat") else 0.0
-            dlon = float(self.j_dlon.value()) if hasattr(self, "j_dlon") else 0.0
-            dfl  = int(self.j_dfl.value())    if hasattr(self, "j_dfl")  else 0
-            nsig = float(self.j_nsig.value()) if hasattr(self, "j_nsig") else 0.0
-            pct  = int(self.j_pct.value())    if hasattr(self, "j_pct")  else 100
+            # Store track configurations for use in backend
+            self.track_phase_configurations = track_configs
+            
+            # Send simplified configurations to backend (just altitude boundaries)
+            if track_configs:
+                # Get current altitude values from the configuration
+                current_track = list(track_configs.keys())[dialog.current_track_index] if track_configs else None
+                if current_track and current_track in track_configs:
+                    altitude_ranges = track_configs[current_track].get('altitude_ranges', {})
+                    
+                    # Extract the simple values
+                    initial_climb = altitude_ranges.get('takeoff', {}).get('max_fl', 15)
+                    top_of_climb = altitude_ranges.get('climb', {}).get('max_fl', 250) 
+                    top_of_descent = altitude_ranges.get('descent', {}).get('max_fl', 400)
+                    final_approach = altitude_ranges.get('approach', {}).get('max_fl', 50)
+                    
+                    print(f"=== SENDING SIMPLIFIED ALTITUDE BOUNDARIES ===")
+                    print(f"Track: {current_track}")
+                    print(f"Initial Climb: FL{initial_climb}")
+                    print(f"Top of Climb: FL{top_of_climb}")
+                    print(f"Top of Descent: FL{top_of_descent}")
+                    print(f"Final Approach: FL{final_approach}")
+                    
+                    # Send simple altitude boundaries to backend (not complex JSON)
+                    from . import SATG
+                    SATG.SATG_RL_ALTITUDE_BOUNDARIES(initial_climb, top_of_climb, top_of_descent, final_approach)
+                    print("=== ALTITUDE BOUNDARIES SENT TO BACKEND ===")
+                    
+            else:
+                print("=== NO CONFIGURATIONS TO SEND ===")
+                print("track_configs is empty or None")
+            
+            # For backward compatibility, use the last configured track as default
+            if track_configs:
+                # Use the configuration from the current track when dialog was closed
+                current_track_name = list(track_configs.keys())[dialog.current_track_index] if track_configs else None
+                if current_track_name and current_track_name in track_configs:
+                    self.phase_altitudes = track_configs[current_track_name].get('altitude_ranges', {})
+                else:
+                    # Fallback to first track configuration
+                    first_config = list(track_configs.values())[0]
+                    self.phase_altitudes = first_config.get('altitude_ranges', {})
 
-            # Build a strictly positional command; no key=value anywhere.
-            cmd = f"SATG_RL_JITTER {mode} {dist} {seed} {dt} {dlat} {dlon} {dfl} {nsig} {pct}"
-            _emit(cmd)
+    def _emit_jitter_if_needed(self):
+        """Send jitter configuration before scenario creation (altitude boundaries already configured per track)"""
+        print("=== CONFIGURING JITTER PARAMETERS ===")
         
-        # Also emit phase-based jitter configuration
-        self._emit_phase_jitter_config()
+        # Note: Altitude boundaries are already configured per-track via _configure_phase_altitudes
+        # No need to send global boundaries here
+        
+        # Send simplified phase jitter parameters
+        self._emit_simplified_phase_jitter()
+        
+        print("=== JITTER CONFIGURATION COMPLETED ===")
+
+    def _emit_simplified_phase_jitter(self):
+        """Send phase jitter parameters from section 2 to backend using simple approach."""
+        from . import SATG
+        
+        # Check if any phase is enabled
+        any_enabled = False
+        for phase in self.phases:
+            if self.phase_configs[phase]['enabled'].isChecked():
+                any_enabled = True
+                break
+        
+        if not any_enabled:
+            print("Phase jitter disabled - no phases enabled")
+            return
+            
+        print("=== SENDING PHASE JITTER CONFIGURATION ===")
+        
+        # Enable phase jitter in backend
+        SATG.SATG_RL_PHASE_JITTER("on")
+        
+        # Send global jitter percentage
+        jitter_pct = self.j_pct.value()
+        print(f"Jitter percentage: {jitter_pct}%")
+        
+        # Send configuration for each enabled phase
+        for phase in self.phases:
+            widgets = self.phase_configs[phase]
+            enabled = widgets['enabled'].isChecked()
+            
+            if enabled:
+                # Get values from GUI widgets
+                dist = widgets['dist'].currentText()
+                dt_max = widgets['dt'].value()
+                dlat_max = widgets['dlat'].value() 
+                dlon_max = widgets['dlon'].value()
+                dfl_max = widgets['dfl'].value()
+                nsig = widgets['nsig'].value()
+                
+                print(f"Phase {phase}: enabled, dist={dist}, dt={dt_max}s, "
+                      f"dlat={dlat_max}°, dlon={dlon_max}°, dfl={dfl_max}ft, nsig={nsig}")
+                
+                # Send to backend using correct command signature (enabled, dt, dlat, dlon, dfl)
+                SATG.SATG_RL_PHASE_CONFIG(phase, "on", dt_max, dlat_max, dlon_max, dfl_max)
+        
+        print("=== PHASE JITTER CONFIGURATION COMPLETED ===")
 
     def _emit_phase_jitter_config(self):
         """Emit phase-based jitter configuration to backend."""
@@ -4245,10 +4326,53 @@ class RLTab(QWidget):
         _emit(f"SATG_RL_RUN {name} {ow} {data_files}")
 
     def _configure_phase_altitudes(self):
-        """Open dialog to configure flight phase altitude boundaries"""
+        """Open dialog to configure flight phase altitude boundaries per track"""
         dialog = PhaseAltitudeConfigDialog(self.phase_altitudes, self._chosen_flights_files, self._chosen_tracks_files, self)
         if dialog.exec() == dialog.DialogCode.Accepted:
-            self.phase_altitudes = dialog.get_phase_altitudes()
+            # Get all track configurations
+            track_configs = dialog.get_all_track_configurations()
+            
+            # Store track configurations for use in backend
+            self.track_phase_configurations = track_configs
+            
+            # Send simplified per-track configurations to backend
+            if track_configs:
+                print(f"=== SENDING PER-TRACK CONFIGURATIONS ===")
+                from . import SATG
+                
+                # Send configuration for each track with simple calls
+                for track_name, config in track_configs.items():
+                    altitude_ranges = config.get('altitude_ranges', {})
+                    
+                    # Extract the simple values
+                    initial_climb = altitude_ranges.get('takeoff', {}).get('max_fl', 15)
+                    top_of_climb = altitude_ranges.get('climb', {}).get('max_fl', 250) 
+                    top_of_descent = altitude_ranges.get('descent', {}).get('max_fl', 400)
+                    final_approach = altitude_ranges.get('approach', {}).get('max_fl', 50)
+                    
+                    print(f"Track {track_name}: Initial Climb FL{initial_climb}, "
+                          f"Top of Climb FL{top_of_climb}, Top of Descent FL{top_of_descent}, "
+                          f"Final Approach FL{final_approach}")
+                    
+                    # Simple call per track - no JSON, no parsing
+                    SATG.SATG_RL_TRACK_CONFIG(track_name, initial_climb, top_of_climb, top_of_descent, final_approach)
+                
+                print(f"=== SENT {len(track_configs)} TRACK CONFIGURATIONS ===")
+                    
+            else:
+                print("=== NO CONFIGURATIONS TO SEND ===")
+                print("track_configs is empty or None")
+            
+            # For backward compatibility, use the last configured track as default
+            if track_configs:
+                # Use the configuration from the current track when dialog was closed
+                current_track_name = list(track_configs.keys())[dialog.current_track_index] if track_configs else None
+                if current_track_name and current_track_name in track_configs:
+                    self.phase_altitudes = track_configs[current_track_name].get('altitude_ranges', {})
+                else:
+                    # Fallback to first track configuration
+                    first_config = list(track_configs.values())[0]
+                    self.phase_altitudes = first_config.get('altitude_ranges', {})
 
 
 # --- Flight Phase Altitude Configuration Dialog ----------------------------
@@ -4260,144 +4384,865 @@ class PhaseAltitudeConfigDialog(QDialog):
         self.flights_files = flights_files
         self.tracks_files = tracks_files
         
-        self.setWindowTitle("Configure Flight Phase Altitudes")
-        self.setModal(True)
-        self.resize(600, 500)
+        # Per-track phase configurations (in memory)
+        self.track_configurations = {}
         
-        layout = QVBoxLayout(self)
+        # Track navigation
+        self.current_track_index = 0
+        self.track_data = {}  # Will store loaded track data
+        self.track_names = []  # Will store individual track names
+        
+        self.setWindowTitle("Configure Flight Phase Altitudes - Track by Track")
+        self.setModal(True)
+        self.resize(1200, 700)  # Smaller overall size
+        
+        # Load all track data
+        self._load_track_data()
+        
+        # Update tracks_files to contain track names instead of file names
+        self.track_names = list(self.track_data.keys())
+        
+        # Setup UI
+        self._setup_ui()
+        
+        # Load first track
+        if self.track_names:
+            self._load_track(0)
+        else:
+            # No tracks available - show appropriate message
+            self.track_label.setText("No tracks loaded")
+            self.track_counter.setText("0 / 0")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            self.apply_all_btn.setEnabled(False)
+    
+    def _load_track_data(self):
+        """Load all track data from CSV files and separate by ECTRL ID"""
+        import pandas as pd
+        import os
+        
+        for track_file in self.tracks_files:
+            try:
+                if os.path.exists(track_file):
+                    # Load track data
+                    df = pd.read_csv(track_file)
+                    print(f"Loading track file: {track_file}")
+                    print(f"Columns: {list(df.columns)}")
+                    print(f"Shape: {df.shape}")
+                    
+                    # Check for different possible column names
+                    lat_col = None
+                    lon_col = None
+                    alt_col = None
+                    id_col = None
+                    
+                    # Try different column name variations
+                    for col in df.columns:
+                        col_lower = col.lower().strip()
+                        if col_lower in ['latitude', 'lat']:
+                            lat_col = col
+                        elif col_lower in ['longitude', 'lon', 'long']:
+                            lon_col = col
+                        elif col_lower in ['altitude', 'alt', 'flight level', 'fl']:
+                            alt_col = col
+                        elif col_lower in ['ectrl id', 'id', 'acid', 'aircraft_id', 'callsign']:
+                            id_col = col
+                    
+                    if lat_col and lon_col and id_col:
+                        print(f"Found columns: lat={lat_col}, lon={lon_col}, alt={alt_col}, id={id_col}")
+                        
+                        # Group by aircraft ID to create separate tracks
+                        aircraft_groups = df.groupby(id_col)
+                        
+                        for aircraft_id, aircraft_df in aircraft_groups:
+                            # Sort by sequence number if available
+                            if 'Sequence Number' in aircraft_df.columns:
+                                aircraft_df = aircraft_df.sort_values('Sequence Number')
+                            
+                            # Create track name combining file and aircraft ID
+                            base_name = os.path.splitext(os.path.basename(track_file))[0]
+                            track_name = f"{base_name}_{aircraft_id}"
+                            
+                            print(f"Creating track: {track_name} with {len(aircraft_df)} waypoints")
+                            
+                            self.track_data[track_name] = {
+                                'file_path': track_file,
+                                'data': aircraft_df.copy(),
+                                'lat_col': lat_col,
+                                'lon_col': lon_col,
+                                'alt_col': alt_col,
+                                'id_col': id_col,
+                                'aircraft_id': aircraft_id,
+                                'waypoints': len(aircraft_df)
+                            }
+                            
+                            # Initialize configuration for this track
+                            self.track_configurations[track_name] = {
+                                'takeoff': {'min_fl': 0, 'max_fl': 15},
+                                'climb': {'min_fl': 15, 'max_fl': 250},
+                                'cruise': {'min_fl': 250, 'max_fl': 400},
+                                'descent': {'min_fl': 50, 'max_fl': 400},
+                                'approach': {'min_fl': 0, 'max_fl': 50}
+                            }
+                    else:
+                        print(f"Warning: Could not find required columns in {track_file}")
+                        print(f"Need: lat/lon columns and ID column")
+                        print(f"Available columns: {list(df.columns)}")
+            except Exception as e:
+                print(f"Error loading track {track_file}: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def _setup_ui(self):
+        """Setup the main UI with side-by-side layout"""
+        main_layout = QHBoxLayout(self)
+        
+        # Left side: Altitude configuration
+        left_widget = QWidget()
+        left_widget.setMinimumWidth(400)
+        left_widget.setMaximumWidth(500)
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(5, 5, 5, 5)  # Minimal margins
+        
+        # Track navigation header
+        nav_layout = QHBoxLayout()
+        
+        self.track_label = QLabel("No tracks loaded")
+        self.track_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+        nav_layout.addWidget(self.track_label)
+        
+        nav_layout.addStretch()
+        
+        self.track_counter = QLabel("0 / 0")
+        self.track_counter.setStyleSheet("color: #666; font-size: 12px;")
+        nav_layout.addWidget(self.track_counter)
+        
+        left_layout.addLayout(nav_layout)
         
         # Description
-        desc = QLabel("Define altitude boundaries for flight phases.")
-        desc.setStyleSheet("color: #666; margin-bottom: 15px; font-size: 11px;")
-        layout.addWidget(desc)
+        desc = QLabel("Configure altitude boundaries for flight phases for each track.")
+        desc.setStyleSheet("color: #666; margin-bottom: 5px; font-size: 11px;")
+        left_layout.addWidget(desc)
         
-        # Visual phase graph
+        # Visual phase graph - expand to fill available space
         self.phase_canvas = PhaseVisualizationWidget()
-        self.phase_canvas.setMinimumHeight(300)
-        layout.addWidget(self.phase_canvas)
+        self.phase_canvas.setMinimumHeight(300)  # Increased minimum height
+        # Remove maximum height to let it expand
+        left_layout.addWidget(self.phase_canvas, 1)  # Stretch factor 1 to expand
         
-        # Simple input fields in a row
+        # Altitude input fields
+        self._setup_altitude_inputs(left_layout)
+        
+        # Navigation and action buttons
+        self._setup_buttons(left_layout)
+        
+        # Right side: Geographic plot
+        right_widget = QWidget()
+        right_widget.setMaximumWidth(450)  # Limit geographic plot width
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(5, 5, 5, 5)  # Minimal margins
+        
+        # Matplotlib widget for geographic plot (no title label)
+        self._setup_geographic_plot(right_layout)
+        
+        # Add both sides to main layout
+        main_layout.addWidget(left_widget)
+        main_layout.addWidget(right_widget)
+    
+    def _setup_altitude_inputs(self, layout):
+        """Setup the altitude input fields"""
+        # Simple input fields in a row with better spacing
         input_layout = QHBoxLayout()
-        input_layout.setSpacing(15)
+        input_layout.setSpacing(10)  # Reduced spacing to fit labels better
         
-        # Extract current values
-        takeoff_upper = self.current_altitudes.get('takeoff', {}).get('max_fl', 15)
-        climb_upper = self.current_altitudes.get('climb', {}).get('max_fl', 250)
-        cruise_upper = self.current_altitudes.get('cruise', {}).get('max_fl', 400)
-        descent_upper = self.current_altitudes.get('descent', {}).get('max_fl', 400)
-        approach_upper = self.current_altitudes.get('approach', {}).get('max_fl', 50)
+        # Extract current values (will be updated per track)
+        takeoff_upper = 15
+        climb_upper = 250
+        descent_upper = 400
+        approach_upper = 50
         
-        # Takeoff upper bound
+        # Takeoff upper bound (Initial Climb)
         takeoff_layout = QVBoxLayout()
-        takeoff_layout.addWidget(QLabel("Takeoff Upper FL:"))
+        takeoff_label = QLabel("Initial Climb\nUpper FL:")
+        takeoff_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        takeoff_label.setStyleSheet("font-size: 11px;")  # Increased font size
+        takeoff_layout.addWidget(takeoff_label)
         self.takeoff_spin = QSpinBox()
         self.takeoff_spin.setRange(0, 999)
         self.takeoff_spin.setValue(takeoff_upper)
-        self.takeoff_spin.setKeyboardTracking(False)
-        self.takeoff_spin.lineEdit().returnPressed.connect(lambda: self.takeoff_spin.interpretText())
-        self.takeoff_spin.valueChanged.connect(self._update_visualization)
+        self.takeoff_spin.valueChanged.connect(self._validate_and_update)
         takeoff_layout.addWidget(self.takeoff_spin)
         input_layout.addLayout(takeoff_layout)
         
-        # Climb upper bound
+        # Climb upper bound (Top of Climb)
         climb_layout = QVBoxLayout()
-        climb_layout.addWidget(QLabel("Climb Upper FL:"))
+        climb_label = QLabel("Top of Climb\nFL:")
+        climb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        climb_label.setStyleSheet("font-size: 11px;")
+        climb_layout.addWidget(climb_label)
         self.climb_spin = QSpinBox()
         self.climb_spin.setRange(0, 999)
         self.climb_spin.setValue(climb_upper)
-        self.climb_spin.setKeyboardTracking(False)
-        self.climb_spin.lineEdit().returnPressed.connect(lambda: self.climb_spin.interpretText())
-        self.climb_spin.valueChanged.connect(self._update_visualization)
+        self.climb_spin.valueChanged.connect(self._validate_and_update)
         climb_layout.addWidget(self.climb_spin)
         input_layout.addLayout(climb_layout)
         
-        # Cruise upper bound
-        cruise_layout = QVBoxLayout()
-        cruise_layout.addWidget(QLabel("Cruise Upper FL:"))
-        self.cruise_spin = QSpinBox()
-        self.cruise_spin.setRange(0, 999)
-        self.cruise_spin.setValue(cruise_upper)
-        self.cruise_spin.setKeyboardTracking(False)
-        self.cruise_spin.lineEdit().returnPressed.connect(lambda: self.cruise_spin.interpretText())
-        self.cruise_spin.valueChanged.connect(self._update_visualization)
-        cruise_layout.addWidget(self.cruise_spin)
-        input_layout.addLayout(cruise_layout)
-        
-        # Descent upper bound
+        # Descent upper bound (Top of Descent)
         descent_layout = QVBoxLayout()
-        descent_layout.addWidget(QLabel("Descent Upper FL:"))
+        descent_label = QLabel("Top of Descent\nFL:")
+        descent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        descent_label.setStyleSheet("font-size: 11px;")
+        descent_layout.addWidget(descent_label)
         self.descent_spin = QSpinBox()
         self.descent_spin.setRange(0, 999)
         self.descent_spin.setValue(descent_upper)
-        self.descent_spin.setKeyboardTracking(False)
-        self.descent_spin.lineEdit().returnPressed.connect(lambda: self.descent_spin.interpretText())
-        self.descent_spin.valueChanged.connect(self._update_visualization)
+        self.descent_spin.valueChanged.connect(self._validate_and_update)
         descent_layout.addWidget(self.descent_spin)
         input_layout.addLayout(descent_layout)
         
-        # Approach upper bound
+        # Approach upper bound (Final Approach)
         approach_layout = QVBoxLayout()
-        approach_layout.addWidget(QLabel("Approach Upper FL:"))
+        approach_label = QLabel("Final Approach\nUpper FL:")
+        approach_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        approach_label.setStyleSheet("font-size: 11px;")
+        approach_layout.addWidget(approach_label)
         self.approach_spin = QSpinBox()
         self.approach_spin.setRange(0, 999)
         self.approach_spin.setValue(approach_upper)
-        self.approach_spin.setKeyboardTracking(False)
-        self.approach_spin.lineEdit().returnPressed.connect(lambda: self.approach_spin.interpretText())
-        self.approach_spin.valueChanged.connect(self._update_visualization)
+        self.approach_spin.valueChanged.connect(self._validate_and_update)
         approach_layout.addWidget(self.approach_spin)
         input_layout.addLayout(approach_layout)
         
         layout.addLayout(input_layout)
-        
-        # Dialog buttons
-        button_layout = QHBoxLayout()
-        
+    
+    def _setup_buttons(self, layout):
+        """Setup navigation and action buttons"""
+        # Reset button
+        reset_layout = QHBoxLayout()
         self.reset_btn = QPushButton("Reset to Defaults")
+        self.reset_btn.setToolTip("Reset altitude boundaries to default values (Takeoff: FL015, Climb: FL250, Descent: FL400, Approach: FL050)")
         self.reset_btn.clicked.connect(self._reset_to_defaults)
+        self.reset_btn.setAutoDefault(False)
+        reset_layout.addWidget(self.reset_btn)
+        reset_layout.addStretch()
+        layout.addLayout(reset_layout)
         
-        self.ok_btn = QPushButton("OK")
+        # Remove the stretch that was pushing buttons to bottom
+        # layout.addStretch()  # Commented out to keep buttons closer to inputs
+        
+        # Navigation buttons
+        nav_button_layout = QHBoxLayout()
+        
+        self.prev_btn = QPushButton("← Previous Track")
+        self.prev_btn.setToolTip("Go to the previous aircraft track in the loaded data")
+        self.prev_btn.clicked.connect(self._previous_track)
+        self.prev_btn.setAutoDefault(False)
+        nav_button_layout.addWidget(self.prev_btn)
+        
+        self.next_btn = QPushButton("Next Track →")
+        self.next_btn.setToolTip("Go to the next aircraft track in the loaded data")
+        self.next_btn.clicked.connect(self._next_track)
+        self.next_btn.setAutoDefault(False)
+        nav_button_layout.addWidget(self.next_btn)
+        
+        layout.addLayout(nav_button_layout)
+        
+        # Action buttons
+        action_button_layout = QHBoxLayout()
+        
+        self.apply_all_btn = QPushButton("Apply Current Config to All Tracks")
+        self.apply_all_btn.setToolTip("Copy the current altitude configuration to all other tracks")
+        self.apply_all_btn.clicked.connect(self._apply_to_all)
+        self.apply_all_btn.setAutoDefault(False)
+        action_button_layout.addWidget(self.apply_all_btn)
+        
+        layout.addLayout(action_button_layout)
+        
+        # Final dialog buttons
+        dialog_button_layout = QHBoxLayout()
+        
+        self.ok_btn = QPushButton("Finish Configuration")
+        self.ok_btn.setToolTip("Save all track configurations and close the dialog")
         self.ok_btn.clicked.connect(self.accept)
+        self.ok_btn.setAutoDefault(False)
         
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setToolTip("Discard changes and close the dialog")
         self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.setAutoDefault(False)
         
-        button_layout.addWidget(self.reset_btn)
-        button_layout.addStretch()
-        button_layout.addWidget(self.ok_btn)
-        button_layout.addWidget(self.cancel_btn)
+        dialog_button_layout.addStretch()
+        dialog_button_layout.addWidget(self.ok_btn)
+        dialog_button_layout.addWidget(self.cancel_btn)
         
-        layout.addLayout(button_layout)
+        layout.addLayout(dialog_button_layout)
+    
+    def _setup_geographic_plot(self, layout):
+        """Setup matplotlib widget for geographic visualization"""
+        try:
+            import matplotlib
+            matplotlib.use('Qt5Agg')
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+            from matplotlib.figure import Figure
+            import cartopy.crs as ccrs
+            import cartopy.feature as cfeature
+            
+            # Create matplotlib figure with cartopy - let it expand vertically
+            self.geo_figure = Figure(figsize=(6, 7))  # Increased height from 5 to 7
+            self.geo_figure.subplots_adjust(left=0.02, right=0.98, top=0.94, bottom=0.08)  # Better margins
+            self.geo_canvas = FigureCanvas(self.geo_figure)
+            # Remove height limitation to let it fill available space
+            self.geo_ax = self.geo_figure.add_subplot(111, projection=ccrs.Mercator())
+            
+            # Create custom navigation toolbar with only pan and zoom
+            class CustomNavigationToolbar(NavigationToolbar):
+                # Only include the tools we want
+                toolitems = [t for t in NavigationToolbar.toolitems if
+                           t[0] in ('Home', 'Back', 'Forward', 'Pan', 'Zoom')]
+            
+            # Add navigation toolbar for pan/zoom functionality
+            self.geo_toolbar = CustomNavigationToolbar(self.geo_canvas, self.geo_canvas)
+            self.geo_toolbar.setMaximumHeight(30)  # Keep toolbar compact
+            
+            # Add coastlines
+            self.geo_ax.add_feature(cfeature.COASTLINE)
+            self.geo_ax.add_feature(cfeature.BORDERS)
+            self.geo_ax.gridlines(draw_labels=True)
+            
+            # Add toolbar and canvas to layout
+            layout.addWidget(self.geo_toolbar)
+            layout.addWidget(self.geo_canvas)
+            
+        except ImportError:
+            # Fallback if cartopy is not available
+            error_label = QLabel("Geographic visualization requires cartopy.\nInstall with: pip install cartopy")
+            error_label.setStyleSheet("color: #ff6b6b; background: #ffe0e0; padding: 20px; border-radius: 5px;")
+            error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(error_label)
+            self.geo_canvas = None
+            self.geo_toolbar = None
+        except Exception as e:
+            # General error fallback
+            error_label = QLabel(f"Geographic visualization error:\n{str(e)}")
+            error_label.setStyleSheet("color: #ff6b6b; background: #ffe0e0; padding: 20px; border-radius: 5px;")
+            error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(error_label)
+            self.geo_canvas = None
+            self.geo_toolbar = None
+    
+    def _load_track(self, track_index):
+        """Load and display a specific track"""
+        if not self.track_names or track_index >= len(self.track_names):
+            # No tracks available
+            self.track_label.setText("No tracks loaded")
+            self.track_counter.setText("0 / 0")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            
+            # Show message in geographic plot
+            if self.geo_canvas:
+                try:
+                    self.geo_ax.clear()
+                    self.geo_ax.text(0.5, 0.5, "No track files loaded\nPlease load track data first", 
+                                   transform=self.geo_ax.transAxes, ha='center', va='center',
+                                   bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue"))
+                    self.geo_canvas.draw()
+                except:
+                    pass
+            return
         
-        # Initial visualization update
+        # Update current track index
+        self.current_track_index = track_index
+        track_name = self.track_names[track_index]
+        
+        # Update UI labels
+        self.track_label.setText(f"Track: {track_name}")
+        self.track_counter.setText(f"{track_index + 1} / {len(self.track_names)}")
+        
+        # Update button states
+        self.prev_btn.setEnabled(track_index > 0)
+        self.next_btn.setEnabled(track_index < len(self.track_names) - 1)
+        
+        # Load track configuration
+        if track_name in self.track_configurations:
+            config = self.track_configurations[track_name]
+            
+            self.takeoff_spin.setValue(config['takeoff']['max_fl'])
+            self.climb_spin.setValue(config['climb']['max_fl'])
+            self.descent_spin.setValue(config['descent']['max_fl'])
+            self.approach_spin.setValue(config['approach']['max_fl'])
+        
+        # Update visualizations
+        self._validate_and_update()
+        self._update_geographic_plot()
+    
+    def _previous_track(self):
+        """Go to previous track"""
+        if self.current_track_index > 0:
+            self._save_current_config()
+            self._load_track(self.current_track_index - 1)
+    
+    def _next_track(self):
+        """Go to next track"""
+        if self.current_track_index < len(self.track_names) - 1:
+            self._save_current_config()
+            self._load_track(self.current_track_index + 1)
+    
+    def _apply_to_all(self):
+        """Apply current configuration to all tracks"""
+        current_config = self._get_current_config()
+        
+        for track_name in self.track_configurations:
+            self.track_configurations[track_name] = current_config.copy()
+        
+        # Show confirmation
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Applied to All", 
+                              f"Current configuration applied to all {len(self.track_configurations)} tracks.")
+    
+    def _save_current_config(self):
+        """Save current spinbox values to the current track's configuration"""
+        if not self.track_names:
+            return
+            
+        track_name = self.track_names[self.current_track_index]
+        
+        self.track_configurations[track_name] = self._get_current_config()
+    
+    def _get_current_config(self):
+        """Get current configuration from spinboxes"""
+        takeoff_upper = self.takeoff_spin.value()
+        climb_upper = self.climb_spin.value()
+        descent_upper = self.descent_spin.value()
+        approach_upper = self.approach_spin.value()
+        
+        return {
+            'takeoff': {'min_fl': 0, 'max_fl': takeoff_upper},
+            'climb': {'min_fl': takeoff_upper, 'max_fl': climb_upper},
+            'cruise': {'min_fl': climb_upper, 'max_fl': descent_upper},
+            'descent': {'min_fl': approach_upper, 'max_fl': descent_upper},
+            'approach': {'min_fl': 0, 'max_fl': approach_upper}
+        }
+    
+    def _get_flight_phase_with_config(self, fl: int, waypoint_sequence: list, current_index: int, altitude_ranges: dict) -> str:
+        """Determine flight phase using simplified logic with GUI configuration
+        
+        Simple approach:
+        1. Look at rate of change before and after current waypoint
+        2. Both positive = climbing, both negative = descending
+        3. Same before = level, mixed = momentary variation
+        4. Apply altitude boundaries for final classification
+        """
+        # Safety checks
+        if not waypoint_sequence or current_index >= len(waypoint_sequence):
+            return 'cruise'
+        
+        current_fl = fl
+        
+        # Get immediate neighbors
+        prev_fl = waypoint_sequence[current_index - 1]['fl'] if current_index > 0 else current_fl
+        next_fl = waypoint_sequence[current_index + 1]['fl'] if current_index < len(waypoint_sequence) - 1 else current_fl
+        
+        # Calculate rate of change before and after
+        rate_before = current_fl - prev_fl if current_index > 0 else 0
+        rate_after = next_fl - current_fl if current_index < len(waypoint_sequence) - 1 else 0
+        
+        # Determine trend based on rates
+        threshold = 5  # Minimum FL change to consider significant
+        
+        is_climbing_before = rate_before > threshold
+        is_descending_before = rate_before < -threshold
+        is_climbing_after = rate_after > threshold  
+        is_descending_after = rate_after < -threshold
+        
+        # Simple logic for trend determination
+        if is_climbing_before and is_climbing_after:
+            # Both rates positive = climbing
+            is_ascending = True
+            is_descending = False
+        elif is_descending_before and is_descending_after:
+            # Both rates negative = descending
+            is_ascending = False
+            is_descending = True
+        elif abs(rate_before) <= threshold and abs(rate_after) <= threshold:
+            # Both rates small = level flight
+            is_ascending = False
+            is_descending = False
+        else:
+            # Mixed signals = momentary variation, use stronger signal
+            net_rate = rate_before + rate_after
+            if abs(net_rate) > threshold:
+                is_ascending = net_rate > 0
+                is_descending = net_rate < 0
+            else:
+                # Truly level
+                is_ascending = False
+                is_descending = False
+        
+        # Extract altitude boundaries for phase determination
+        takeoff_max = altitude_ranges.get('takeoff', {}).get('max_fl', 15)
+        climb_max = altitude_ranges.get('climb', {}).get('max_fl', 250)
+        descent_max = altitude_ranges.get('descent', {}).get('max_fl', 250)  
+        approach_max = altitude_ranges.get('approach', {}).get('max_fl', 50)
+        
+        # Phase determination based on trend + altitude boundaries
+        if is_ascending:
+            if current_fl <= takeoff_max:
+                return 'takeoff'
+            elif current_fl <= climb_max:
+                return 'climb'
+            else:
+                return 'cruise'  # High altitude climbing = cruise
+        elif is_descending:
+            if current_fl <= approach_max:
+                return 'approach'
+            elif current_fl <= descent_max:
+                return 'descent'  # Below Top of Descent = descent phase
+            else:
+                return 'cruise'  # Above Top of Descent but descending = still cruise
+        else:
+            # Level flight - determine phase based on altitude only
+            if current_fl <= takeoff_max:
+                return 'takeoff'
+            elif current_fl <= approach_max:
+                return 'approach'  # Low altitude level = approach
+            elif current_fl <= climb_max:
+                return 'cruise'   # Medium altitude level = cruise
+            else:
+                return 'cruise'   # High altitude level = cruise
+    
+    def _ensure_phase_continuity(self, phases: list, altitudes: list) -> list:
+        """Second pass to ensure phases are continuous and logical
+        
+        Fix isolated phase changes that don't make sense (e.g., single descent waypoint in cruise)
+        """
+        if len(phases) <= 2:
+            return phases
+        
+        corrected_phases = phases.copy()
+        
+        # Fix isolated single waypoint phase changes
+        for i in range(1, len(phases) - 1):
+            prev_phase = phases[i-1]
+            current_phase = phases[i]
+            next_phase = phases[i+1]
+            
+            # If current phase is different from both neighbors, it might be an error
+            if current_phase != prev_phase and current_phase != next_phase and prev_phase == next_phase:
+                # Check if this makes sense based on altitude
+                current_alt = altitudes[i]
+                prev_alt = altitudes[i-1]
+                next_alt = altitudes[i+1]
+                
+                # If altitude change is small, keep the neighboring phase
+                alt_change_before = abs(current_alt - prev_alt)
+                alt_change_after = abs(next_alt - current_alt)
+                
+                if alt_change_before <= 10 and alt_change_after <= 10:  # Small variations
+                    corrected_phases[i] = prev_phase
+                    print(f"Phase continuity: Fixed isolated {current_phase} at waypoint {i+1} (FL{current_alt}) to {prev_phase}")
+        
+        # Fix impossible phase transitions (e.g., takeoff -> descent directly)
+        for i in range(1, len(corrected_phases)):
+            prev_phase = corrected_phases[i-1]
+            current_phase = corrected_phases[i]
+            
+            # Define valid transitions
+            valid_transitions = {
+                'takeoff': ['climb', 'takeoff'],
+                'climb': ['climb', 'cruise', 'takeoff'],
+                'cruise': ['cruise', 'descent', 'climb'],
+                'descent': ['descent', 'approach', 'cruise'],
+                'approach': ['approach', 'takeoff', 'descent']  # Can go to takeoff for touch-and-go
+            }
+            
+            if current_phase not in valid_transitions.get(prev_phase, []):
+                # Invalid transition - use previous phase or determine better one
+                current_alt = altitudes[i]
+                if current_alt <= 15:
+                    corrected_phases[i] = 'takeoff' if prev_phase in ['takeoff', 'approach'] else 'approach'
+                elif current_alt <= 50:
+                    corrected_phases[i] = 'approach' if prev_phase in ['descent', 'approach'] else 'climb'
+                elif current_alt <= 250:
+                    corrected_phases[i] = 'climb' if prev_phase in ['takeoff', 'climb'] else 'cruise'
+                else:
+                    corrected_phases[i] = 'cruise'
+                
+                print(f"Phase continuity: Fixed invalid transition {prev_phase} -> {current_phase} at waypoint {i+1} to {corrected_phases[i]}")
+        
+        return corrected_phases
+
+    def _update_geographic_plot(self):
+        """Update the geographic plot with current track and phase coloring"""
+        if not self.geo_canvas or not self.track_names:
+            return
+        
+        try:
+            import numpy as np
+            import os
+            import cartopy.crs as ccrs
+            import cartopy.feature as cfeature
+            
+            # Clear previous plot
+            self.geo_ax.clear()
+            self.geo_ax.add_feature(cfeature.COASTLINE)
+            self.geo_ax.add_feature(cfeature.BORDERS)
+            
+            # Get current track data
+            track_name = self.track_names[self.current_track_index]
+            
+            if track_name in self.track_data:
+                track_info = self.track_data[track_name]
+                df = track_info['data']
+                lat_col = track_info.get('lat_col')
+                lon_col = track_info.get('lon_col')
+                alt_col = track_info.get('alt_col')
+                aircraft_id = track_info.get('aircraft_id', 'Unknown')
+                
+                print(f"Plotting track: {track_name} (Aircraft: {aircraft_id})")
+                print(f"Data shape: {df.shape}")
+                print(f"Using columns: lat={lat_col}, lon={lon_col}, alt={alt_col}")
+                
+                if not df.empty and lat_col and lon_col:
+                    # Get coordinates
+                    lats = df[lat_col].values
+                    lons = df[lon_col].values
+                    
+                    # Get altitudes if available
+                    if alt_col and alt_col in df.columns:
+                        alts = df[alt_col].values
+                    else:
+                        alts = np.zeros(len(lats))  # Default altitude if not available
+                    
+                    # Get speeds if available (for debug info only)
+                    speeds = None
+                    for col in df.columns:
+                        col_lower = col.lower().strip()
+                        if col_lower in ['speed', 'spd', 'ground speed', 'gs', 'velocity', 'v']:
+                            speeds = df[col].values
+                            print(f"Found speed column: {col}")
+                            break
+                    
+                    # Get waypoint names if available
+                    waypoint_names = None
+                    for col in df.columns:
+                        col_lower = col.lower().strip()
+                        if col_lower in ['waypoint', 'wpt', 'name', 'waypoint name', 'point']:
+                            waypoint_names = df[col].values
+                            print(f"Found waypoint name column: {col}")
+                            break
+                    
+                    # If no explicit waypoint names, use sequence numbers or indices
+                    if waypoint_names is None:
+                        if 'Sequence Number' in df.columns:
+                            waypoint_names = [f"WPT{int(seq)}" for seq in df['Sequence Number'].values]
+                        else:
+                            waypoint_names = [f"WPT{i+1}" for i in range(len(lats))]
+                    
+                    print(f"Coordinate ranges: lat=[{np.min(lats):.3f}, {np.max(lats):.3f}], lon=[{np.min(lons):.3f}, {np.max(lons):.3f}]")
+                    print(f"Altitude range: [{np.min(alts):.0f}, {np.max(alts):.0f}]")
+                    if speeds is not None:
+                        print(f"Speed range: [{np.min(speeds[np.isfinite(speeds)]):.0f}, {np.max(speeds[np.isfinite(speeds)]):.0f}]")
+                    print(f"Sample waypoint names: {waypoint_names[:5] if len(waypoint_names) > 5 else waypoint_names}")
+                    
+                    # Phase colors matching the altitude profile
+                    phase_colors = {
+                        'takeoff': '#8B4513',    # Brown
+                        'climb': '#FF6B35',      # Orange-red
+                        'cruise': '#F7931E',     # Orange
+                        'descent': '#4A90E2',    # Blue
+                        'approach': '#7B68EE'    # Purple
+                    }
+                    
+                    # Color waypoints by phase using backend logic
+                    waypoint_colors = []
+                    phase_counts = {'takeoff': 0, 'climb': 0, 'cruise': 0, 'descent': 0, 'approach': 0}
+                    
+                    # Import the backend phase determination function
+                    from . import SATG
+                    
+                    # Get current configuration for phase ranges from spinboxes
+                    ranges = self._calculate_ranges()
+                    
+                    # Convert ranges to altitude_ranges format expected by backend
+                    altitude_ranges = {
+                        'takeoff': ranges['takeoff'],
+                        'climb': ranges['climb'], 
+                        'cruise': ranges['cruise'],
+                        'descent': ranges['descent'],
+                        'approach': ranges['approach']
+                    }
+                    
+                    # Create waypoint sequence in the format expected by backend
+                    waypoint_sequence = [{'fl': int(a)} for a in alts]
+                    
+                    # First pass - determine phases using simple logic
+                    initial_phases = []
+                    for i, alt in enumerate(alts):
+                        phase = self._get_flight_phase_with_config(int(alt), waypoint_sequence, i, altitude_ranges)
+                        initial_phases.append(phase)
+                    
+                    # Second pass - ensure phase continuity
+                    final_phases = self._ensure_phase_continuity(initial_phases, alts)
+                    
+                    for i, (phase, alt) in enumerate(zip(final_phases, alts)):
+                        waypoint_colors.append(phase_colors[phase])
+                        phase_counts[phase] += 1
+                    
+                    print(f"Phase distribution for {aircraft_id}: {phase_counts}")
+                    
+                    # Plot track with colored segments
+                    for i in range(len(lons) - 1):
+                        self.geo_ax.plot([lons[i], lons[i+1]], [lats[i], lats[i+1]], 
+                                       color=waypoint_colors[i], linewidth=3, 
+                                       transform=ccrs.PlateCarree())
+                    
+                    # Plot waypoints
+                    self.geo_ax.scatter(lons, lats, c=waypoint_colors, s=50, 
+                                      transform=ccrs.PlateCarree(), edgecolor='black', linewidth=0.5, zorder=5)
+                    
+                    # Add waypoint labels with name and altitude only
+                    for i, (lon, lat, alt, name) in enumerate(zip(lons, lats, alts, waypoint_names)):
+                        # Format the label with just name and altitude
+                        label = f"{name}\nFL{int(alt)}"
+                        
+                        # Add text label with background for readability
+                        self.geo_ax.text(lon, lat, label, 
+                                       transform=ccrs.PlateCarree(),
+                                       fontsize=6, ha='left', va='bottom',
+                                       bbox=dict(boxstyle="round,pad=0.2", 
+                                               facecolor='white', alpha=0.8, edgecolor='gray'),
+                                       zorder=6)  # Higher zorder to appear above waypoints
+                    
+                    # Set extent around track with proper margin
+                    lat_margin = max(0.5, (np.max(lats) - np.min(lats)) * 0.1)
+                    lon_margin = max(0.5, (np.max(lons) - np.min(lons)) * 0.1)
+                    
+                    extent = [
+                        np.min(lons) - lon_margin, np.max(lons) + lon_margin,
+                        np.min(lats) - lat_margin, np.max(lats) + lat_margin
+                    ]
+                    
+                    print(f"Setting extent: {extent}")
+                    self.geo_ax.set_extent(extent, ccrs.PlateCarree())
+                    
+                    self.geo_ax.set_title(f"{aircraft_id} ({len(lons)} waypoints)", fontsize=10, pad=10)
+                    
+                    # Add gridlines with optimized layout for space
+                    gl = self.geo_ax.gridlines(draw_labels=True, alpha=0.5, linewidth=0.5)
+                    gl.top_labels = False  # Remove top labels to save space
+                    gl.right_labels = True  # Keep right labels for better space use
+                    gl.left_labels = True   # Keep left labels
+                    gl.bottom_labels = True # Keep bottom labels
+                    gl.xlabel_style = {'size': 7}  # Smaller font for labels
+                    gl.ylabel_style = {'size': 7}
+                else:
+                    print(f"No valid data found for track {track_name}")
+                    self.geo_ax.text(0.5, 0.5, f"No geographic data\nfor track: {track_name}", 
+                                   transform=self.geo_ax.transAxes, ha='center', va='center',
+                                   bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow"))
+            else:
+                print(f"Track {track_name} not found in track_data")
+                self.geo_ax.text(0.5, 0.5, f"Track data not loaded\nfor: {track_name}", 
+                               transform=self.geo_ax.transAxes, ha='center', va='center',
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor="orange"))
+            
+            # Refresh canvas
+            self.geo_canvas.draw()
+            
+        except Exception as e:
+            print(f"Error updating geographic plot: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def get_all_track_configurations(self):
+        """Return all track configurations"""
+        # Save current track configuration before returning
+        self._save_current_config()
+        return self.track_configurations.copy()
+    
+    def _validate_and_update(self):
+        """Validate altitude ordering and update ranges, then update visualization"""
+        # Temporarily disconnect signals to prevent recursion
+        self.takeoff_spin.blockSignals(True)
+        self.climb_spin.blockSignals(True)
+        self.descent_spin.blockSignals(True)
+        self.approach_spin.blockSignals(True)
+        
+        # Get current values
+        takeoff_val = self.takeoff_spin.value()
+        climb_val = self.climb_spin.value()
+        descent_val = self.descent_spin.value()
+        approach_val = self.approach_spin.value()
+        
+        # Update ranges based on altitude ordering rules:
+        # Takeoff < Climb < Descent and Approach < Descent
+        
+        # Takeoff: 0 to (climb - 1), max 998
+        self.takeoff_spin.setRange(0, min(998, max(0, climb_val - 1)))
+        
+        # Climb: (takeoff + 1) to (descent - 1), max 998  
+        self.climb_spin.setRange(max(1, takeoff_val + 1), min(998, max(takeoff_val + 1, descent_val - 1)))
+        
+        # Descent: max(climb + 1, approach + 1) to 999
+        self.descent_spin.setRange(max(climb_val + 1, approach_val + 1), 999)
+        
+        # Approach: 0 to (descent - 1), max 998
+        self.approach_spin.setRange(0, min(998, max(0, descent_val - 1)))
+        
+        # Reconnect signals
+        self.takeoff_spin.blockSignals(False)
+        self.climb_spin.blockSignals(False)
+        self.descent_spin.blockSignals(False)
+        self.approach_spin.blockSignals(False)
+        
+        # Update visualization
         self._update_visualization()
     
     def _reset_to_defaults(self):
         """Reset altitude boundaries to default values"""
         self.takeoff_spin.setValue(15)
         self.climb_spin.setValue(250)
-        self.cruise_spin.setValue(400)
         self.descent_spin.setValue(400)
         self.approach_spin.setValue(50)
+        # Validation will be triggered by the value changes
     
     def _update_visualization(self):
         """Update the phase visualization when values change"""
+        # Use a timer to prevent interference with typing
+        if not hasattr(self, '_update_timer'):
+            from PyQt6.QtCore import QTimer
+            self._update_timer = QTimer()
+            self._update_timer.setSingleShot(True)
+            self._update_timer.timeout.connect(self._do_update_visualization)
+        
+        # Delay the update slightly to avoid interfering with input
+        self._update_timer.start(50)  # 50ms delay
+    
+    def _do_update_visualization(self):
+        """Actually perform the visualization update"""
         ranges = self._calculate_ranges()
         self.phase_canvas.update_phases(ranges)
+        # Also update the geographic plot with new phase colors
+        self._update_geographic_plot()
     
     def _calculate_ranges(self):
-        """Calculate actual phase ranges based on the 5 input values"""
-        takeoff_upper = self.takeoff_spin.value()
-        climb_upper = self.climb_spin.value()
-        cruise_upper = self.cruise_spin.value()
-        descent_upper = self.descent_spin.value()
-        approach_upper = self.approach_spin.value()
+        """Calculate actual phase ranges based on the 4 input values"""
+        initial_climb_upper = self.takeoff_spin.value()  # Now called Initial Climb
+        top_of_climb = self.climb_spin.value()           # Now called Top of Climb  
+        top_of_descent = self.descent_spin.value()       # Now called Top of Descent
+        final_approach_upper = self.approach_spin.value() # Now called Final Approach
         
+        # Logic: takeoff -> climb -> cruise -> descent -> approach
+        # Cruise is between Top of Climb and Top of Descent
+        # Descent is from Top of Descent down to Final Approach level
         ranges = {
-            'takeoff': {'min_fl': 0, 'max_fl': takeoff_upper},
-            'climb': {'min_fl': takeoff_upper, 'max_fl': climb_upper},
-            'cruise': {'min_fl': climb_upper, 'max_fl': cruise_upper},
-            'descent': {'min_fl': approach_upper, 'max_fl': descent_upper},
-            'approach': {'min_fl': 0, 'max_fl': approach_upper}
+            'takeoff': {'min_fl': 0, 'max_fl': initial_climb_upper},
+            'climb': {'min_fl': initial_climb_upper, 'max_fl': top_of_climb},
+            'cruise': {'min_fl': top_of_climb, 'max_fl': top_of_descent},
+            'descent': {'min_fl': final_approach_upper, 'max_fl': top_of_descent},
+            'approach': {'min_fl': 0, 'max_fl': final_approach_upper}
         }
         
         return ranges
@@ -4458,7 +5303,7 @@ class PhaseVisualizationWidget(QWidget):
         # Get actual altitude values from phase ranges
         takeoff_upper = self.phase_ranges['takeoff']['max_fl']
         climb_upper = self.phase_ranges['climb']['max_fl']
-        cruise_upper = self.phase_ranges['cruise']['max_fl']
+        descent_upper = self.phase_ranges['descent']['max_fl']
         approach_upper = self.phase_ranges['approach']['max_fl']
         
         # Takeoff: 0 to takeoff upper (0% to 15% of flight)
@@ -4470,13 +5315,11 @@ class PhaseVisualizationWidget(QWidget):
         # Climb: takeoff upper to climb upper (15% to 35% of flight)
         profile_points.append((0.35, climb_upper))
         
-        # Cruise: climb upper to cruise upper (35% to 65% of flight)
-        profile_points.extend([
-            (0.4, cruise_upper),
-            (0.65, cruise_upper)
-        ])
+        # Cruise: climb upper to descent upper (35% to 65% of flight)
+        # Single segment - no intermediate point needed
+        profile_points.append((0.65, descent_upper))
         
-        # Descent: cruise upper to approach upper (65% to 85% of flight)
+        # Descent: descent upper to approach upper (65% to 85% of flight)
         profile_points.append((0.85, approach_upper))
         
         # Approach: approach upper to 0 (85% to 100% of flight)
@@ -4491,7 +5334,7 @@ class PhaseVisualizationWidget(QWidget):
             # Get actual altitude values for accurate positioning
             takeoff_upper = self.phase_ranges['takeoff']['max_fl']
             climb_upper = self.phase_ranges['climb']['max_fl']
-            cruise_upper = self.phase_ranges['cruise']['max_fl']
+            descent_upper = self.phase_ranges['descent']['max_fl']
             approach_upper = self.phase_ranges['approach']['max_fl']
                 
             # Calculate phase time boundaries and corresponding profile points
@@ -4504,10 +5347,10 @@ class PhaseVisualizationWidget(QWidget):
             elif phase == 'cruise':
                 time_start, time_end = 0.35, 0.65
                 start_alt = climb_upper
-                end_alt = cruise_upper
+                end_alt = descent_upper  # Cruise automatically goes to descent upper
             elif phase == 'descent':
                 time_start, time_end = 0.65, 0.85
-                start_alt, end_alt = cruise_upper, approach_upper
+                start_alt, end_alt = descent_upper, approach_upper
             else:  # approach
                 time_start, time_end = 0.85, 1.0
                 start_alt, end_alt = approach_upper, 0
@@ -4516,40 +5359,30 @@ class PhaseVisualizationWidget(QWidget):
             x_start = start_x + (time_start * width)
             x_end = start_x + (time_end * width)
             
-            # For ground level and profile-following regions
-            if phase in ['takeoff', 'climb', 'descent', 'approach']:
-                # Create a polygon that follows the flight profile
-                from PyQt6.QtGui import QPolygonF
-                from PyQt6.QtCore import QPointF
-                
-                y_start = start_y + height - (start_alt / max_alt * height)
-                y_end = start_y + height - (end_alt / max_alt * height)
-                y_ground = start_y + height
-                
-                # Create polygon points
-                points = [
-                    QPointF(x_start, y_ground),  # Ground start
-                    QPointF(x_start, y_start),   # Profile start
-                    QPointF(x_end, y_end),       # Profile end
-                    QPointF(x_end, y_ground),    # Ground end
-                ]
-                
-                polygon = QPolygonF(points)
-                
-                # Fill the polygon
-                color = QColor(self.phase_colors[phase])
-                color.setAlpha(120)  # Semi-transparent
-                painter.setBrush(color)
-                painter.setPen(QPen(color, 1))
-                painter.drawPolygon(polygon)
-                
-            else:  # cruise - rectangular region
-                y_top = start_y + height - (cruise_upper / max_alt * height)
-                y_bottom = start_y + height
-                
-                color = QColor(self.phase_colors[phase])
-                color.setAlpha(120)
-                painter.fillRect(QRectF(x_start, y_top, x_end - x_start, y_bottom - y_top), color)
+            # All phases now use polygons that follow the flight profile
+            from PyQt6.QtGui import QPolygonF
+            from PyQt6.QtCore import QPointF
+            
+            y_start = start_y + height - (start_alt / max_alt * height)
+            y_end = start_y + height - (end_alt / max_alt * height)
+            y_ground = start_y + height
+            
+            # Create polygon points that follow the flight profile
+            points = [
+                QPointF(x_start, y_ground),  # Ground start
+                QPointF(x_start, y_start),   # Profile start
+                QPointF(x_end, y_end),       # Profile end
+                QPointF(x_end, y_ground),    # Ground end
+            ]
+            
+            polygon = QPolygonF(points)
+            
+            # Fill the polygon
+            color = QColor(self.phase_colors[phase])
+            color.setAlpha(120)  # Semi-transparent
+            painter.setBrush(color)
+            painter.setPen(QPen(color, 1))
+            painter.drawPolygon(polygon)
         
         # Draw flight profile line
         painter.setPen(QPen(QColor("#000000"), 3))

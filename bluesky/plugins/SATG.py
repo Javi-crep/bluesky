@@ -341,6 +341,12 @@ class _SATGState:
             'descent': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0},
             'approach': {'enabled': False, 'dt_max': 0.0, 'dlat_max': 0.0, 'dlon_max': 0.0, 'dfl_max': 0}
         }
+        
+        # Track-specific phase configurations for per-track altitude boundaries
+        self.track_phase_altitudes = {}
+        
+        # Mapping from aircraft ID to track name (for track-specific phase determination)
+        self.aircraft_to_track = {}
 
         self.dt_max: float = 0.0
         self.dlat_max: float = 0.0
@@ -619,16 +625,19 @@ def _get_points_for_run() -> Dict[str, List[dict]]:
         rng_local = random.Random((seed_base << 32) ^ (hash(acid) & 0xffffffff))
         return (rng_local.random() * 100.0) < p
 
-    def _get_flight_phase(fl: int, waypoint_sequence: list, current_index: int) -> str:
+    @staticmethod
+    def _get_flight_phase(fl: int, waypoint_sequence: list, current_index: int, track_name: str = None) -> str:
         """Determine flight phase based on local altitude progression context
         
         Enhanced to handle temporary level-offs and small altitude variations
         by looking at a wider context window around the current waypoint.
+        Now supports track-specific phase altitude boundaries.
         
         Args:
             fl: Current flight level
             waypoint_sequence: List of waypoints with 'fl' field
             current_index: Index of current waypoint in the sequence
+            track_name: Optional track name for track-specific phase boundaries
             
         Returns:
             Flight phase: 'takeoff', 'climb', 'cruise', 'descent', or 'approach'
@@ -690,25 +699,32 @@ def _get_points_for_run() -> Dict[str, List[dict]]:
                 is_ascending = flight_progress < 0.5
                 is_descending = flight_progress >= 0.5
         
-        # Simple altitude thresholds for phase distinction
-        low_altitude = 50   # Below FL050
-        high_altitude = 200 # Above FL200
+        # Get phase altitude boundaries (track-specific or default)
+        phase_altitudes = STATE.phase_altitudes
+        if track_name and track_name in STATE.track_phase_altitudes:
+            phase_altitudes = STATE.track_phase_altitudes[track_name]
         
-        # Phase determination based on altitude trend + altitude level
+        # Extract altitude boundaries for phase determination
+        takeoff_max = phase_altitudes.get('takeoff', {}).get('max_fl', 15)
+        climb_max = phase_altitudes.get('climb', {}).get('max_fl', 250)
+        descent_max = phase_altitudes.get('descent', {}).get('max_fl', 250)  
+        approach_max = phase_altitudes.get('approach', {}).get('max_fl', 50)
+        
+        # Phase determination based on altitude trend + configured boundaries
         if is_ascending:
-            if current_fl <= low_altitude:
+            if current_fl <= takeoff_max:
                 return 'takeoff'
-            elif current_fl >= high_altitude:
-                return 'cruise'  # High altitude ascending = cruise climb
+            elif current_fl <= climb_max:
+                return 'climb'
             else:
-                return 'climb'   # Medium altitude ascending = climb
+                return 'cruise'  # Above climb boundary = cruise
         else:  # is_descending
-            if current_fl <= low_altitude:
+            if current_fl <= approach_max:
                 return 'approach'
-            elif current_fl >= high_altitude:
-                return 'descent'  # High altitude descending = descent
+            elif current_fl >= descent_max:
+                return 'descent'  # High altitude descending = descent  
             else:
-                return 'descent'  # Medium altitude descending = descent
+                return 'descent'  # Below descent boundary = descent
 
     def _get_phase_jitter_params(phase: str) -> dict:
         """Get jitter parameters for a specific flight phase"""
@@ -737,7 +753,9 @@ def _get_points_for_run() -> Dict[str, List[dict]]:
             # Determine jitter parameters
             if STATE.phase_jitter_enabled:
                 # Use phase-based jitter with trajectory context
-                phase = _get_flight_phase(p['fl'], plist, i)
+                # Try to get track name for this aircraft
+                track_name = STATE.aircraft_to_track.get(acid)
+                phase = _get_flight_phase(p['fl'], plist, i, track_name)
                 jitter_params = _get_phase_jitter_params(phase)
                 apply_jitter = jitter_params['dt_max'] > 0 or jitter_params['dlat_max'] > 0 or jitter_params['dlon_max'] > 0 or jitter_params['dfl_max'] > 0
             elif apply_global_jitter:
@@ -2266,6 +2284,37 @@ def SATG_RL_PHASE_ALTITUDES(phase: str, min_fl: int=None, max_fl: int=None):
     msg = f"Phase '{phase}' altitude bounds: FL{bounds['min_fl']:03d} to FL{bounds['max_fl']:03d}"
     _echo_ok(msg)
     return True, ""
+
+@command
+@command
+def SATG_RL_TRACK_CONFIG(ectrl_id: str, initial_climb: int, top_of_climb: int, top_of_descent: int, final_approach: int):
+    """SATG_RL_TRACK_CONFIG ectrl_id initial_climb top_of_climb top_of_descent final_approach
+    Set altitude boundaries for a specific ECTRL ID (all values in flight levels).
+    
+    Args:
+        ectrl_id: Track identifier (e.g., "IBE3312", "TAP342")
+        initial_climb: Upper bound for takeoff phase (FL)
+        top_of_climb: Upper bound for climb phase (FL)  
+        top_of_descent: Upper bound for cruise phase / start of descent (FL)
+        final_approach: Upper bound for approach phase (FL)
+    """
+    try:
+        # Store track-specific altitude boundaries in the expected format
+        STATE.track_phase_altitudes[ectrl_id] = {
+            'takeoff': {'min_fl': 0, 'max_fl': int(initial_climb)},
+            'climb': {'min_fl': int(initial_climb), 'max_fl': int(top_of_climb)},
+            'cruise': {'min_fl': int(top_of_climb), 'max_fl': int(top_of_descent)},
+            'descent': {'min_fl': int(final_approach), 'max_fl': int(top_of_descent)},
+            'approach': {'min_fl': 0, 'max_fl': int(final_approach)}
+        }
+        
+        _echo_ok(f"Set altitude boundaries for {ectrl_id}: "
+                f"Initial Climb FL{initial_climb}, Top of Climb FL{top_of_climb}, "
+                f"Top of Descent FL{top_of_descent}, Final Approach FL{final_approach}")
+        return True, ""
+    except Exception as e:
+        _echo_err(f"Error setting track configuration for {ectrl_id}: {e}")
+        return False, ""
 
 @command
 def SATG_RL_MAKE(*args):
