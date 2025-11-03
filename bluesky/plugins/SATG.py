@@ -591,6 +591,107 @@ def _draw_noise(rng: random.Random, delta: float, dist: str, nsig: float) -> flo
         if x < -lim: x = -lim
     return x
 
+def _get_flight_phase(fl: int, waypoint_sequence: list, current_index: int, track_name: str = None) -> str:
+    """Determine flight phase using simplified logic matching GUI implementation
+    
+    Simple approach (matches GUI _get_flight_phase_with_config exactly):
+    1. Look at rate of change before and after current waypoint
+    2. Both positive = climbing, both negative = descending
+    3. Same before = level, mixed = momentary variation
+    4. Apply altitude boundaries for final classification
+    
+    Args:
+        fl: Current flight level
+        waypoint_sequence: List of waypoints with 'fl' field
+        current_index: Index of current waypoint in the sequence
+        track_name: Optional track name for track-specific phase boundaries
+        
+    Returns:
+        Flight phase: 'takeoff', 'climb', 'cruise', 'descent', or 'approach'
+    """
+    # Safety checks
+    if not waypoint_sequence or current_index >= len(waypoint_sequence):
+        return 'cruise'
+    
+    current_fl = fl
+    
+    # Get immediate neighbors
+    prev_fl = waypoint_sequence[current_index - 1]['fl'] if current_index > 0 else current_fl
+    next_fl = waypoint_sequence[current_index + 1]['fl'] if current_index < len(waypoint_sequence) - 1 else current_fl
+    
+    # Calculate rate of change before and after
+    rate_before = current_fl - prev_fl if current_index > 0 else 0
+    rate_after = next_fl - current_fl if current_index < len(waypoint_sequence) - 1 else 0
+    
+    # Determine trend based on rates
+    threshold = 5  # Minimum FL change to consider significant (matches GUI)
+    
+    is_climbing_before = rate_before > threshold
+    is_descending_before = rate_before < -threshold
+    is_climbing_after = rate_after > threshold  
+    is_descending_after = rate_after < -threshold
+    
+    # Simple logic for trend determination (matches GUI exactly)
+    if is_climbing_before and is_climbing_after:
+        # Both rates positive = climbing
+        is_ascending = True
+        is_descending = False
+    elif is_descending_before and is_descending_after:
+        # Both rates negative = descending
+        is_ascending = False
+        is_descending = True
+    elif abs(rate_before) <= threshold and abs(rate_after) <= threshold:
+        # Both rates small = level flight
+        is_ascending = False
+        is_descending = False
+    else:
+        # Mixed signals = momentary variation, use stronger signal
+        net_rate = rate_before + rate_after
+        if abs(net_rate) > threshold:
+            is_ascending = net_rate > 0
+            is_descending = net_rate < 0
+        else:
+            # Truly level
+            is_ascending = False
+            is_descending = False
+    
+    # Get phase altitude boundaries (track-specific or default)
+    phase_altitudes = STATE.phase_altitudes
+    if track_name and track_name in STATE.track_phase_altitudes:
+        phase_altitudes = STATE.track_phase_altitudes[track_name]
+    
+    # Extract altitude boundaries for phase determination
+    takeoff_max = phase_altitudes.get('takeoff', {}).get('max_fl', 15)
+    climb_max = phase_altitudes.get('climb', {}).get('max_fl', 250)
+    descent_max = phase_altitudes.get('descent', {}).get('max_fl', 250)  
+    approach_max = phase_altitudes.get('approach', {}).get('max_fl', 50)
+    
+    # Phase determination based on trend + altitude boundaries (matches GUI exactly)
+    if is_ascending:
+        if current_fl <= takeoff_max:
+            return 'takeoff'
+        elif current_fl <= climb_max:
+            return 'climb'
+        else:
+            return 'cruise'  # High altitude climbing = cruise
+    elif is_descending:
+        if current_fl <= approach_max:
+            return 'approach'
+        elif current_fl <= descent_max:
+            return 'descent'  # Below Top of Descent = descent phase
+        else:
+            return 'cruise'  # Above Top of Descent but descending = still cruise
+    else:
+        # Level flight - determine phase based on altitude only (matches GUI exactly)
+        if current_fl <= takeoff_max:
+            return 'takeoff'
+        elif current_fl <= approach_max:
+            return 'approach'  # Low altitude level = approach
+        elif current_fl <= climb_max:
+            return 'cruise'   # Medium altitude level = cruise
+        else:
+            return 'cruise'   # High altitude level = cruise
+
 def _get_points_for_run() -> Dict[str, List[dict]]:
     if not STATE.base_points: return {}
     pts = {acid: [dict(p) for p in plist] for acid, plist in STATE.base_points.items()}
@@ -624,107 +725,6 @@ def _get_points_for_run() -> Dict[str, List[dict]]:
         # Combine seed and per-run salted hash for stable behavior within this session
         rng_local = random.Random((seed_base << 32) ^ (hash(acid) & 0xffffffff))
         return (rng_local.random() * 100.0) < p
-
-    @staticmethod
-    def _get_flight_phase(fl: int, waypoint_sequence: list, current_index: int, track_name: str = None) -> str:
-        """Determine flight phase based on local altitude progression context
-        
-        Enhanced to handle temporary level-offs and small altitude variations
-        by looking at a wider context window around the current waypoint.
-        Now supports track-specific phase altitude boundaries.
-        
-        Args:
-            fl: Current flight level
-            waypoint_sequence: List of waypoints with 'fl' field
-            current_index: Index of current waypoint in the sequence
-            track_name: Optional track name for track-specific phase boundaries
-            
-        Returns:
-            Flight phase: 'takeoff', 'climb', 'cruise', 'descent', or 'approach'
-        """
-        # Safety checks
-        if not waypoint_sequence or current_index >= len(waypoint_sequence):
-            return 'cruise'
-        
-        current_fl = fl
-        
-        # Look at wider context to handle temporary variations
-        # Get altitudes from a window around current position
-        window_size = 2  # Look 2 waypoints before/after when possible
-        
-        # Get previous context (up to window_size waypoints back)
-        prev_altitudes = []
-        for i in range(max(0, current_index - window_size), current_index):
-            prev_altitudes.append(waypoint_sequence[i]['fl'])
-        
-        # Get next context (up to window_size waypoints ahead)  
-        next_altitudes = []
-        for i in range(current_index + 1, min(len(waypoint_sequence), current_index + window_size + 1)):
-            next_altitudes.append(waypoint_sequence[i]['fl'])
-        
-        # Calculate overall trend from wider context
-        start_altitude = prev_altitudes[0] if prev_altitudes else current_fl
-        end_altitude = next_altitudes[-1] if next_altitudes else current_fl
-        
-        # Also look at immediate neighbors for local context
-        prev_fl = waypoint_sequence[current_index - 1]['fl'] if current_index > 0 else current_fl
-        next_fl = waypoint_sequence[current_index + 1]['fl'] if current_index < len(waypoint_sequence) - 1 else current_fl
-        
-        # Calculate trends
-        immediate_from_prev = current_fl - prev_fl if current_index > 0 else 0
-        immediate_to_next = next_fl - current_fl if current_index < len(waypoint_sequence) - 1 else 0
-        overall_trend = end_altitude - start_altitude
-        
-        # Determine if generally ascending or descending
-        # Priority: overall trend > immediate trend
-        trend_threshold = 10  # FL difference to consider significant
-        
-        if abs(overall_trend) >= trend_threshold:
-            # Strong overall trend - use that
-            is_ascending = overall_trend > 0
-            is_descending = overall_trend < 0
-        else:
-            # Weak overall trend - use immediate context
-            is_ascending = (immediate_from_prev > 0) or (immediate_to_next > 0)
-            is_descending = (immediate_from_prev < 0) or (immediate_to_next < 0)
-            
-            # Handle conflicting immediate signals
-            if is_ascending and is_descending:
-                net_immediate = immediate_from_prev + immediate_to_next
-                is_ascending = net_immediate >= 0
-                is_descending = net_immediate < 0
-            elif not is_ascending and not is_descending:
-                # Level flight - use position in sequence
-                flight_progress = current_index / len(waypoint_sequence)
-                is_ascending = flight_progress < 0.5
-                is_descending = flight_progress >= 0.5
-        
-        # Get phase altitude boundaries (track-specific or default)
-        phase_altitudes = STATE.phase_altitudes
-        if track_name and track_name in STATE.track_phase_altitudes:
-            phase_altitudes = STATE.track_phase_altitudes[track_name]
-        
-        # Extract altitude boundaries for phase determination
-        takeoff_max = phase_altitudes.get('takeoff', {}).get('max_fl', 15)
-        climb_max = phase_altitudes.get('climb', {}).get('max_fl', 250)
-        descent_max = phase_altitudes.get('descent', {}).get('max_fl', 250)  
-        approach_max = phase_altitudes.get('approach', {}).get('max_fl', 50)
-        
-        # Phase determination based on altitude trend + configured boundaries
-        if is_ascending:
-            if current_fl <= takeoff_max:
-                return 'takeoff'
-            elif current_fl <= climb_max:
-                return 'climb'
-            else:
-                return 'cruise'  # Above climb boundary = cruise
-        else:  # is_descending
-            if current_fl <= approach_max:
-                return 'approach'
-            elif current_fl >= descent_max:
-                return 'descent'  # High altitude descending = descent  
-            else:
-                return 'descent'  # Below descent boundary = descent
 
     def _get_phase_jitter_params(phase: str) -> dict:
         """Get jitter parameters for a specific flight phase"""
@@ -834,23 +834,46 @@ def _scan_existing_acids(path: str) -> set:
 
 def _next_unique_acid(base: str, used: set) -> str:
     """
-    If base not in used -> return base.
-    If base ends with digits, increment preserving width (e.g., ABC01 -> ABC02).
-    Else, append _2, _3, ... until unique.
+    Generate a unique aircraft ID by avoiding conflicts with used set.
+    
+    Strategy:
+    1. If base not in used -> return base
+    2. For airline callsigns (e.g., EZY123, BAW456) -> append _2, _3, etc.
+    3. For sequential IDs (e.g., ABC01, TEST02) -> increment preserving width
+    
+    The distinction is made by checking if the trailing digits are likely
+    a flight number (3+ digits) vs a sequential ID (1-2 digits with leading zeros).
     """
     if base not in used:
         return base
+    
+    # Check if it ends with digits
     m = re.match(r"^(.*?)(\d+)$", base)
     if m:
         root, num = m.group(1), m.group(2)
-        width = len(num)
-        n = int(num)
-        while True:
-            n += 1
-            cand = f"{root}{str(n).zfill(width)}"
-            if cand not in used:
-                return cand
-    # no trailing digits: use _2, _3, ...
+        
+        # Heuristic: if 3+ digits or doesn't have leading zeros, treat as airline callsign
+        # Examples: EZY123, BAW456, AFR789 -> append _2, _3
+        # Counter-examples: ABC01, TEST02 -> increment to ABC02, TEST03
+        if len(num) >= 3 or not num.startswith('0'):
+            # Treat as airline callsign - append _2, _3, etc.
+            n = 2
+            while True:
+                cand = f"{base}_{n}"
+                if cand not in used:
+                    return cand
+                n += 1
+        else:
+            # Treat as sequential ID - increment preserving width
+            width = len(num)
+            n = int(num)
+            while True:
+                n += 1
+                cand = f"{root}{str(n).zfill(width)}"
+                if cand not in used:
+                    return cand
+    
+    # No trailing digits: use _2, _3, ...
     n = 2
     while True:
         cand = f"{base}_{n}"
@@ -974,43 +997,98 @@ def _write_rl_scn(out_path: str, append: bool = False):
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
         points = _get_points_for_run()
+        print(f"[DEBUG] _get_points_for_run() returned {len(points) if points else 0} aircraft")
 
         # When appending, avoid duplicate callsigns by renaming colliding ACIDs
         used = _scan_existing_acids(out_path) if append else set()
         name_map = {}  # original_acid -> new_acid
 
-        # Compute a deterministic mapping for this batch
+        # Compute a deterministic mapping for this batch, considering both ACIDs and callsigns
+        print(f"[DEBUG] STATE.flights contains {len(STATE.flights)} flights: {list(STATE.flights.keys())}")
+        print(f"[DEBUG] Points contains {len(points)} aircraft: {list(points.keys())}")
+        
         for acid in STATE.flights.keys():
-            new_acid = acid
-            if new_acid in used or new_acid in name_map.values():
-                new_acid = _next_unique_acid(new_acid, used | set(name_map.values()))
-            name_map[acid] = new_acid
-            used.add(new_acid)
+            meta = STATE.flights[acid]
+            # Prefer callsign from metadata if available, otherwise use acid
+            preferred_name = meta.get('Callsign', acid) if meta.get('Callsign') else acid
+            
+            # Ensure the preferred name is unique
+            final_name = preferred_name
+            if final_name in used or final_name in name_map.values():
+                final_name = _next_unique_acid(preferred_name, used | set(name_map.values()))
+                print(f"[DEBUG] Duplicate detected: '{preferred_name}' -> '{final_name}'")
+            
+            name_map[acid] = final_name
+            used.add(final_name)
 
+        print(f"[DEBUG] Starting aircraft generation loop...")
         for acid, meta in STATE.flights.items():
+            print(f"[DEBUG] Processing aircraft {acid}")
+            print(f"[DEBUG] Metadata: {meta}")
+            # Use the pre-computed unique name from name_map
             acid_out = name_map.get(acid, acid)
+            print(f"[DEBUG] Using unique callsign: '{acid_out}'")
 
-            if acid not in points or not points[acid]: continue
+            if acid not in points or not points[acid]:
+                print(f"[DEBUG] Skipping {acid} - no points data")
+                continue
+            print(f"[DEBUG] Aircraft {acid} has {len(points[acid])} points, using callsign: {acid_out}")
             segs = points[acid]; r0 = segs[0]; last = segs[-1]
             t0 = timedelta(seconds=r0['t']); stamp0 = _stamp(t0)
             fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
             cas0 = _gs_to_cas_kt(r0['gs'], fl0)
-            hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
+            
+            # Calculate initial heading from first to third waypoint (skip duplicate second)
+            if len(segs) > 2:
+                # Use third waypoint since second is often duplicate
+                target_point = segs[2]
+                lat1, lon1 = target_point['lat'], target_point['lon']
+                # Calculate bearing from lat0,lon0 to lat1,lon1
+                lat0_rad = math.radians(lat0)
+                lat1_rad = math.radians(lat1)
+                dlon_rad = math.radians(lon1 - lon0)
+                
+                y = math.sin(dlon_rad) * math.cos(lat1_rad)
+                x = math.cos(lat0_rad) * math.sin(lat1_rad) - math.sin(lat0_rad) * math.cos(lat1_rad) * math.cos(dlon_rad)
+                bearing_rad = math.atan2(y, x)
+                bearing_deg = math.degrees(bearing_rad)
+                hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
+                print(f"[DEBUG] Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 3rd waypoint)")
+            elif len(segs) > 1:
+                # Fallback to second waypoint if no third available
+                next_point = segs[1]
+                lat1, lon1 = next_point['lat'], next_point['lon']
+                # Calculate bearing from lat0,lon0 to lat1,lon1
+                lat0_rad = math.radians(lat0)
+                lat1_rad = math.radians(lat1)
+                dlon_rad = math.radians(lon1 - lon0)
+                
+                y = math.sin(dlon_rad) * math.cos(lat1_rad)
+                x = math.cos(lat0_rad) * math.sin(lat1_rad) - math.sin(lat0_rad) * math.cos(lat1_rad) * math.cos(dlon_rad)
+                bearing_rad = math.atan2(y, x)
+                bearing_deg = math.degrees(bearing_rad)
+                hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
+                print(f"[DEBUG] Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 2nd waypoint)")
+            else:
+                hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
+                print(f"[DEBUG] Using stored heading {hdg0}° (no waypoints available)")
+            
             actype = meta.get('AC Type',''); alt_ft0 = int(fl0) * 100
 
             f.write(f"{stamp0}CRE {acid_out},{actype},{lat0:.6f},{lon0:.6f},{hdg0:03d},{alt_ft0},{cas0:.1f}\n")
 
             last_is_landing = int(last['fl']) == 0
-            trigger_on_last = last_is_landing or STATE.autodel
+            # Auto-delete logic: always delete landing aircraft, or when checkbox is enabled for others
+            trigger_on_last = STATE.autodel or last_is_landing  # Always delete landing aircraft
 
             pen_wptname = None; last_wptname = None
             if trigger_on_last:
                 last_wptname = _sanitize_name(f"{acid_out}_DEST")
-                f.write(f"{stamp0}DEFWPT {last_wptname},{last['lat']:.6f},{last['lon']:.6f},FIX\n")
+                f.write(f"{stamp0}DEFWPT {last_wptname},{last['lat']:.6f},{last['lon']:.6f}\n")
             if last_is_landing and len(segs) >= 2:
                 pen = segs[-2]
                 pen_wptname = _sanitize_name(f"{acid_out}_APP")
-                f.write(f"{stamp0}DEFWPT {pen_wptname},{pen['lat']:.6f},{pen['lon']:.6f},FIX\n")
+                f.write(f"{stamp0}DEFWPT {pen_wptname},{pen['lat']:.6f},{pen['lon']:.6f}\n")
 
             for idx, r in enumerate(segs[1:], start=2):
                 cas_i = _gs_to_cas_kt(r['gs'], r['fl'])
@@ -1023,8 +1101,95 @@ def _write_rl_scn(out_path: str, append: bool = False):
                 else:
                     f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
 
-            f.write(f"{stamp0}LNAV {acid_out} ON\n")
-            f.write(f"{stamp0}VNAV {acid_out} ON\n")
+            # Robust takeoff logic - find first non-zero altitude waypoint for realistic initial conditions
+            print(f"[DEBUG] Checking initial commands for {acid_out}: cas0={cas0}, alt_ft0={alt_ft0}")
+            if cas0 <= 0 or alt_ft0 <= 0:
+                print(f"[DEBUG] Aircraft {acid_out} needs initial commands - searching for first climbing waypoint")
+                
+                # Find first waypoint with non-zero altitude (handles varying numbers of ground waypoints)
+                first_airborne_waypoint = None
+                first_airborne_index = -1
+                
+                for idx, waypoint in enumerate(segs):
+                    wp_fl = waypoint.get('fl', 0)
+                    if wp_fl > 0:  # Found first waypoint above ground
+                        first_airborne_waypoint = waypoint
+                        first_airborne_index = idx
+                        print(f"[DEBUG] Found first airborne waypoint at index {idx}: FL{wp_fl:.0f}")
+                        break
+                
+                if first_airborne_waypoint:
+                    try:
+                        # Use the first airborne waypoint for realistic initial climb conditions
+                        target_gs = first_airborne_waypoint.get('gs', 0)
+                        target_fl = first_airborne_waypoint.get('fl', 0)
+                        target_cas = _gs_to_cas_kt(target_gs, target_fl)
+                        
+                        print(f"[DEBUG] First airborne waypoint: gs={target_gs:.1f}, fl={target_fl}, cas={target_cas:.1f}")
+                        
+                        # Set realistic takeoff/climb conditions
+                        if cas0 <= 0:
+                            if target_cas > 0:
+                                # Use actual climb speed from data
+                                initial_speed = min(max(target_cas, 160), 250)  # Realistic takeoff/climb speed range
+                                print(f"[DEBUG] Adding realistic SPD command: SPD {acid_out} {initial_speed:.0f}")
+                                f.write(f"{stamp0}SPD {acid_out} {initial_speed:.0f}\n")
+                            else:
+                                # Use realistic takeoff speed
+                                initial_speed = 180  # Typical takeoff/initial climb speed
+                                print(f"[DEBUG] Using realistic takeoff SPD: SPD {acid_out} {initial_speed}")
+                                f.write(f"{stamp0}SPD {acid_out} {initial_speed}\n")
+                                
+                        if alt_ft0 <= 0:
+                            if target_fl > 0:
+                                # Use the first climbing altitude as target
+                                print(f"[DEBUG] Adding realistic ALT command: ALT {acid_out} FL{target_fl:03.0f}")
+                                f.write(f"{stamp0}ALT {acid_out} FL{target_fl:03.0f}\n")
+                            else:
+                                # Use realistic initial climb altitude
+                                initial_alt = "FL050"  # Typical initial climb clearance
+                                print(f"[DEBUG] Using realistic initial climb ALT: ALT {acid_out} {initial_alt}")
+                                f.write(f"{stamp0}ALT {acid_out} {initial_alt}\n")
+                                
+                    except Exception as e:
+                        print(f"[DEBUG] Error processing first airborne waypoint for {acid_out}: {e}")
+                        # Use realistic takeoff defaults as fallback
+                        if cas0 <= 0:
+                            takeoff_speed = 180
+                            print(f"[DEBUG] Using takeoff SPD fallback: SPD {acid_out} {takeoff_speed}")
+                            f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
+                        if alt_ft0 <= 0:
+                            takeoff_alt = "FL050"
+                            print(f"[DEBUG] Using takeoff ALT fallback: ALT {acid_out} {takeoff_alt}")
+                            f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
+                else:
+                    print(f"[DEBUG] No airborne waypoints found for {acid_out} - using takeoff defaults")
+                    # All waypoints are at ground level - use realistic takeoff values
+                    if cas0 <= 0:
+                        takeoff_speed = 180  # Realistic takeoff speed
+                        print(f"[DEBUG] Using takeoff SPD (no airborne waypoints): SPD {acid_out} {takeoff_speed}")
+                        f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
+                    if alt_ft0 <= 0:
+                        takeoff_alt = "FL050"  # Realistic initial climb clearance
+                        print(f"[DEBUG] Using takeoff ALT (no airborne waypoints): ALT {acid_out} {takeoff_alt}")
+                        f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
+            else:
+                print(f"[DEBUG] Aircraft {acid_out} doesn't need initial commands")
+
+            # Write LNAV/VNAV commands - delay only for takeoff aircraft (ground start)
+            if alt_ft0 <= 0:
+                # Aircraft starts on ground (takeoff) - apply 30 second delay
+                t0_plus_30 = timedelta(seconds=r0['t'] + 30)
+                stamp_lnav_vnav = _stamp(t0_plus_30)
+                print(f"[DEBUG] Aircraft {acid_out} starts on ground - applying 30s delay for LNAV/VNAV")
+            else:
+                # Aircraft starts airborne - no delay needed
+                stamp_lnav_vnav = stamp0
+                print(f"[DEBUG] Aircraft {acid_out} starts airborne - no delay for LNAV/VNAV")
+            
+            f.write(f"{stamp_lnav_vnav}LNAV {acid_out} ON\n")
+            f.write(f"{stamp_lnav_vnav}VNAV {acid_out} ON\n")
+            
             if last_is_landing and pen_wptname:
                 f.write(f"{stamp0}{acid_out} AT {pen_wptname} DO {acid_out} ALT 0\n")
             if trigger_on_last and last_wptname:
@@ -2398,6 +2563,84 @@ def SATG_RL_RUN(*args):
     _echo_ok(f"Scenario written and loaded: {out_path}",
              nxt="Press Play to run. For geometric conflicts: SATG_GC_HELP")
     return True, ""
+
+@command
+def SATG_RL_LOAD_DATA(flights_json: str, points_json: str):
+    """SATG_RL_LOAD_DATA <flights_json> <points_json>
+    Load flight data directly from JSON strings (for TraffixGen integration).
+    This bypasses file loading and accepts processed data directly from TraffixGen.
+    """
+    try:
+        import json
+        
+        # Parse JSON data
+        flights_data = json.loads(flights_json)
+        points_data = json.loads(points_json)
+        
+        # Validate data structure
+        if not isinstance(flights_data, list) or not isinstance(points_data, list):
+            _echo_err("SATG_RL_LOAD_DATA: Invalid data format - expected JSON arrays")
+            return False, ""
+        
+        # Convert to expected format (same as _load_files)
+        flights_rows = []
+        for flight in flights_data:
+            if not isinstance(flight, dict) or 'ECTRL ID' not in flight:
+                continue
+            flights_rows.append({
+                'ECTRL ID': str(flight.get('ECTRL ID', '')),
+                'Callsign': str(flight.get('Callsign', '')),  # Include callsign for aircraft creation
+                'ADEP': str(flight.get('ADEP', '')),
+                'ADES': str(flight.get('ADES', '')),
+                'AC Type': str(flight.get('AC Type', '')),
+                'AC Operator': str(flight.get('AC Operator', ''))  # Include operator for callsigns
+            })
+        
+        points_rows = []
+        for point in points_data:
+            if not isinstance(point, dict) or 'ECTRL ID' not in point:
+                continue
+            points_rows.append({
+                'ECTRL ID': str(point.get('ECTRL ID', '')),
+                'Sequence Number': str(point.get('Sequence Number', 0)),
+                'Time Over': str(point.get('Time Over', '')),
+                'Flight Level': str(point.get('Flight Level', 0)),
+                'Latitude': str(point.get('Latitude', 0.0)),
+                'Longitude': str(point.get('Longitude', 0.0)),
+                'ground_speed': str(point.get('ground_speed', 0.0)),
+                'heading': str(point.get('heading', 0.0))
+            })
+        
+        if not flights_rows or not points_rows:
+            _echo_err("SATG_RL_LOAD_DATA: No valid flight or point data found")
+            return False, ""
+        
+        # Use existing processing functions
+        STATE.base_points = _build_base_points(points_rows)
+        fl: Dict[str, Dict[str,str]] = {}
+        for r in flights_rows:
+            acid = r['ECTRL ID']
+            fl[acid] = {
+                'AC Type': r.get('AC Type',''), 
+                'ADEP': r.get('ADEP',''), 
+                'ADES': r.get('ADES',''),
+                'Callsign': r.get('Callsign', ''),  # Include callsign in flight metadata
+                'AC Operator': r.get('AC Operator', '')  # Include operator
+            }
+        
+        STATE.flights = fl
+        STATE.loaded_ok = True
+        
+        msg = f"Loaded {len(fl)} flights, {sum(len(v) for v in STATE.base_points.values())} points from TraffixGen"
+        _echo_ok(msg, nxt="Now: SATG_RL_JITTER [on|off] ... (optional), then SATG_RL_RUN [SCNNAME]")
+        return True, ""
+        
+    except json.JSONDecodeError as e:
+        _echo_err(f"SATG_RL_LOAD_DATA: Invalid JSON format - {e}")
+        return False, ""
+    except Exception as e:
+        _echo_err(f"SATG_RL_LOAD_DATA: Error processing data - {e}")
+        return False, ""
 
 # ---------------- GC commands (typed) ---------------- #
 @command

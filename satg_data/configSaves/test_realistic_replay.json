@@ -1,22 +1,100 @@
 {
-  "flights_files": [
-    "C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/data/flights.csv"
-  ],
-  "tracks_files": [
-    "C:/Users/javie/OneDrive/Desktop/bluesky/satg_data/data/flights_points.csv"
-  ],
-  "j_on": true,
-  "j_dist": 1,
-  "j_dt": 5.0,
-  "j_dlat": 10.0,
-  "j_dlon": 1.0,
-  "j_dfl": 3,
-  "j_nsig": 3.0,
+  "eurocontrol_files": {
+    "flights_file": "C:/Users/javie/Desktop/EUROCONTROL Data/extract/Flights_extract.csv",
+    "filed_file": "C:/Users/javie/Desktop/EUROCONTROL Data/extract/Flight_Points_Filed_extract.csv",
+    "actual_file": "C:/Users/javie/Desktop/EUROCONTROL Data/extract/Flight_Points_Actual_extract.csv",
+    "fir_file": "C:/Users/javie/Desktop/EUROCONTROL Data/extract/FIR_1502_extract.csv"
+  },
+  "eurocontrol_filters": {
+    "lat_min": -90,
+    "lat_max": 90,
+    "lon_min": -180,
+    "lon_max": 180,
+    "fl_min": 0,
+    "fl_max": 500,
+    "exclude_airspace": [],
+    "time_start": null,
+    "time_end": null,
+    "aircraft_types": []
+  },
+  "filters_configured": false,
+  "phase_configs": {
+    "takeoff": {
+      "enabled": false,
+      "dist": 0,
+      "dt": 0.0,
+      "dlat": 0.0,
+      "dlon": 0.0,
+      "dfl": 0,
+      "nsig": 0.0
+    },
+    "climb": {
+      "enabled": false,
+      "dist": 0,
+      "dt": 0.0,
+      "dlat": 0.0,
+      "dlon": 0.0,
+      "dfl": 0,
+      "nsig": 0.0
+    },
+    "cruise": {
+      "enabled": false,
+      "dist": 0,
+      "dt": 0.0,
+      "dlat": 0.0,
+      "dlon": 0.0,
+      "dfl": 0,
+      "nsig": 0.0
+    },
+    "descent": {
+      "enabled": false,
+      "dist": 0,
+      "dt": 0.0,
+      "dlat": 0.0,
+      "dlon": 0.0,
+      "dfl": 0,
+      "nsig": 0.0
+    },
+    "approach": {
+      "enabled": false,
+      "dist": 0,
+      "dt": 0.0,
+      "dlat": 0.0,
+      "dlon": 0.0,
+      "dfl": 0,
+      "nsig": 0.0
+    }
+  },
   "j_pct": 100,
-  "autodel_chk": false,
-  "scn_name": "replay2",
-  "rl_seed": 5,
-  "rl_overwrite": true,
-  "saved_at": "2025-10-31T09:27:36.922613",
+  "phase_jitter_enabled": false,
+  "phase_altitudes": {
+    "takeoff": {
+      "min_fl": 0,
+      "max_fl": 15
+    },
+    "climb": {
+      "min_fl": 15,
+      "max_fl": 250
+    },
+    "cruise": {
+      "min_fl": 250,
+      "max_fl": 450
+    },
+    "descent": {
+      "min_fl": 50,
+      "max_fl": 250
+    },
+    "approach": {
+      "min_fl": 0,
+      "max_fl": 50
+    }
+  },
+  "phase_altitudes_configured": true,
+  "track_phase_configurations": {},
+  "autodel_chk": true,
+  "scn_name": "replay",
+  "rl_seed": 0,
+  "rl_overwrite": false,
+  "saved_at": "2025-11-02T22:31:26.350300",
   "tab_type": "Realistic Replay"
 }

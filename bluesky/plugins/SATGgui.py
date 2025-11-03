@@ -2926,28 +2926,48 @@ class TopStrip(QWidget):
         """Extract Realistic Replay tab configuration."""
         config = {}
         
-        # File lists
-        config['flights_files'] = getattr(tab_widget, '_chosen_flights_files', []).copy()
-        config['tracks_files'] = getattr(tab_widget, '_chosen_tracks_files', []).copy()
+        # Eurocontrol file paths (new format)
+        config['eurocontrol_files'] = {
+            'flights_file': getattr(tab_widget, '_flights_file', ''),
+            'filed_file': getattr(tab_widget, '_filed_file', ''),
+            'actual_file': getattr(tab_widget, '_actual_file', ''),
+            'fir_file': getattr(tab_widget, '_fir_file', '')
+        }
         
-        # Jitter settings
-        config['j_on'] = tab_widget.j_on.isChecked()
-        config['j_dist'] = tab_widget.j_dist.currentIndex()
-        config['j_dt'] = tab_widget.j_dt.value()
-        config['j_dlat'] = tab_widget.j_dlat.value()
-        config['j_dlon'] = tab_widget.j_dlon.value()
-        config['j_dfl'] = tab_widget.j_dfl.value()
-        config['j_nsig'] = tab_widget.j_nsig.value()
-        config['j_pct'] = tab_widget.j_pct.value()
+        # Eurocontrol filter settings
+        config['eurocontrol_filters'] = getattr(tab_widget, 'eurocontrol_filters', {})
+        config['filters_configured'] = tab_widget._are_filters_configured() if hasattr(tab_widget, '_are_filters_configured') else False
+        
+        # Phase-based jitter settings
+        config['phase_configs'] = {}
+        if hasattr(tab_widget, 'phase_configs'):
+            for phase, widgets in tab_widget.phase_configs.items():
+                config['phase_configs'][phase] = {
+                    'enabled': widgets['enabled'].isChecked(),
+                    'dist': widgets['dist'].currentIndex(),
+                    'dt': widgets['dt'].value(),
+                    'dlat': widgets['dlat'].value(),
+                    'dlon': widgets['dlon'].value(),
+                    'dfl': widgets['dfl'].value(),
+                    'nsig': widgets['nsig'].value()
+                }
+        
+        # Global jitter percentage
+        config['j_pct'] = tab_widget.j_pct.value() if hasattr(tab_widget, 'j_pct') else 100
         
         # Phase-based jitter settings
         config['phase_jitter_enabled'] = getattr(tab_widget, 'phase_jitter_enabled', False)
         if hasattr(tab_widget, 'phase_altitudes'):
             config['phase_altitudes'] = dict(tab_widget.phase_altitudes)
-        if hasattr(tab_widget, 'phase_configs'):
-            config['phase_configs'] = {}
-            for phase, cfg in tab_widget.phase_configs.items():
-                config['phase_configs'][phase] = dict(cfg)
+        else:
+            config['phase_altitudes'] = {}
+        config['phase_altitudes_configured'] = bool(getattr(tab_widget, 'phase_altitudes', None))
+        
+        # Track phase configurations (per-track altitude settings)
+        if hasattr(tab_widget, 'track_phase_configurations'):
+            config['track_phase_configurations'] = {}
+            for track_id, track_cfg in tab_widget.track_phase_configurations.items():
+                config['track_phase_configurations'][track_id] = dict(track_cfg)
         
         # Options
         config['autodel_chk'] = tab_widget.autodel_chk.isChecked()
@@ -2962,50 +2982,91 @@ class TopStrip(QWidget):
     def _apply_rl_config(self, tab_widget, config_data: Dict) -> bool:
         """Apply configuration to Realistic Replay tab."""
         try:
-            # Clear existing file lists
-            tab_widget._chosen_flights_files.clear()
-            tab_widget.lst_flights_files.clear()
-            tab_widget._chosen_tracks_files.clear()
-            tab_widget.lst_tracks_files.clear()
+            # Apply Eurocontrol file paths (new format)
+            if 'eurocontrol_files' in config_data:
+                eurocontrol_files = config_data['eurocontrol_files']
+                
+                # Set file paths and update labels
+                if 'flights_file' in eurocontrol_files and eurocontrol_files['flights_file']:
+                    tab_widget._flights_file = eurocontrol_files['flights_file']
+                    tab_widget.flights_file_label.setText(os.path.basename(eurocontrol_files['flights_file']))
+                    tab_widget.flights_file_label.setStyleSheet("color: #000; font-weight: bold;")
+                else:
+                    tab_widget._flights_file = ""
+                    tab_widget.flights_file_label.setText("No file selected")
+                    tab_widget.flights_file_label.setStyleSheet("color: #999; font-style: italic;")
+                
+                if 'filed_file' in eurocontrol_files and eurocontrol_files['filed_file']:
+                    tab_widget._filed_file = eurocontrol_files['filed_file']
+                    tab_widget.filed_file_label.setText(os.path.basename(eurocontrol_files['filed_file']))
+                    tab_widget.filed_file_label.setStyleSheet("color: #000; font-weight: bold;")
+                else:
+                    tab_widget._filed_file = ""
+                    tab_widget.filed_file_label.setText("No file selected")
+                    tab_widget.filed_file_label.setStyleSheet("color: #999; font-style: italic;")
+                
+                if 'actual_file' in eurocontrol_files and eurocontrol_files['actual_file']:
+                    tab_widget._actual_file = eurocontrol_files['actual_file']
+                    tab_widget.actual_file_label.setText(os.path.basename(eurocontrol_files['actual_file']))
+                    tab_widget.actual_file_label.setStyleSheet("color: #000; font-weight: bold;")
+                else:
+                    tab_widget._actual_file = ""
+                    tab_widget.actual_file_label.setText("No file selected")
+                    tab_widget.actual_file_label.setStyleSheet("color: #999; font-style: italic;")
+                
+                if 'fir_file' in eurocontrol_files and eurocontrol_files['fir_file']:
+                    tab_widget._fir_file = eurocontrol_files['fir_file']
+                    tab_widget.fir_file_label.setText(os.path.basename(eurocontrol_files['fir_file']))
+                    tab_widget.fir_file_label.setStyleSheet("color: #000; font-weight: bold;")
+                else:
+                    tab_widget._fir_file = ""
+                    tab_widget.fir_file_label.setText("No file selected")
+                    tab_widget.fir_file_label.setStyleSheet("color: #999; font-style: italic;")
             
-            # Restore file lists
-            if 'flights_files' in config_data:
-                tab_widget._chosen_flights_files.extend(config_data['flights_files'])
-                for file_path in config_data['flights_files']:
-                    tab_widget.lst_flights_files.addItem(file_path)
+            # Apply Eurocontrol filter settings
+            if 'eurocontrol_filters' in config_data:
+                if config_data['eurocontrol_filters']:  # Only set if not empty
+                    tab_widget.eurocontrol_filters = config_data['eurocontrol_filters'].copy()
+                else:
+                    # Clear filters if empty in config
+                    tab_widget.eurocontrol_filters = {}
             
-            if 'tracks_files' in config_data:
-                tab_widget._chosen_tracks_files.extend(config_data['tracks_files'])
-                for file_path in config_data['tracks_files']:
-                    tab_widget.lst_tracks_files.addItem(file_path)
-            
-            # Restore jitter settings
-            if 'j_on' in config_data:
-                tab_widget.j_on.setChecked(config_data['j_on'])
-            if 'j_dist' in config_data:
-                tab_widget.j_dist.setCurrentIndex(config_data['j_dist'])
-            if 'j_dt' in config_data:
-                tab_widget.j_dt.setValue(config_data['j_dt'])
-            if 'j_dlat' in config_data:
-                tab_widget.j_dlat.setValue(config_data['j_dlat'])
-            if 'j_dlon' in config_data:
-                tab_widget.j_dlon.setValue(config_data['j_dlon'])
-            if 'j_dfl' in config_data:
-                tab_widget.j_dfl.setValue(config_data['j_dfl'])
-            if 'j_nsig' in config_data:
-                tab_widget.j_nsig.setValue(config_data['j_nsig'])
-            if 'j_pct' in config_data:
-                tab_widget.j_pct.setValue(config_data['j_pct'])
+            # Note: No longer storing processed data locally - using direct TraffixGen commands
             
             # Restore phase-based jitter settings
+            if 'phase_configs' in config_data and hasattr(tab_widget, 'phase_configs'):
+                phase_configs = config_data['phase_configs']
+                for phase, widgets in tab_widget.phase_configs.items():
+                    if phase in phase_configs:
+                        phase_data = phase_configs[phase]
+                        widgets['enabled'].setChecked(phase_data.get('enabled', False))
+                        widgets['dist'].setCurrentIndex(phase_data.get('dist', 0))
+                        widgets['dt'].setValue(phase_data.get('dt', 0.0))
+                        widgets['dlat'].setValue(phase_data.get('dlat', 0.0))
+                        widgets['dlon'].setValue(phase_data.get('dlon', 0.0))
+                        widgets['dfl'].setValue(phase_data.get('dfl', 0))
+                        widgets['nsig'].setValue(phase_data.get('nsig', 0.0))
+            
+            # Global jitter percentage
+            if 'j_pct' in config_data and hasattr(tab_widget, 'j_pct'):
+                tab_widget.j_pct.setValue(config_data['j_pct'])
+            
+            # Phase jitter enabled flag
             if 'phase_jitter_enabled' in config_data:
                 tab_widget.phase_jitter_enabled = config_data['phase_jitter_enabled']
             if 'phase_altitudes' in config_data:
-                tab_widget.phase_altitudes = dict(config_data['phase_altitudes'])
-            if 'phase_configs' in config_data:
-                tab_widget.phase_configs = {}
-                for phase, cfg in config_data['phase_configs'].items():
-                    tab_widget.phase_configs[phase] = dict(cfg)
+                if config_data['phase_altitudes']:  # Only set if not empty
+                    tab_widget.phase_altitudes = dict(config_data['phase_altitudes'])
+                else:
+                    # Clear phase altitudes if empty in config
+                    if hasattr(tab_widget, 'phase_altitudes'):
+                        delattr(tab_widget, 'phase_altitudes')
+            
+            # Restore track phase configurations (per-track altitude settings)
+            if 'track_phase_configurations' in config_data:
+                tab_widget.track_phase_configurations = {}
+                for track_id, track_cfg in config_data['track_phase_configurations'].items():
+                    tab_widget.track_phase_configurations[track_id] = dict(track_cfg)
             
             # Restore options
             if 'autodel_chk' in config_data:
@@ -3774,84 +3835,149 @@ class RLTab(QWidget):
         super().__init__(parent)
         main = QVBoxLayout(self)
 
-        # 1) Load (Required)
-        gb_load = QGroupBox("1) Load data - Required")
+        # 1) Load Eurocontrol Data (Required)
+        gb_load = QGroupBox("1) Load Eurocontrol Data - Required")
         gb_load_layout = QVBoxLayout(gb_load)
         
         # Description
-        desc1 = QLabel("Select flight data and track data files (both required)")
+        desc1 = QLabel("Select Eurocontrol data files (first 3 required, FIR optional)")
         desc1.setStyleSheet("color: #666; font-style: italic;")
         gb_load_layout.addWidget(desc1)
         
-        # Flight data files section (top)
-        flights_section = QWidget()
-        flights_layout = QVBoxLayout(flights_section)
-        flights_layout.setContentsMargins(0, 0, 0, 0)
+        # Create 2x2 grid for file selections
+        files_grid = QHBoxLayout()
         
-        flights_label = QLabel("Flight data files:")
-        flights_layout.addWidget(flights_label)
+        # Left column
+        left_column = QVBoxLayout()
         
-        self.lst_flights_files = QListWidget()
-        self.lst_flights_files.setMaximumHeight(100)
-        self.lst_flights_files.setToolTip("CSV files containing flight information (callsign, origin, destination, etc.)")
-        self._chosen_flights_files = []
-        flights_layout.addWidget(self.lst_flights_files)
+        # Flights data file
+        flights_group = QGroupBox("Flights Data (Required)")
+        flights_layout = QVBoxLayout(flights_group)
         
-        # Flight files buttons
+        self.flights_file_label = QLabel("No file selected")
+        self.flights_file_label.setStyleSheet("color: #999; font-style: italic;")
+        flights_layout.addWidget(self.flights_file_label)
+        
         flights_buttons = QHBoxLayout()
-        btn_add_flights = QPushButton("Add")
-        btn_add_flights.setToolTip("Add flight data CSV files")
-        btn_add_flights.clicked.connect(self._add_flights_files)
-        btn_remove_flights = QPushButton("Remove")
-        btn_remove_flights.clicked.connect(self._remove_flights_files)
+        btn_browse_flights = QPushButton("Browse...")
+        btn_browse_flights.setToolTip("Select Flights_extract.csv file")
+        btn_browse_flights.clicked.connect(self._browse_flights_file)
         btn_clear_flights = QPushButton("Clear")
-        btn_clear_flights.clicked.connect(self._clear_flights_files)
+        btn_clear_flights.clicked.connect(self._clear_flights_file)
         
-        flights_buttons.addWidget(btn_add_flights)
-        flights_buttons.addWidget(btn_remove_flights)
+        flights_buttons.addWidget(btn_browse_flights)
         flights_buttons.addWidget(btn_clear_flights)
         flights_buttons.addStretch()
         flights_layout.addLayout(flights_buttons)
         
-        gb_load_layout.addWidget(flights_section)
+        left_column.addWidget(flights_group)
         
-        # Track data files section (bottom)
-        tracks_section = QWidget()
-        tracks_layout = QVBoxLayout(tracks_section)
-        tracks_layout.setContentsMargins(0, 0, 0, 0)
+        # Flight Points Filed file
+        filed_group = QGroupBox("Flight Points - Filed (Required)")
+        filed_layout = QVBoxLayout(filed_group)
         
-        tracks_label = QLabel("Track data files:")
-        tracks_layout.addWidget(tracks_label)
+        self.filed_file_label = QLabel("No file selected")
+        self.filed_file_label.setStyleSheet("color: #999; font-style: italic;")
+        filed_layout.addWidget(self.filed_file_label)
         
-        self.lst_tracks_files = QListWidget()
-        self.lst_tracks_files.setMaximumHeight(100)
-        self.lst_tracks_files.setToolTip("CSV files containing flight track points (time, position, altitude, etc.)")
-        self._chosen_tracks_files = []
-        tracks_layout.addWidget(self.lst_tracks_files)
+        filed_buttons = QHBoxLayout()
+        btn_browse_filed = QPushButton("Browse...")
+        btn_browse_filed.setToolTip("Select Flight_Points_Filed_extract.csv file")
+        btn_browse_filed.clicked.connect(self._browse_filed_file)
+        btn_clear_filed = QPushButton("Clear")
+        btn_clear_filed.clicked.connect(self._clear_filed_file)
         
-        # Track files buttons
-        tracks_buttons = QHBoxLayout()
-        btn_add_tracks = QPushButton("Add")
-        btn_add_tracks.setToolTip("Add track data CSV files")
-        btn_add_tracks.clicked.connect(self._add_tracks_files)
-        btn_remove_tracks = QPushButton("Remove")
-        btn_remove_tracks.clicked.connect(self._remove_tracks_files)
-        btn_clear_tracks = QPushButton("Clear")
-        btn_clear_tracks.clicked.connect(self._clear_tracks_files)
+        filed_buttons.addWidget(btn_browse_filed)
+        filed_buttons.addWidget(btn_clear_filed)
+        filed_buttons.addStretch()
+        filed_layout.addLayout(filed_buttons)
         
-        tracks_buttons.addWidget(btn_add_tracks)
-        tracks_buttons.addWidget(btn_remove_tracks)
-        tracks_buttons.addWidget(btn_clear_tracks)
-        tracks_buttons.addStretch()
-        tracks_layout.addLayout(tracks_buttons)
+        left_column.addWidget(filed_group)
         
-        gb_load_layout.addWidget(tracks_section)
+        # Right column
+        right_column = QVBoxLayout()
+        
+        # Flight Points Actual file
+        actual_group = QGroupBox("Flight Points - Actual (Required)")
+        actual_layout = QVBoxLayout(actual_group)
+        
+        self.actual_file_label = QLabel("No file selected")
+        self.actual_file_label.setStyleSheet("color: #999; font-style: italic;")
+        actual_layout.addWidget(self.actual_file_label)
+        
+        actual_buttons = QHBoxLayout()
+        btn_browse_actual = QPushButton("Browse...")
+        btn_browse_actual.setToolTip("Select Flight_Points_Actual_extract.csv file")
+        btn_browse_actual.clicked.connect(self._browse_actual_file)
+        btn_clear_actual = QPushButton("Clear")
+        btn_clear_actual.clicked.connect(self._clear_actual_file)
+        
+        actual_buttons.addWidget(btn_browse_actual)
+        actual_buttons.addWidget(btn_clear_actual)
+        actual_buttons.addStretch()
+        actual_layout.addLayout(actual_buttons)
+        
+        right_column.addWidget(actual_group)
+        
+        # FIR data file
+        fir_group = QGroupBox("FIR Data (Optional)")
+        fir_layout = QVBoxLayout(fir_group)
+        
+        self.fir_file_label = QLabel("No file selected")
+        self.fir_file_label.setStyleSheet("color: #999; font-style: italic;")
+        fir_layout.addWidget(self.fir_file_label)
+        
+        fir_buttons = QHBoxLayout()
+        btn_browse_fir = QPushButton("Browse...")
+        btn_browse_fir.setToolTip("Select FIR_extract.csv file")
+        btn_browse_fir.clicked.connect(self._browse_fir_file)
+        btn_clear_fir = QPushButton("Clear")
+        btn_clear_fir.clicked.connect(self._clear_fir_file)
+        
+        fir_buttons.addWidget(btn_browse_fir)
+        fir_buttons.addWidget(btn_clear_fir)
+        fir_buttons.addStretch()
+        fir_layout.addLayout(fir_buttons)
+        
+        right_column.addWidget(fir_group)
+        
+        files_grid.addLayout(left_column)
+        files_grid.addLayout(right_column)
+        gb_load_layout.addLayout(files_grid)
+        
+        # Initialize file paths
+        self._flights_file = ""
+        self._filed_file = ""
+        self._actual_file = ""
+        self._fir_file = ""
+        
+        # Filter configuration section
+        filter_section = QHBoxLayout()
+        
+        self.btn_configure_filters = QPushButton("Configure Filters...")
+        self.btn_configure_filters.setToolTip("Set geographic, temporal, and aircraft filters")
+        self.btn_configure_filters.clicked.connect(self._configure_eurocontrol_filters)
+        
+        filter_section.addStretch()
+        filter_section.addWidget(self.btn_configure_filters)
+        gb_load_layout.addLayout(filter_section)
+        
+        # Initialize default filter settings
+        self.eurocontrol_filters = {
+            'lat_min': -90, 'lat_max': 90,
+            'lon_min': -180, 'lon_max': 180,
+            'fl_min': 0, 'fl_max': 500,
+            'exclude_airspace': [],
+            'time_start': None, 'time_end': None,
+            'aircraft_types': [],  # Empty means all types
+            'polygon_filter': None  # Polygon filter (disabled by default)
+        }
         
         main.addWidget(gb_load)
 
         # 2) Flight Phase Jitter (Optional)
-        gb_j = QGroupBox("2) Flight Phase Jitter - Optional")
-        gb_j_layout = QVBoxLayout(gb_j)
+        self.gb_jitter = QGroupBox("2) Flight Phase Jitter - Optional")
+        gb_j_layout = QVBoxLayout(self.gb_jitter)
         
         # Description and altitude config button  
         header_layout = QHBoxLayout()
@@ -3980,22 +4106,22 @@ class RLTab(QWidget):
         global_controls.addWidget(self.j_pct_label)
         gb_j_layout.addLayout(global_controls)
         
-        main.addWidget(gb_j)
+        main.addWidget(self.gb_jitter)
 
         # 3) Options
-        gb_options = QGroupBox("3) Options")
-        options_layout = QVBoxLayout(gb_options)
+        self.gb_options = QGroupBox("3) Options")
+        options_layout = QVBoxLayout(self.gb_options)
         options_layout.setContentsMargins(8, 8, 8, 8)
         
         self.autodel_chk = QCheckBox("Auto-delete at last waypoint")
         self.autodel_chk.setChecked(True)
         options_layout.addWidget(self.autodel_chk)
         
-        main.addWidget(gb_options)
+        main.addWidget(self.gb_options)
 
         # 4) Create Scenario
-        actions_gb = QGroupBox("4) Create Scenario")
-        actions_main_layout = QVBoxLayout(actions_gb)
+        self.gb_scenario = QGroupBox("4) Create Scenario")
+        actions_main_layout = QVBoxLayout(self.gb_scenario)
         actions_main_layout.setContentsMargins(8, 8, 8, 8)
         actions_main_layout.setSpacing(10)
         
@@ -4043,145 +4169,236 @@ class RLTab(QWidget):
         
         actions_main_layout.addLayout(buttons_layout)
 
-        main.addWidget(actions_gb)
+        main.addWidget(self.gb_scenario)
         main.addStretch(1)
 
-    def _add_flights_files(self):
-        """Add flight data files to the list"""
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Choose flight data CSV files", 
+    def _are_filters_configured(self):
+        """Check if filters have been actually configured (not just default values)"""
+        if not hasattr(self, 'eurocontrol_filters') or not self.eurocontrol_filters:
+            return False
+        
+        filters = self.eurocontrol_filters
+        
+        # Check if any filter values are different from defaults
+        default_filters = {
+            'lat_min': -90, 'lat_max': 90, 'lon_min': -180, 'lon_max': 180,
+            'fl_min': 0, 'fl_max': 500, 'exclude_airspace': [], 'aircraft_types': [],
+            'time_start': None, 'time_end': None
+        }
+        
+        # Check if any values differ from defaults
+        for key, default_value in default_filters.items():
+            current_value = filters.get(key, default_value)
+            if current_value != default_value:
+                return True
+                
+        return False
+
+    def _validate_configuration(self):
+        """Validate that all required configuration steps have been completed"""
+        # Check if files are loaded
+        if not (getattr(self, '_flights_file', '') and
+                getattr(self, '_filed_file', '') and
+                getattr(self, '_actual_file', '')):
+            QMessageBox.critical(self, "Missing Files", 
+                               "Please select the required Eurocontrol files first:\n\n"
+                               "• Flights Extract\n"
+                               "• Flight Points Filed Extract\n" 
+                               "• Flight Points Actual Extract")
+            return False
+            
+        # Check if filters are configured
+        if not self._are_filters_configured():
+            QMessageBox.warning(self, "Configure Filters Required", 
+                              "Please configure filters before creating/running scenarios.\n\n"
+                              "Click 'Configure Filters...' to set up geographic, temporal, and aircraft filters.")
+            return False
+            
+        # Check if phase altitudes are configured
+        # Accept either global phase_altitudes or per-track configurations
+        has_global_config = hasattr(self, 'phase_altitudes') and self.phase_altitudes
+        has_track_configs = hasattr(self, 'track_phase_configurations') and self.track_phase_configurations
+        
+        if not has_global_config and not has_track_configs:
+            QMessageBox.warning(self, "Configure Phase Altitudes Required", 
+                              "Please configure phase altitudes before creating/running scenarios.\n\n"
+                              "Click 'Configure Phase Altitudes...' to set flight level boundaries for each flight phase.")
+            return False
+        
+        # If we have track configurations, that's sufficient - skip the default check
+        if has_track_configs:
+            return True
+        
+        # Check if user has customized phase altitudes (optional warning)
+        default_phase_altitudes = {
+            'takeoff': {'min_fl': 0, 'max_fl': 15},
+            'climb': {'min_fl': 15, 'max_fl': 250},
+            'cruise': {'min_fl': 250, 'max_fl': 450},
+            'descent': {'min_fl': 50, 'max_fl': 250},
+            'approach': {'min_fl': 0, 'max_fl': 50}
+        }
+        
+        if self.phase_altitudes == default_phase_altitudes:
+            reply = QMessageBox.question(self, "Using Default Phase Altitudes", 
+                                       "You are using default phase altitude settings.\n\n"
+                                       "Default settings:\n"
+                                       "• Takeoff: FL0-FL15\n"
+                                       "• Climb: FL15-FL250\n" 
+                                       "• Cruise: FL250-FL450\n"
+                                       "• Descent: FL50-FL250\n"
+                                       "• Approach: FL0-FL50\n\n"
+                                       "Do you want to proceed with these defaults?",
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                       QMessageBox.StandardButton.Yes)
+            if reply == QMessageBox.StandardButton.No:
+                return False
+            
+        return True
+
+    def _browse_flights_file(self):
+        """Browse for Flights_extract.csv file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Flights Data File", 
             filter="CSV files (*.csv);;All files (*)"
         )
-        if not files:
-            return
-            
-        # Add new files that aren't already in the list
-        new_files = [f for f in files if f not in self._chosen_flights_files]
-        self._chosen_flights_files.extend(new_files)
-        
-        # Update the list widget
-        for file_path in new_files:
-            self.lst_flights_files.addItem(file_path)
+        if file_path:
+            self._flights_file = file_path
+            self.flights_file_label.setText(os.path.basename(file_path))
+            self.flights_file_label.setStyleSheet("color: #000; font-weight: bold;")
 
-    def _remove_flights_files(self):
-        """Remove selected flight files from the list"""
-        selected_items = self.lst_flights_files.selectedItems()
-        for item in selected_items:
-            file_path = item.text()
-            # Remove from internal list
-            if file_path in self._chosen_flights_files:
-                self._chosen_flights_files.remove(file_path)
-            # Remove from list widget
-            self.lst_flights_files.takeItem(self.lst_flights_files.row(item))
+    def _clear_flights_file(self):
+        """Clear flights file selection"""
+        self._flights_file = ""
+        self.flights_file_label.setText("No file selected")
+        self.flights_file_label.setStyleSheet("color: #999; font-style: italic;")
 
-    def _clear_flights_files(self):
-        """Clear all flight files from the list"""
-        self._chosen_flights_files.clear()
-        self.lst_flights_files.clear()
-
-    def _add_tracks_files(self):
-        """Add track data files to the list"""
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Choose track data CSV files", 
+    def _browse_filed_file(self):
+        """Browse for Flight_Points_Filed_extract.csv file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Flight Points Filed File", 
             filter="CSV files (*.csv);;All files (*)"
         )
-        if not files:
+        if file_path:
+            self._filed_file = file_path
+            self.filed_file_label.setText(os.path.basename(file_path))
+            self.filed_file_label.setStyleSheet("color: #000; font-weight: bold;")
+
+    def _clear_filed_file(self):
+        """Clear filed file selection"""
+        self._filed_file = ""
+        self.filed_file_label.setText("No file selected")
+        self.filed_file_label.setStyleSheet("color: #999; font-style: italic;")
+
+    def _browse_actual_file(self):
+        """Browse for Flight_Points_Actual_extract.csv file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Flight Points Actual File", 
+            filter="CSV files (*.csv);;All files (*)"
+        )
+        if file_path:
+            self._actual_file = file_path
+            self.actual_file_label.setText(os.path.basename(file_path))
+            self.actual_file_label.setStyleSheet("color: #000; font-weight: bold;")
+
+    def _clear_actual_file(self):
+        """Clear actual file selection"""
+        self._actual_file = ""
+        self.actual_file_label.setText("No file selected")
+        self.actual_file_label.setStyleSheet("color: #999; font-style: italic;")
+
+    def _browse_fir_file(self):
+        """Browse for FIR_extract.csv file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select FIR Data File", 
+            filter="CSV files (*.csv);;All files (*)"
+        )
+        if file_path:
+            self._fir_file = file_path
+            self.fir_file_label.setText(os.path.basename(file_path))
+            self.fir_file_label.setStyleSheet("color: #000; font-weight: bold;")
+
+    def _clear_fir_file(self):
+        """Clear FIR file selection"""
+        self._fir_file = ""
+        self.fir_file_label.setText("No file selected")
+        self.fir_file_label.setStyleSheet("color: #999; font-style: italic;")
+
+    def _configure_eurocontrol_filters(self):
+        """Open dialog to configure Eurocontrol data filtering"""
+        # Check if required files are loaded
+        if not (getattr(self, '_flights_file', '') and
+                getattr(self, '_filed_file', '') and
+                getattr(self, '_actual_file', '')):
+            QMessageBox.warning(self, "Files Required", 
+                              "Please load all three required Eurocontrol files before configuring filters:\n\n"
+                              "• Flights Extract\n"
+                              "• Flight Points Filed Extract\n" 
+                              "• Flight Points Actual Extract")
             return
             
-        # Add new files that aren't already in the list
-        new_files = [f for f in files if f not in self._chosen_tracks_files]
-        self._chosen_tracks_files.extend(new_files)
+        # Load data and get summary for filter dialog
+        summary = self._load_and_get_summary()
+        if not summary:
+            return
+            
+        # Pass summary data to filter dialog instead of showing popup
+        dialog = EurocontrolFilterDialog(self.eurocontrol_filters, self._fir_file, summary, self)
+        dialog.show()  # Use show() instead of exec() for non-modal dialog
+
+    def _validate_eurocontrol_files(self) -> Tuple[bool, str]:
+        """Validate that required Eurocontrol files are selected and exist"""
+        # Check required files
+        if not self._flights_file:
+            return False, "Flights data file is required"
+        if not self._filed_file:
+            return False, "Flight Points (Filed) file is required"  
+        if not self._actual_file:
+            return False, "Flight Points (Actual) file is required"
         
-        # Update the list widget
-        for file_path in new_files:
-            self.lst_tracks_files.addItem(file_path)
-
-    def _remove_tracks_files(self):
-        """Remove selected track files from the list"""
-        selected_items = self.lst_tracks_files.selectedItems()
-        for item in selected_items:
-            file_path = item.text()
-            # Remove from internal list
-            if file_path in self._chosen_tracks_files:
-                self._chosen_tracks_files.remove(file_path)
-            # Remove from list widget
-            self.lst_tracks_files.takeItem(self.lst_tracks_files.row(item))
-
-    def _clear_tracks_files(self):
-        """Clear all track files from the list"""
-        self._chosen_tracks_files.clear()
-        self.lst_tracks_files.clear()
-
-    def _get_data_files_for_backend(self):
-        """Get the combined list of data files to send to backend"""
-        all_files = self._chosen_flights_files + self._chosen_tracks_files
-        if not all_files:
-            return "AUTO"  # Fallback to AUTO if no files selected
-        # Use pipe separator to avoid issues with commas and spaces
-        return "|".join(all_files)
-
-
-    def _configure_phase_altitudes(self):
-        """Open dialog to configure flight phase altitude boundaries per track"""
-        dialog = PhaseAltitudeConfigDialog(self.phase_altitudes, self._chosen_flights_files, self._chosen_tracks_files, self)
-        if dialog.exec() == dialog.DialogCode.Accepted:
-            # Get all track configurations
-            track_configs = dialog.get_all_track_configurations()
-            
-            # Store track configurations for use in backend
-            self.track_phase_configurations = track_configs
-            
-            # Send simplified configurations to backend (just altitude boundaries)
-            if track_configs:
-                # Get current altitude values from the configuration
-                current_track = list(track_configs.keys())[dialog.current_track_index] if track_configs else None
-                if current_track and current_track in track_configs:
-                    altitude_ranges = track_configs[current_track].get('altitude_ranges', {})
-                    
-                    # Extract the simple values
-                    initial_climb = altitude_ranges.get('takeoff', {}).get('max_fl', 15)
-                    top_of_climb = altitude_ranges.get('climb', {}).get('max_fl', 250) 
-                    top_of_descent = altitude_ranges.get('descent', {}).get('max_fl', 400)
-                    final_approach = altitude_ranges.get('approach', {}).get('max_fl', 50)
-                    
-                    print(f"=== SENDING SIMPLIFIED ALTITUDE BOUNDARIES ===")
-                    print(f"Track: {current_track}")
-                    print(f"Initial Climb: FL{initial_climb}")
-                    print(f"Top of Climb: FL{top_of_climb}")
-                    print(f"Top of Descent: FL{top_of_descent}")
-                    print(f"Final Approach: FL{final_approach}")
-                    
-                    # Send simple altitude boundaries to backend (not complex JSON)
-                    from . import SATG
-                    SATG.SATG_RL_ALTITUDE_BOUNDARIES(initial_climb, top_of_climb, top_of_descent, final_approach)
-                    print("=== ALTITUDE BOUNDARIES SENT TO BACKEND ===")
-                    
-            else:
-                print("=== NO CONFIGURATIONS TO SEND ===")
-                print("track_configs is empty or None")
-            
-            # For backward compatibility, use the last configured track as default
-            if track_configs:
-                # Use the configuration from the current track when dialog was closed
-                current_track_name = list(track_configs.keys())[dialog.current_track_index] if track_configs else None
-                if current_track_name and current_track_name in track_configs:
-                    self.phase_altitudes = track_configs[current_track_name].get('altitude_ranges', {})
-                else:
-                    # Fallback to first track configuration
-                    first_config = list(track_configs.values())[0]
-                    self.phase_altitudes = first_config.get('altitude_ranges', {})
+        # Check file existence
+        if not os.path.exists(self._flights_file):
+            return False, f"Flights file not found: {self._flights_file}"
+        if not os.path.exists(self._filed_file):
+            return False, f"Filed points file not found: {self._filed_file}"
+        if not os.path.exists(self._actual_file):
+            return False, f"Actual points file not found: {self._actual_file}"
+        if self._fir_file and not os.path.exists(self._fir_file):
+            return False, f"FIR file not found: {self._fir_file}"
+        
+        return True, ""
 
     def _emit_jitter_if_needed(self):
-        """Send jitter configuration before scenario creation (altitude boundaries already configured per track)"""
+        """Send jitter configuration before scenario creation (including per-track altitude boundaries)"""
         print("=== CONFIGURING JITTER PARAMETERS ===")
         
-        # Note: Altitude boundaries are already configured per-track via _configure_phase_altitudes
-        # No need to send global boundaries here
+        # Send track-specific altitude boundaries if configured
+        self._emit_track_phase_altitudes()
         
         # Send simplified phase jitter parameters
         self._emit_simplified_phase_jitter()
         
         print("=== JITTER CONFIGURATION COMPLETED ===")
+
+    def _emit_track_phase_altitudes(self):
+        """Send track-specific phase altitude boundaries to the backend"""
+        if not hasattr(self, 'track_phase_configurations') or not self.track_phase_configurations:
+            print("No track-specific phase altitude configurations to send")
+            return
+        
+        from . import SATG
+        print(f"Sending altitude boundaries for {len(self.track_phase_configurations)} aircraft:")
+        
+        for track_callsign, config in self.track_phase_configurations.items():
+            # Extract flight level boundaries from the configuration
+            takeoff_max = config.get('takeoff', {}).get('max_fl', 15)
+            climb_max = config.get('climb', {}).get('max_fl', 250)
+            descent_max = config.get('descent', {}).get('max_fl', 400)
+            approach_max = config.get('approach', {}).get('max_fl', 50)
+            
+            print(f"  {track_callsign}: Takeoff FL{takeoff_max}, Climb FL{climb_max}, Descent FL{descent_max}, Approach FL{approach_max}")
+            
+            # Send to backend using SATG_RL_TRACK_CONFIG command
+            SATG.SATG_RL_TRACK_CONFIG(track_callsign, takeoff_max, climb_max, descent_max, approach_max)
 
     def _emit_simplified_phase_jitter(self):
         """Send phase jitter parameters from section 2 to backend using simple approach."""
@@ -4263,49 +4480,147 @@ class RLTab(QWidget):
         _emit("SATG_RL_AUTODEL " + ("on" if self.autodel_chk.isChecked() else "off"))
 
     def _validate_files(self):
-        """Check if both flight and track files are selected and show warnings if not"""
-        has_flights = len(self._chosen_flights_files) > 0
-        has_tracks = len(self._chosen_tracks_files) > 0
-        
-        if not has_flights and not has_tracks:
-            # No files selected, will use AUTO
-            return True
-        elif not has_flights:
-            # Only track files selected
-            from PyQt6.QtWidgets import QMessageBox
-            reply = QMessageBox.question(self, "Missing Flight Data", 
-                                       "No flight data files selected. Realistic replay typically requires both flight data and track data files.\n\nContinue anyway?",
-                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            return reply == QMessageBox.StandardButton.Yes
-        elif not has_tracks:
-            # Only flight files selected
-            from PyQt6.QtWidgets import QMessageBox
-            reply = QMessageBox.question(self, "Missing Track Data", 
-                                       "No track data files selected. Realistic replay typically requires both flight data and track data files.\n\nContinue anyway?",
-                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            return reply == QMessageBox.StandardButton.Yes
-        else:
-            # Both types selected, all good
-            return True
+        """Check if required Eurocontrol files are selected"""
+        is_valid, error_msg = self._validate_eurocontrol_files()
+        if not is_valid:
+            QMessageBox.warning(self, "Missing Required Files", error_msg)
+            return False
+        return True
 
     def _make(self):
         name = self.scn_name.text().strip()
         if not name:
             return
         
-        if not self._validate_files():
+        # Validate configuration before proceeding
+        if not self._validate_configuration():
             return
+        
+        try:
+            # Step 1: Load Eurocontrol data via TraffixGen
+            fir_file = self._fir_file if self._fir_file else ""
+            load_cmd = f'TRAFFIXGEN LOAD_EUROCONTROL "{self._flights_file}" "{self._filed_file}" "{self._actual_file}"'
+            if fir_file:
+                load_cmd += f' "{fir_file}"'
             
-        self._emit_autodel_from_toggle()
-        self._emit_jitter_if_needed()
-        ow = 1 if self.rl_overwrite.isChecked() else 0
-        data_files = self._get_data_files_for_backend()
-        _emit(f"SATG_RL_MAKE {name} {ow} {data_files}")
+            print(f"Loading Eurocontrol data: {load_cmd}")
+            _emit(load_cmd)
+            
+            # Step 2: Apply filters if configured
+            if hasattr(self, 'eurocontrol_filters') and self.eurocontrol_filters:
+                # Create filters dict with current settings
+                filters = {}
+                if self.eurocontrol_filters.get('lat_min', -90) != -90 or self.eurocontrol_filters.get('lat_max', 90) != 90:
+                    filters['lat_min'] = self.eurocontrol_filters['lat_min']
+                    filters['lat_max'] = self.eurocontrol_filters['lat_max']
+                    filters['lon_min'] = self.eurocontrol_filters['lon_min']
+                    filters['lon_max'] = self.eurocontrol_filters['lon_max']
+                
+                if self.eurocontrol_filters.get('fl_min', 0) != 0 or self.eurocontrol_filters.get('fl_max', 500) != 500:
+                    filters['fl_min'] = self.eurocontrol_filters['fl_min']
+                    filters['fl_max'] = self.eurocontrol_filters['fl_max']
+                
+                if self.eurocontrol_filters.get('aircraft_types'):
+                    filters['aircraft_types'] = self.eurocontrol_filters['aircraft_types']
+                
+                if self.eurocontrol_filters.get('exclude_airspace'):
+                    filters['exclude_airspace'] = self.eurocontrol_filters['exclude_airspace']
+                
+                if filters:
+                    import json
+                    filters_json = json.dumps(filters)
+                    filter_cmd = f'TRAFFIXGEN FILTER {filters_json}'
+                    print(f"Applying filters: {filter_cmd}")
+                    _emit(filter_cmd)
+            
+            # Step 3: Export processed data directly to SATG
+            print("Exporting processed data to SATG...")
+            _emit("TRAFFIXGEN EXPORT_TO_SATG")
+            
+            # Step 4: Configure SATG jitter and autodel settings
+            self._emit_autodel_from_toggle()
+            self._emit_jitter_if_needed()
+            
+            # Step 5: Generate scenario in SATG
+            ow = 1 if self.rl_overwrite.isChecked() else 0
+            _emit(f"SATG_RL_MAKE {name} {ow}")
+            
+            print(f"Realistic replay scenario '{name}' generated successfully!")
+            
+        except Exception as e:
+            print(f"Error in realistic replay generation: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to generate scenario: {str(e)}")
+            return
+
+    # Deprecated: _create_temp_csv_files method removed
+    # Now using direct plugin communication via TraffixGen → SATG commands
+
+    def _get_traffixgen_data(self, command: str) -> dict:
+        """Helper method to get data from TraffixGen plugin via direct function calls"""
+        try:
+            # Import TraffixGen plugin functions directly
+            from . import traffixgen
+            
+            # Call the appropriate function directly
+            if command == 'GET_SUMMARY':
+                return traffixgen.get_flight_summary()
+            elif command == 'GET_TRACKS':
+                return traffixgen.get_filtered_tracks()
+            else:
+                return {'error': f'Unknown command: {command}'}
+                
+        except Exception as e:
+            return {'error': f'Error accessing TraffixGen data: {e}'}
+
+    def _load_and_get_summary(self):
+        """Load Eurocontrol files and get data summary for filter configuration"""
+        try:
+            # Import TraffixGen functions directly
+            from . import traffixgen
+            
+            # Step 1: Load Eurocontrol data via TraffixGen
+            fir_file = self._fir_file if self._fir_file else ""
+            
+            print(f"Loading Eurocontrol data...")
+            result = traffixgen.traffixgen_load_eurocontrol(
+                self._flights_file, 
+                self._filed_file, 
+                self._actual_file, 
+                fir_file
+            )
+            
+            if not result:
+                QMessageBox.critical(self, "Data Loading Error", 
+                                   "Failed to load Eurocontrol data. Check file paths and formats.")
+                return None
+            
+            # Step 2: Get summary data for filter configuration
+            summary = traffixgen.get_flight_summary()
+            if 'error' in summary:
+                QMessageBox.critical(self, "Data Loading Error", 
+                                   f"Failed to load data summary: {summary['error']}")
+                return None
+            
+            return summary
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Loading Error", f"Failed to load Eurocontrol data: {e}")
+            return None
 
     def _run_only(self):
         """Run an existing scenario without creating it"""
         name = self.scn_name.text().strip()
         if not name:
+            QMessageBox.warning(self, "Scenario Name Required", 
+                              "Please enter a scenario name.")
+            return
+        
+        # Check if scenario file exists
+        scenario_path = f"scenario/{name}.scn"
+        if not os.path.exists(scenario_path):
+            QMessageBox.warning(self, "Scenario Not Found", 
+                              f"Scenario file '{name}.scn' not found.\n\n"
+                              "Please create the scenario first or check the scenario name.")
             return
         
         # Just load the existing scenario file
@@ -4314,20 +4629,133 @@ class RLTab(QWidget):
     def _run(self):
         name = self.scn_name.text().strip()
         if not name:
+            QMessageBox.warning(self, "Scenario Name Required", 
+                              "Please enter a scenario name.")
             return
         
-        if not self._validate_files():
+        # Validate configuration before proceeding
+        if not self._validate_configuration():
             return
+        
+        try:
+            # Step 1: Load Eurocontrol data via TraffixGen (if not already loaded)
+            from . import traffixgen
+            fir_file = self._fir_file if self._fir_file else ""
             
-        self._emit_autodel_from_toggle()
-        self._emit_jitter_if_needed()
-        ow = 1 if self.rl_overwrite.isChecked() else 0
-        data_files = self._get_data_files_for_backend()
-        _emit(f"SATG_RL_RUN {name} {ow} {data_files}")
+            print(f"Loading Eurocontrol data...")
+            result = traffixgen.traffixgen_load_eurocontrol(
+                self._flights_file, 
+                self._filed_file, 
+                self._actual_file, 
+                fir_file
+            )
+            
+            if not result:
+                QMessageBox.critical(self, "Loading Error", "Failed to load Eurocontrol data.")
+                return
+            
+            # Step 2: Apply configured filters
+            result = traffixgen.traffixgen_apply_filters(self.eurocontrol_filters)
+            if not result:
+                QMessageBox.critical(self, "Filter Error", "Failed to apply filters.")
+                return
+            
+            # Step 3: Export processed data directly to SATG
+            print("Exporting processed data to SATG...")
+            result = traffixgen.traffixgen_export_to_satg()
+            if not result:
+                QMessageBox.critical(self, "Export Error", "Failed to export data to SATG.")
+                return
+            
+            # Step 4: Configure SATG jitter and autodel settings
+            self._emit_autodel_from_toggle()
+            self._emit_jitter_if_needed()
+            
+            # Step 5: Generate and run scenario in SATG
+            ow = 1 if self.rl_overwrite.isChecked() else 0
+            _emit(f"SATG_RL_RUN {name} {ow}")
+            
+            print(f"Realistic replay scenario '{name}' generated and started successfully!")
+            
+        except Exception as e:
+            print(f"Error in realistic replay generation: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to generate and run scenario: {str(e)}")
+            return
+
+    # Deprecated: _process_eurocontrol_data method removed  
+    # Now using direct TraffixGen command calls for data processing
 
     def _configure_phase_altitudes(self):
         """Open dialog to configure flight phase altitude boundaries per track"""
-        dialog = PhaseAltitudeConfigDialog(self.phase_altitudes, self._chosen_flights_files, self._chosen_tracks_files, self)
+        # Check if required files are loaded
+        if not (getattr(self, '_flights_file', '') and
+                getattr(self, '_filed_file', '') and
+                getattr(self, '_actual_file', '')):
+            QMessageBox.warning(self, "Files Required", 
+                              "Please load all three required Eurocontrol files first:\n\n"
+                              "• Flights Extract\n"
+                              "• Flight Points Filed Extract\n" 
+                              "• Flight Points Actual Extract")
+            return
+            
+        # Check if filters have been configured - if not, show warning and stop
+        if not self._are_filters_configured():
+            QMessageBox.warning(self, "Configure Filters First", 
+                              "Please configure filters first before setting phase altitudes.\n\n"
+                              "Click 'Configure Filters...' to set up geographic, temporal, and aircraft filters.\n"
+                              "This will help determine which flights will be included in the phase altitude configuration.")
+            return
+            
+        # Load data and get summary if not already done
+        summary = self._load_and_get_summary()
+        if not summary:
+            return
+                    
+        # Apply current filters to get filtered track data
+        if hasattr(self, 'eurocontrol_filters') and self.eurocontrol_filters:
+            # Apply filters
+            from . import traffixgen
+            result = traffixgen.traffixgen_apply_filters(self.eurocontrol_filters)
+            if not result:
+                QMessageBox.critical(self, "Filter Error", "Failed to apply filters.")
+                return
+        
+        # Get track data for phase altitude configuration
+        track_data = self._get_traffixgen_data('GET_TRACKS')
+        if 'error' in track_data:
+            QMessageBox.critical(self, "Track Data Error", 
+                               f"Failed to get track data: {track_data['error']}")
+            return
+            
+        if track_data.get('total_tracks', 0) == 0:
+            QMessageBox.warning(self, "No Tracks Available", 
+                              "No flight tracks available after filtering.\n"
+                              "Please check your filter settings.")
+            return
+            
+        # Convert track data to format expected by PhaseAltitudeConfigDialog
+        processed_track_data = {}
+        callsign_to_flight_id = {}  # Mapping for reverse lookup
+        for flight_id, track_info in track_data['tracks'].items():
+            # Use the callsign generated by traffixgen (should have proper AC operator)
+            callsign = track_info.get('callsign', f"UNKNOWN{int(flight_id) % 9999:04d}")
+            callsign_to_flight_id[callsign] = flight_id
+            
+            processed_track_data[callsign] = {  # Use callsign as key instead of flight_id
+                'flight_id': flight_id,
+                'callsign': callsign,
+                'ac_operator': track_info.get('ac_operator', ''),
+                'origin': track_info['origin'],
+                'destination': track_info['destination'], 
+                'aircraft_type': track_info['aircraft_type'],
+                'points_count': track_info['points_count'],
+                'max_fl': track_info['max_fl'],
+                'min_fl': track_info['min_fl'],
+                'points': track_info['points']  # Include the trajectory points DataFrame
+            }
+        
+        # Open phase altitude configuration dialog
+        dialog = PhaseAltitudeConfigDialog(self.phase_altitudes, processed_track_data, callsign_to_flight_id, self)
         if dialog.exec() == dialog.DialogCode.Accepted:
             # Get all track configurations
             track_configs = dialog.get_all_track_configurations()
@@ -4335,77 +4763,816 @@ class RLTab(QWidget):
             # Store track configurations for use in backend
             self.track_phase_configurations = track_configs
             
-            # Send simplified per-track configurations to backend
+            # For backward compatibility, use configuration from the first track as default
             if track_configs:
-                print(f"=== SENDING PER-TRACK CONFIGURATIONS ===")
-                from . import SATG
-                
-                # Send configuration for each track with simple calls
-                for track_name, config in track_configs.items():
-                    altitude_ranges = config.get('altitude_ranges', {})
-                    
-                    # Extract the simple values
-                    initial_climb = altitude_ranges.get('takeoff', {}).get('max_fl', 15)
-                    top_of_climb = altitude_ranges.get('climb', {}).get('max_fl', 250) 
-                    top_of_descent = altitude_ranges.get('descent', {}).get('max_fl', 400)
-                    final_approach = altitude_ranges.get('approach', {}).get('max_fl', 50)
-                    
-                    print(f"Track {track_name}: Initial Climb FL{initial_climb}, "
-                          f"Top of Climb FL{top_of_climb}, Top of Descent FL{top_of_descent}, "
-                          f"Final Approach FL{final_approach}")
-                    
-                    # Simple call per track - no JSON, no parsing
-                    SATG.SATG_RL_TRACK_CONFIG(track_name, initial_climb, top_of_climb, top_of_descent, final_approach)
-                
-                print(f"=== SENT {len(track_configs)} TRACK CONFIGURATIONS ===")
-                    
+                # The track configuration IS the altitude ranges structure
+                first_config = list(track_configs.values())[0]
+                self.phase_altitudes = first_config  # No need for .get('altitude_ranges', {})
             else:
-                print("=== NO CONFIGURATIONS TO SEND ===")
-                print("track_configs is empty or None")
-            
-            # For backward compatibility, use the last configured track as default
-            if track_configs:
-                # Use the configuration from the current track when dialog was closed
-                current_track_name = list(track_configs.keys())[dialog.current_track_index] if track_configs else None
-                if current_track_name and current_track_name in track_configs:
-                    self.phase_altitudes = track_configs[current_track_name].get('altitude_ranges', {})
-                else:
-                    # Fallback to first track configuration
-                    first_config = list(track_configs.values())[0]
-                    self.phase_altitudes = first_config.get('altitude_ranges', {})
+                print("Warning: No track configurations received from dialog")
+                
+            print(f"Phase altitude configuration saved for {len(track_configs)} tracks")
+            QMessageBox.information(self, "Configuration Saved", 
+                                  f"Phase altitude settings configured for {len(track_configs)} tracks.\n"
+                                  "These will be applied when you create the scenario.")
 
 
 # --- Flight Phase Altitude Configuration Dialog ----------------------------
 
+class EurocontrolFilterDialog(QDialog):
+    """Dialog for configuring Eurocontrol data filtering options"""
+    
+    def __init__(self, current_filters, fir_file_path, summary_data, parent=None):
+        super().__init__(parent)
+        self.current_filters = current_filters.copy()
+        self.fir_file_path = fir_file_path
+        self.summary_data = summary_data
+        
+        self.setWindowTitle("Configure Eurocontrol Data Filters")
+        self.setModal(False)  # Make dialog non-modal so users can interact with radar
+        self.resize(800, 600)  # Make wider to accommodate summary column
+        
+        self._setup_ui()
+        self._set_bounds_from_data()  # Set bounds based on loaded data
+        self._load_current_settings()
+        
+        # Load airspace options if FIR file is available
+        if self.fir_file_path:
+            self._load_airspace_options()
+
+    def keyPressEvent(self, event):
+        """Override key press events to prevent Enter from closing dialog"""
+        from PyQt5.QtCore import Qt
+        
+        # If Enter/Return is pressed, don't call the parent's keyPressEvent
+        # which would trigger the default button behavior
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            # Check if the focus is on the polygon name input
+            focused_widget = self.focusWidget()
+            if hasattr(self, 'polygon_name_input') and focused_widget == self.polygon_name_input:
+                # Let the polygon name input handle the Enter key (calls returnPressed signal)
+                super().keyPressEvent(event)
+            else:
+                # Ignore Enter key for all other widgets to prevent dialog closure
+                event.ignore()
+        else:
+            # For all other keys, use normal behavior
+            super().keyPressEvent(event)
+
+    def _setup_ui(self):
+        """Setup the filter dialog UI"""
+        layout = QVBoxLayout(self)
+        
+        # Create horizontal layout for tabs and summary
+        main_layout = QHBoxLayout()
+        
+        # Create tabs for different filter categories
+        tabs = QTabWidget()
+        
+        # Geographic filters tab
+        geo_tab = self._create_geographic_tab()
+        tabs.addTab(geo_tab, "Geographic")
+        
+        # Flight level filters tab
+        fl_tab = self._create_flight_level_tab()
+        tabs.addTab(fl_tab, "Flight Levels")
+        
+        # Airspace filters tab
+        airspace_tab = self._create_airspace_tab()
+        tabs.addTab(airspace_tab, "Airspace")
+        
+        # Time filters tab
+        time_tab = self._create_time_tab()
+        tabs.addTab(time_tab, "Time Range")
+        
+        # Aircraft filters tab
+        aircraft_tab = self._create_aircraft_tab()
+        tabs.addTab(aircraft_tab, "Aircraft")
+        
+        # Polygon filters tab
+        polygon_tab = self._create_polygon_tab()
+        tabs.addTab(polygon_tab, "Polygon")
+        
+        # Add tabs to left side of layout
+        main_layout.addWidget(tabs, 2)  # Takes 2/3 of the space
+        
+        # Create data summary panel
+        summary_panel = self._create_summary_panel()
+        main_layout.addWidget(summary_panel, 1)  # Takes 1/3 of the space
+        
+        layout.addLayout(main_layout)
+        
+        # Buttons - using individual buttons instead of QDialogButtonBox to avoid Enter key issues
+        button_layout = QHBoxLayout()
+        
+        # Reset All button
+        reset_all_btn = QPushButton("Reset All")
+        reset_all_btn.setToolTip("Reset all filter settings to match the loaded data ranges")
+        reset_all_btn.clicked.connect(self._reset_all_filters)
+        reset_all_btn.setAutoDefault(False)
+        button_layout.addWidget(reset_all_btn)
+        
+        button_layout.addStretch()  # Push OK/Cancel to the right
+        
+        # OK button
+        ok_btn = QPushButton("Apply Filters")
+        ok_btn.setToolTip("Apply the configured filters and close dialog")
+        ok_btn.clicked.connect(self._apply_filters_and_close)
+        ok_btn.setAutoDefault(False)
+        button_layout.addWidget(ok_btn)
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setToolTip("Cancel and close dialog without applying filters")
+        cancel_btn.clicked.connect(self.close)
+        cancel_btn.setAutoDefault(False)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+
+    def _create_geographic_tab(self):
+        """Create geographic filtering tab"""
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        
+        # Latitude bounds
+        layout.addRow(QLabel("Latitude Bounds (degrees):"))
+        
+        lat_layout = QHBoxLayout()
+        self.lat_min_spin = QDoubleSpinBox()
+        self.lat_min_spin.setRange(-90, 90)
+        self.lat_min_spin.setValue(-90)
+        self.lat_min_spin.setDecimals(2)
+        _configure_decimal_separator(self.lat_min_spin)
+        
+        self.lat_max_spin = QDoubleSpinBox()
+        self.lat_max_spin.setRange(-90, 90)
+        self.lat_max_spin.setValue(90)
+        self.lat_max_spin.setDecimals(2)
+        _configure_decimal_separator(self.lat_max_spin)
+        
+        lat_layout.addWidget(QLabel("Min:"))
+        lat_layout.addWidget(self.lat_min_spin)
+        lat_layout.addWidget(QLabel("Max:"))
+        lat_layout.addWidget(self.lat_max_spin)
+        lat_layout.addStretch()
+        
+        layout.addRow(lat_layout)
+        
+        # Longitude bounds
+        layout.addRow(QLabel("Longitude Bounds (degrees):"))
+        
+        lon_layout = QHBoxLayout()
+        self.lon_min_spin = QDoubleSpinBox()
+        self.lon_min_spin.setRange(-180, 180)
+        self.lon_min_spin.setValue(-180)
+        self.lon_min_spin.setDecimals(2)
+        _configure_decimal_separator(self.lon_min_spin)
+        
+        self.lon_max_spin = QDoubleSpinBox()
+        self.lon_max_spin.setRange(-180, 180)
+        self.lon_max_spin.setValue(180)
+        self.lon_max_spin.setDecimals(2)
+        _configure_decimal_separator(self.lon_max_spin)
+        
+        lon_layout.addWidget(QLabel("Min:"))
+        lon_layout.addWidget(self.lon_min_spin)
+        lon_layout.addWidget(QLabel("Max:"))
+        lon_layout.addWidget(self.lon_max_spin)
+        lon_layout.addStretch()
+        
+        layout.addRow(lon_layout)
+        
+        # Add reset button for this tab
+        reset_btn = QPushButton("Reset Geographic Filters")
+        reset_btn.setToolTip("Reset latitude and longitude bounds to match the loaded data range")
+        reset_btn.clicked.connect(self._reset_geographic_filters)
+        reset_btn.setAutoDefault(False)
+        layout.addRow(reset_btn)
+        
+        return tab
+
+    def _create_flight_level_tab(self):
+        """Create flight level filtering tab"""
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        
+        # Flight level bounds
+        layout.addRow(QLabel("Flight Level Bounds:"))
+        
+        fl_layout = QHBoxLayout()
+        self.fl_min_spin = QSpinBox()
+        self.fl_min_spin.setRange(0, 600)
+        self.fl_min_spin.setValue(0)
+        
+        self.fl_max_spin = QSpinBox()
+        self.fl_max_spin.setRange(0, 600)
+        self.fl_max_spin.setValue(500)
+        
+        fl_layout.addWidget(QLabel("Min FL:"))
+        fl_layout.addWidget(self.fl_min_spin)
+        fl_layout.addWidget(QLabel("Max FL:"))
+        fl_layout.addWidget(self.fl_max_spin)
+        fl_layout.addStretch()
+        
+        layout.addRow(fl_layout)
+        
+        # Add reset button for this tab
+        reset_btn = QPushButton("Reset Flight Level Filters")
+        reset_btn.setToolTip("Reset flight level bounds to match the loaded data range")
+        reset_btn.clicked.connect(self._reset_flight_level_filters)
+        reset_btn.setAutoDefault(False)
+        layout.addRow(reset_btn)
+        
+        return tab
+
+    def _create_airspace_tab(self):
+        """Create airspace filtering tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Instructions
+        instructions = QLabel("Select airspace regions to exclude from processing:")
+        instructions.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(instructions)
+        
+        # Airspace list
+        self.airspace_list = QListWidget()
+        self.airspace_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        layout.addWidget(self.airspace_list)
+        
+        # Status label
+        self.airspace_status = QLabel("No FIR file loaded - airspace filtering unavailable")
+        self.airspace_status.setStyleSheet("color: #999; font-style: italic;")
+        layout.addWidget(self.airspace_status)
+        
+        # Add reset button for this tab
+        reset_btn = QPushButton("Reset Airspace Filters")
+        reset_btn.setToolTip("Reset airspace exclusions to default values")
+        reset_btn.clicked.connect(self._reset_airspace_filters)
+        reset_btn.setAutoDefault(False)
+        layout.addWidget(reset_btn)
+        
+        return tab
+
+    def _create_time_tab(self):
+        """Create time filtering tab"""
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        
+        # Enable time filtering
+        self.time_enabled = QCheckBox("Enable time range filtering")
+        layout.addRow(self.time_enabled)
+        
+        # Start time
+        self.time_start = QTimeEdit()
+        self.time_start.setDisplayFormat("hh:mm:ss")
+        self.time_start.setTime(QTime(0, 0, 0))
+        self.time_start.setEnabled(False)
+        layout.addRow("Start time:", self.time_start)
+        
+        # End time
+        self.time_end = QTimeEdit()
+        self.time_end.setDisplayFormat("hh:mm:ss")
+        self.time_end.setTime(QTime(23, 59, 59))
+        self.time_end.setEnabled(False)
+        layout.addRow("End time:", self.time_end)
+        
+        # Connect checkbox
+        self.time_enabled.toggled.connect(self.time_start.setEnabled)
+        self.time_enabled.toggled.connect(self.time_end.setEnabled)
+        
+        # Add reset button for this tab
+        reset_btn = QPushButton("Reset Time Filters")
+        reset_btn.setToolTip("Reset time range to match the loaded data time span")
+        reset_btn.clicked.connect(self._reset_time_filters)
+        reset_btn.setAutoDefault(False)
+        layout.addRow(reset_btn)
+        
+        return tab
+
+    def _create_aircraft_tab(self):
+        """Create aircraft type filtering tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Instructions
+        instructions = QLabel("Select specific aircraft types to include (leave all unchecked to include all types):")
+        instructions.setStyleSheet("color: #666; font-style: italic;")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        
+        # Aircraft type list
+        self.aircraft_list = QListWidget()
+        self.aircraft_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        
+        # Common aircraft types (can be expanded)
+        common_types = [
+            "A319", "A320", "A321", "A330", "A340", "A350", "A380",
+            "B737", "B738", "B747", "B757", "B767", "B777", "B787",
+            "E170", "E175", "E190", "CRJ7", "CRJ9", "DH8D",
+            "AT72", "BE20", "C25A", "F900"
+        ]
+        
+        for ac_type in common_types:
+            item = QListWidgetItem(ac_type)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.aircraft_list.addItem(item)
+        
+        layout.addWidget(self.aircraft_list)
+        
+        # Add reset button for this tab
+        reset_btn = QPushButton("Reset Aircraft Filters")
+        reset_btn.setToolTip("Reset aircraft type selections to default values")
+        reset_btn.clicked.connect(self._reset_aircraft_filters)
+        reset_btn.setAutoDefault(False)
+        layout.addWidget(reset_btn)
+        
+        return tab
+
+    def _create_polygon_tab(self):
+        """Create polygon filtering tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Instructions
+        instructions = QLabel("Define a polygon filter to include only flights within the specified area:")
+        instructions.setStyleSheet("color: #666; font-style: italic;")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        
+        # Polygon name input
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Polygon Name:"))
+        self.polygon_name_input = QLineEdit()
+        self.polygon_name_input.setPlaceholderText("Enter polygon name and press Enter (e.g., 'EUROCONTROL_FILTER')")
+        self.polygon_name_input.setToolTip("Enter polygon name and press Enter to start drawing on the radar screen")
+        self.polygon_name_input.returnPressed.connect(self._start_polygon_filter_creation)
+        name_layout.addWidget(self.polygon_name_input)
+        layout.addLayout(name_layout)
+        
+        # Instructions for drawing polygon
+        instructions2 = QLabel(
+            "To create a polygon:\n"
+            "1. Enter polygon name above and press ENTER\n"
+            "2. Click points on the radar screen to define vertices\n"
+            "3. Press ENTER on the radar to finish the polygon\n"
+            "4. The polygon filter will be applied automatically if a name is entered"
+        )
+        instructions2.setStyleSheet("color: #555; font-size: 10px; background-color: #f9f9f9; padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        instructions2.setWordWrap(True)
+        layout.addWidget(instructions2)
+        
+        # Reset button for this tab
+        reset_btn = QPushButton("Reset Polygon Filter")
+        reset_btn.setToolTip("Reset polygon filter settings to default values")
+        reset_btn.clicked.connect(self._reset_polygon_filter)
+        reset_btn.setAutoDefault(False)
+        layout.addWidget(reset_btn)
+        
+        layout.addStretch()  # Push everything to the top
+        
+        return tab
+
+    def _create_summary_panel(self):
+        """Create data summary panel"""
+        panel = QGroupBox("Data Summary")
+        layout = QVBoxLayout(panel)
+        
+        # Title
+        title = QLabel("Dataset Overview")
+        title.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+        layout.addWidget(title)
+        
+        # Summary information
+        if self.summary_data:
+            summary_text = (
+                f"<b>Total Flights:</b> {self.summary_data['total_flights']:,}<br>"
+                f"<b>Trajectory Points:</b> {self.summary_data['total_points']:,}<br><br>"
+                
+                f"<b>Geographic Bounds:</b><br>"
+                f"- Latitude: {self.summary_data['lat_bounds']['min']:.2f} to {self.summary_data['lat_bounds']['max']:.2f}<br>"
+                f"- Longitude: {self.summary_data['lon_bounds']['min']:.2f} to {self.summary_data['lon_bounds']['max']:.2f}<br><br>"
+                
+                f"<b>Flight Levels:</b><br>"
+                f"- Range: FL{self.summary_data['fl_bounds']['min']:.0f} to FL{self.summary_data['fl_bounds']['max']:.0f}<br><br>"
+                
+                f"<b>Aircraft Types:</b> {len(self.summary_data['aircraft_types'])} different types<br>"
+            )
+            
+            # Add top aircraft types if available
+            if self.summary_data.get('aircraft_types'):
+                aircraft_types = self.summary_data['aircraft_types']
+                if isinstance(aircraft_types, dict):
+                    # If it's a dictionary (type -> count), show top types
+                    top_types = list(aircraft_types.keys())[:5]
+                    summary_text += f"- Most common: {', '.join(top_types)}<br>"
+                elif isinstance(aircraft_types, list):
+                    # If it's a list, show first few types
+                    top_types = aircraft_types[:5]
+                    summary_text += f"- Types include: {', '.join(top_types)}<br>"
+                else:
+                    summary_text += f"- Various aircraft types<br>"
+        else:
+            summary_text = "No data loaded"
+            
+        summary_label = QLabel(summary_text)
+        summary_label.setWordWrap(True)
+        summary_label.setStyleSheet("""
+            QLabel {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 5px;
+                padding: 10px;
+                margin: 5px;
+                font-size: 11px;
+                line-height: 1.4;
+            }
+        """)
+        layout.addWidget(summary_label)
+        
+        # Add help text
+        help_text = QLabel(
+            "<i>Use the filters on the left to focus on specific flights. "
+            "Geographic and flight level filters are most commonly used.</i>"
+        )
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet("color: #666; font-size: 10px; margin-top: 10px;")
+        layout.addWidget(help_text)
+        
+        layout.addStretch()
+        return panel
+
+    def _set_bounds_from_data(self):
+        """Set filter input bounds based on the loaded data ranges"""
+        if not self.summary_data:
+            return
+            
+        # Set geographic bounds based on data
+        if 'lat_bounds' in self.summary_data:
+            lat_min = self.summary_data['lat_bounds']['min']
+            lat_max = self.summary_data['lat_bounds']['max']
+            
+            # Set ranges to exactly match data bounds
+            self.lat_min_spin.setRange(lat_min, lat_max)
+            self.lat_max_spin.setRange(lat_min, lat_max)
+            
+            # Set default values to data bounds
+            self.lat_min_spin.setValue(lat_min)
+            self.lat_max_spin.setValue(lat_max)
+            
+        if 'lon_bounds' in self.summary_data:
+            lon_min = self.summary_data['lon_bounds']['min']
+            lon_max = self.summary_data['lon_bounds']['max']
+            
+            # Set ranges to exactly match data bounds
+            self.lon_min_spin.setRange(lon_min, lon_max)
+            self.lon_max_spin.setRange(lon_min, lon_max)
+            
+            # Set default values to data bounds
+            self.lon_min_spin.setValue(lon_min)
+            self.lon_max_spin.setValue(lon_max)
+            
+        # Set flight level bounds based on data
+        if 'fl_bounds' in self.summary_data:
+            fl_min = int(self.summary_data['fl_bounds']['min'])
+            fl_max = int(self.summary_data['fl_bounds']['max'])
+            
+            # Set ranges to exactly match data bounds
+            self.fl_min_spin.setRange(fl_min, fl_max)
+            self.fl_max_spin.setRange(fl_min, fl_max)
+            
+            # Set default values to data bounds
+            self.fl_min_spin.setValue(fl_min)
+            self.fl_max_spin.setValue(fl_max)
+            
+        # Set time bounds based on data
+        if 'time_bounds' in self.summary_data:
+            time_min = self.summary_data['time_bounds']['min']
+            time_max = self.summary_data['time_bounds']['max']
+            
+            # Parse time strings to QTime objects
+            try:
+                # Assume format like "HH:MM:SS" or similar
+                if ':' in time_min:
+                    start_parts = time_min.split(':')
+                    start_time = QTime(int(start_parts[0]), int(start_parts[1]), 
+                                     int(start_parts[2]) if len(start_parts) > 2 else 0)
+                    self.time_start.setTime(start_time)
+                    
+                if ':' in time_max:
+                    end_parts = time_max.split(':')
+                    end_time = QTime(int(end_parts[0]), int(end_parts[1]), 
+                                   int(end_parts[2]) if len(end_parts) > 2 else 0)
+                    self.time_end.setTime(end_time)
+            except (ValueError, IndexError):
+                # If parsing fails, keep default times
+                pass
+                
+        # Populate aircraft types from actual data
+        if 'aircraft_types' in self.summary_data:
+            # Clear existing items
+            self.aircraft_list.clear()
+            
+            aircraft_types = self.summary_data['aircraft_types']
+            
+            if isinstance(aircraft_types, dict):
+                # If it's a dictionary (type -> count), sort by count
+                sorted_types = sorted(aircraft_types.items(), key=lambda x: x[1], reverse=True)
+                for ac_type, count in sorted_types:
+                    item = QListWidgetItem(f"{ac_type} ({count} flights)")
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                    item.setData(Qt.ItemDataRole.UserRole, ac_type)  # Store the actual type
+                    self.aircraft_list.addItem(item)
+            elif isinstance(aircraft_types, list):
+                # If it's a list, just show the types
+                for ac_type in sorted(aircraft_types):
+                    item = QListWidgetItem(ac_type)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                    item.setData(Qt.ItemDataRole.UserRole, ac_type)
+                    self.aircraft_list.addItem(item)
+
+    def _load_current_settings(self):
+        """Load current filter settings into the dialog"""
+        filters = self.current_filters
+        
+        # Geographic bounds
+        self.lat_min_spin.setValue(filters['lat_min'])
+        self.lat_max_spin.setValue(filters['lat_max'])
+        self.lon_min_spin.setValue(filters['lon_min'])
+        self.lon_max_spin.setValue(filters['lon_max'])
+        
+        # Flight level bounds
+        self.fl_min_spin.setValue(filters['fl_min'])
+        self.fl_max_spin.setValue(filters['fl_max'])
+        
+        # Time range
+        if filters['time_start'] or filters['time_end']:
+            self.time_enabled.setChecked(True)
+            if filters['time_start']:
+                self.time_start.setTime(QTime.fromString(filters['time_start'], "hh:mm:ss"))
+            if filters['time_end']:
+                self.time_end.setTime(QTime.fromString(filters['time_end'], "hh:mm:ss"))
+        
+        # Aircraft types
+        selected_types = set(filters['aircraft_types'])
+        for i in range(self.aircraft_list.count()):
+            item = self.aircraft_list.item(i)
+            # Check against stored aircraft type data
+            ac_type = item.data(Qt.ItemDataRole.UserRole)
+            if ac_type and ac_type in selected_types:
+                item.setCheckState(Qt.CheckState.Checked)
+            elif not ac_type and item.text() in selected_types:
+                # Fallback for items without UserRole data
+                item.setCheckState(Qt.CheckState.Checked)
+        
+        # Polygon filter
+        polygon_filter = filters.get('polygon_filter')
+        if polygon_filter and isinstance(polygon_filter, dict):
+            polygon_name = polygon_filter.get('polygon_name', '')
+            self.polygon_name_input.setText(polygon_name)
+
+    def _load_airspace_options(self):
+        """Load available airspace options from FIR file"""
+        try:
+            import pandas as pd
+            if os.path.exists(self.fir_file_path):
+                df = pd.read_csv(self.fir_file_path)
+                if 'Airspace ID' in df.columns:
+                    airspace_ids = sorted(df['Airspace ID'].unique())
+                    
+                    # Clear existing items
+                    self.airspace_list.clear()
+                    
+                    # Add airspace options
+                    for airspace_id in airspace_ids:
+                        item = QListWidgetItem(airspace_id)
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setCheckState(Qt.CheckState.Unchecked)
+                        self.airspace_list.addItem(item)
+                    
+                    # Update status
+                    self.airspace_status.setText(f"Loaded {len(airspace_ids)} airspace regions")
+                    self.airspace_status.setStyleSheet("color: #007ACC;")
+                    
+                    # Select currently excluded airspace
+                    excluded = set(self.current_filters['exclude_airspace'])
+                    for i in range(self.airspace_list.count()):
+                        item = self.airspace_list.item(i)
+                        if item.text() in excluded:
+                            item.setCheckState(Qt.CheckState.Checked)
+                else:
+                    self.airspace_status.setText("FIR file does not contain 'Airspace ID' column")
+                    self.airspace_status.setStyleSheet("color: #CC7A00;")
+            else:
+                self.airspace_status.setText("FIR file not found")
+                self.airspace_status.setStyleSheet("color: #CC0000;")
+                
+        except Exception as e:
+            self.airspace_status.setText(f"Error loading airspace data: {str(e)}")
+            self.airspace_status.setStyleSheet("color: #CC0000;")
+
+    def _reset_all_filters(self):
+        """Reset all filters to data-driven bounds"""
+        # Use individual reset methods to ensure consistency
+        self._reset_geographic_filters()
+        self._reset_flight_level_filters()
+        self._reset_time_filters()
+        self._reset_airspace_filters()
+        self._reset_aircraft_filters()
+        self._reset_polygon_filter()
+
+    def _reset_geographic_filters(self):
+        """Reset only geographic filters to data-driven bounds"""
+        if self.summary_data and 'lat_bounds' in self.summary_data:
+            lat_min = self.summary_data['lat_bounds']['min']
+            lat_max = self.summary_data['lat_bounds']['max']
+            self.lat_min_spin.setValue(lat_min)
+            self.lat_max_spin.setValue(lat_max)
+        else:
+            # Fallback to global bounds if no data available
+            self.lat_min_spin.setValue(-90)
+            self.lat_max_spin.setValue(90)
+            
+        if self.summary_data and 'lon_bounds' in self.summary_data:
+            lon_min = self.summary_data['lon_bounds']['min']
+            lon_max = self.summary_data['lon_bounds']['max']
+            self.lon_min_spin.setValue(lon_min)
+            self.lon_max_spin.setValue(lon_max)
+        else:
+            # Fallback to global bounds if no data available
+            self.lon_min_spin.setValue(-180)
+            self.lon_max_spin.setValue(180)
+
+    def _reset_flight_level_filters(self):
+        """Reset only flight level filters to data-driven bounds"""
+        if self.summary_data and 'fl_bounds' in self.summary_data:
+            fl_min = int(self.summary_data['fl_bounds']['min'])
+            fl_max = int(self.summary_data['fl_bounds']['max'])
+            self.fl_min_spin.setValue(fl_min)
+            self.fl_max_spin.setValue(fl_max)
+        else:
+            # Fallback to global bounds if no data available
+            self.fl_min_spin.setValue(0)
+            self.fl_max_spin.setValue(500)
+
+    def _reset_airspace_filters(self):
+        """Reset only airspace filters to default values"""
+        for i in range(self.airspace_list.count()):
+            self.airspace_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def _reset_time_filters(self):
+        """Reset only time filters to data-driven bounds"""
+        if self.summary_data and 'time_bounds' in self.summary_data:
+            time_min = self.summary_data['time_bounds']['min']
+            time_max = self.summary_data['time_bounds']['max']
+            
+            # Parse time strings to QTime objects
+            try:
+                if ':' in time_min:
+                    start_parts = time_min.split(':')
+                    start_time = QTime(int(start_parts[0]), int(start_parts[1]), 
+                                     int(start_parts[2]) if len(start_parts) > 2 else 0)
+                    self.time_start.setTime(start_time)
+                    
+                if ':' in time_max:
+                    end_parts = time_max.split(':')
+                    end_time = QTime(int(end_parts[0]), int(end_parts[1]), 
+                                   int(end_parts[2]) if len(end_parts) > 2 else 0)
+                    self.time_end.setTime(end_time)
+                    
+                # Enable time filtering when resetting to data bounds
+                self.time_enabled.setChecked(True)
+            except (ValueError, IndexError):
+                # If parsing fails, use defaults
+                self.time_enabled.setChecked(False)
+                self.time_start.setTime(QTime(0, 0, 0))
+                self.time_end.setTime(QTime(23, 59, 59))
+        else:
+            # Fallback to disabled if no data available
+            self.time_enabled.setChecked(False)
+            self.time_start.setTime(QTime(0, 0, 0))
+            self.time_end.setTime(QTime(23, 59, 59))
+
+    def _reset_aircraft_filters(self):
+        """Reset only aircraft filters to default values"""
+        for i in range(self.aircraft_list.count()):
+            self.aircraft_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def _reset_polygon_filter(self):
+        """Reset polygon filter to default values"""
+        self.polygon_name_input.clear()
+
+    def _start_polygon_filter_creation(self):
+        """Start polygon creation by pre-filling the command line with POLY command."""
+        polygon_name = self.polygon_name_input.text().strip()
+        if polygon_name:
+            # Clear any existing text and pre-fill the command line with "POLY polygonname " (note the trailing space)
+            _clear_and_set_cmdline(f"POLY {polygon_name} ")
+        else:
+            _emit("ECHO Please enter a polygon name first")
+
+    def get_filter_settings(self):
+        """Get the current filter settings as a dictionary"""
+        # Collect excluded airspace
+        excluded_airspace = []
+        for i in range(self.airspace_list.count()):
+            item = self.airspace_list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                excluded_airspace.append(item.text())
+        
+        # Collect selected aircraft types
+        selected_aircraft = []
+        for i in range(self.aircraft_list.count()):
+            item = self.aircraft_list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                # Use stored aircraft type data instead of display text
+                ac_type = item.data(Qt.ItemDataRole.UserRole)
+                if ac_type:
+                    selected_aircraft.append(ac_type)
+                else:
+                    # Fallback to text if no UserRole data
+                    selected_aircraft.append(item.text())
+        
+        # Build filter dictionary
+        filters = {
+            'lat_min': self.lat_min_spin.value(),
+            'lat_max': self.lat_max_spin.value(),
+            'lon_min': self.lon_min_spin.value(),
+            'lon_max': self.lon_max_spin.value(),
+            'fl_min': self.fl_min_spin.value(),
+            'fl_max': self.fl_max_spin.value(),
+            'exclude_airspace': excluded_airspace,
+            'aircraft_types': selected_aircraft,
+            'time_start': self.time_start.time().toString("hh:mm:ss") if self.time_enabled.isChecked() else None,
+            'time_end': self.time_end.time().toString("hh:mm:ss") if self.time_enabled.isChecked() else None,
+            'polygon_filter': self._get_polygon_filter_settings()
+        }
+        
+        return filters
+
+    def _apply_filters_and_close(self):
+        """Apply filters and close dialog (for non-modal operation)"""
+        try:
+            # Get filter settings
+            filters = self.get_filter_settings()
+            
+            # Apply filters to the parent's eurocontrol_filters
+            if self.parent():
+                self.parent().eurocontrol_filters = filters
+                
+                # Apply filters immediately to show filtered results
+                from . import traffixgen
+                result = traffixgen.traffixgen_apply_filters(filters)
+                if result:
+                    print("Filters applied successfully!")
+                else:
+                    print("Error applying filters")
+            
+            # Close dialog
+            self.close()
+            
+        except Exception as e:
+            print(f"Error applying filters: {e}")
+            QMessageBox.warning(self, "Filter Error", f"Error applying filters: {e}")
+
+    def _get_polygon_filter_settings(self):
+        """Get polygon filter settings"""
+        polygon_name = self.polygon_name_input.text().strip()
+        if not polygon_name:
+            return None
+        
+        return {
+            'enabled': True,
+            'polygon_name': polygon_name
+        }
+
+
 class PhaseAltitudeConfigDialog(QDialog):
-    def __init__(self, current_altitudes, flights_files, tracks_files, parent=None):
+    def __init__(self, current_altitudes, processed_track_data, callsign_to_flight_id, parent=None):
         super().__init__(parent)
         self.current_altitudes = current_altitudes.copy()
-        self.flights_files = flights_files
-        self.tracks_files = tracks_files
+        self.track_data = processed_track_data  # Already processed track data with callsigns as keys
+        self.callsign_to_flight_id = callsign_to_flight_id  # Mapping from callsign to flight_id
         
         # Per-track phase configurations (in memory)
         self.track_configurations = {}
         
         # Track navigation
         self.current_track_index = 0
-        self.track_data = {}  # Will store loaded track data
-        self.track_names = []  # Will store individual track names
+        self.track_names = list(self.track_data.keys())  # Callsigns from processed data
         
         self.setWindowTitle("Configure Flight Phase Altitudes - Track by Track")
         self.setModal(True)
         self.resize(1200, 700)  # Smaller overall size
         
-        # Load all track data
-        self._load_track_data()
-        
-        # Update tracks_files to contain track names instead of file names
-        self.track_names = list(self.track_data.keys())
-        
         # Setup UI
         self._setup_ui()
         
-        # Load first track
+        # Load first track if available
         if self.track_names:
             self._load_track(0)
         else:
@@ -4416,6 +5583,71 @@ class PhaseAltitudeConfigDialog(QDialog):
             self.next_btn.setEnabled(False)
             self.apply_all_btn.setEnabled(False)
     
+    def _load_eurocontrol_track_data(self):
+        """Load track data from Eurocontrol files using TraffixGen"""
+        try:
+            # Import TraffixGen components
+            # Import from traffixgen plugin
+            from .traffixgen import DatasetCollection
+            import pandas as pd
+            
+            # Create dataset collection
+            collection = DatasetCollection()
+            
+            # Load Eurocontrol files
+            if self.eurocontrol_files['flights']:
+                collection.set_flight_data(filepath=self.eurocontrol_files['flights'])
+            
+            if self.eurocontrol_files['filed'] and self.eurocontrol_files['actual']:
+                collection.set_flights_points_data(
+                    filepaths=(self.eurocontrol_files['filed'], self.eurocontrol_files['actual'])
+                )
+            
+            if self.eurocontrol_files['fir']:
+                collection.set_FIR_data(filepath=self.eurocontrol_files['fir'])
+            
+            # Apply filters
+            filters = self.eurocontrol_filters
+            if filters['lat_min'] != -90 or filters['lat_max'] != 90 or filters['lon_min'] != -180 or filters['lon_max'] != 180:
+                collection.set_bbox(
+                    lat=(filters['lat_min'], filters['lat_max']),
+                    lon=(filters['lon_min'], filters['lon_max'])
+                )
+            
+            if filters['fl_min'] != 0 or filters['fl_max'] != 500:
+                collection.set_fl_bounds(fl_min=filters['fl_min'], fl_max=filters['fl_max'])
+            
+            if filters['exclude_airspace']:
+                collection.exclude_airspace(filters['exclude_airspace'])
+            
+            # Get processed flight data
+            flight_collection = collection.get_flights_data()
+            
+            # Extract track data grouped by ECTRL ID
+            route_data = flight_collection.route_data
+            
+            print(f"Loaded Eurocontrol data with {len(route_data)} route points")
+            print(f"Columns: {list(route_data.columns)}")
+            
+            # Group by ECTRL ID
+            for ectrl_id, group in route_data.groupby('ECTRL ID'):
+                # Sort by time or sequence
+                if 'Time Over' in group.columns:
+                    group = group.sort_values('Time Over')
+                elif 'Sequence Number' in group.columns:
+                    group = group.sort_values('Sequence Number')
+                
+                self.track_data[str(ectrl_id)] = group
+                
+            print(f"Processed {len(self.track_data)} individual tracks")
+            
+        except Exception as e:
+            print(f"Error loading Eurocontrol data: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to empty data
+            self.track_data = {}
+
     def _load_track_data(self):
         """Load all track data from CSV files and separate by ECTRL ID"""
         import pandas as pd
@@ -4617,29 +5849,16 @@ class PhaseAltitudeConfigDialog(QDialog):
     
     def _setup_buttons(self, layout):
         """Setup navigation and action buttons"""
-        # Reset button
-        reset_layout = QHBoxLayout()
-        self.reset_btn = QPushButton("Reset to Defaults")
-        self.reset_btn.setToolTip("Reset altitude boundaries to default values (Takeoff: FL015, Climb: FL250, Descent: FL400, Approach: FL050)")
-        self.reset_btn.clicked.connect(self._reset_to_defaults)
-        self.reset_btn.setAutoDefault(False)
-        reset_layout.addWidget(self.reset_btn)
-        reset_layout.addStretch()
-        layout.addLayout(reset_layout)
-        
-        # Remove the stretch that was pushing buttons to bottom
-        # layout.addStretch()  # Commented out to keep buttons closer to inputs
-        
         # Navigation buttons
         nav_button_layout = QHBoxLayout()
         
-        self.prev_btn = QPushButton("← Previous Track")
+        self.prev_btn = QPushButton("← Previous Aircraft")
         self.prev_btn.setToolTip("Go to the previous aircraft track in the loaded data")
         self.prev_btn.clicked.connect(self._previous_track)
         self.prev_btn.setAutoDefault(False)
         nav_button_layout.addWidget(self.prev_btn)
         
-        self.next_btn = QPushButton("Next Track →")
+        self.next_btn = QPushButton("Next Aircraft →")
         self.next_btn.setToolTip("Go to the next aircraft track in the loaded data")
         self.next_btn.clicked.connect(self._next_track)
         self.next_btn.setAutoDefault(False)
@@ -4658,8 +5877,16 @@ class PhaseAltitudeConfigDialog(QDialog):
         
         layout.addLayout(action_button_layout)
         
-        # Final dialog buttons
+        # Final dialog buttons with Reset button on the same line
         dialog_button_layout = QHBoxLayout()
+        
+        self.reset_btn = QPushButton("Reset to Defaults")
+        self.reset_btn.setToolTip("Reset altitude boundaries to default values (Takeoff: FL015, Climb: FL250, Descent: FL400, Approach: FL050)")
+        self.reset_btn.clicked.connect(self._reset_to_defaults)
+        self.reset_btn.setAutoDefault(False)
+        dialog_button_layout.addWidget(self.reset_btn)
+        
+        dialog_button_layout.addStretch()  # Push main buttons to the right
         
         self.ok_btn = QPushButton("Finish Configuration")
         self.ok_btn.setToolTip("Save all track configurations and close the dialog")
@@ -4671,7 +5898,6 @@ class PhaseAltitudeConfigDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.cancel_btn.setAutoDefault(False)
         
-        dialog_button_layout.addStretch()
         dialog_button_layout.addWidget(self.ok_btn)
         dialog_button_layout.addWidget(self.cancel_btn)
         
@@ -4754,19 +5980,32 @@ class PhaseAltitudeConfigDialog(QDialog):
         
         # Update current track index
         self.current_track_index = track_index
-        track_name = self.track_names[track_index]
+        track_callsign = self.track_names[track_index]  # This is now a callsign
         
-        # Update UI labels
-        self.track_label.setText(f"Track: {track_name}")
+        # Update UI labels with callsign
+        track_info = self.track_data.get(track_callsign, {})
+        flight_id = track_info.get('flight_id', 'Unknown')
+        origin = track_info.get('origin', '')
+        destination = track_info.get('destination', '')
+        aircraft_type = track_info.get('aircraft_type', '')
+        
+        self.track_label.setText(f"Aircraft: {track_callsign}")
         self.track_counter.setText(f"{track_index + 1} / {len(self.track_names)}")
+        
+        # Update flight profile title with aircraft callsign
+        if hasattr(self, 'gb_flight_profile'):
+            profile_title = f"2) Flight profile - {track_callsign}"
+            if origin and destination:
+                profile_title += f" ({origin}→{destination})"
+            self.gb_flight_profile.setTitle(profile_title)
         
         # Update button states
         self.prev_btn.setEnabled(track_index > 0)
         self.next_btn.setEnabled(track_index < len(self.track_names) - 1)
         
         # Load track configuration
-        if track_name in self.track_configurations:
-            config = self.track_configurations[track_name]
+        if track_callsign in self.track_configurations:
+            config = self.track_configurations[track_callsign]
             
             self.takeoff_spin.setValue(config['takeoff']['max_fl'])
             self.climb_spin.setValue(config['climb']['max_fl'])
@@ -4793,22 +6032,23 @@ class PhaseAltitudeConfigDialog(QDialog):
         """Apply current configuration to all tracks"""
         current_config = self._get_current_config()
         
-        for track_name in self.track_configurations:
-            self.track_configurations[track_name] = current_config.copy()
+        # Apply to all track names (callsigns) in the dataset
+        for track_callsign in self.track_names:
+            self.track_configurations[track_callsign] = current_config.copy()
         
         # Show confirmation
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.information(self, "Applied to All", 
-                              f"Current configuration applied to all {len(self.track_configurations)} tracks.")
+                              f"Current configuration applied to all {len(self.track_names)} aircraft.")
     
     def _save_current_config(self):
         """Save current spinbox values to the current track's configuration"""
         if not self.track_names:
             return
             
-        track_name = self.track_names[self.current_track_index]
+        track_callsign = self.track_names[self.current_track_index]
         
-        self.track_configurations[track_name] = self._get_current_config()
+        self.track_configurations[track_callsign] = self._get_current_config()
     
     def _get_current_config(self):
         """Get current configuration from spinboxes"""
@@ -4990,17 +6230,24 @@ class PhaseAltitudeConfigDialog(QDialog):
             self.geo_ax.add_feature(cfeature.BORDERS)
             
             # Get current track data
-            track_name = self.track_names[self.current_track_index]
+            track_callsign = self.track_names[self.current_track_index]
             
-            if track_name in self.track_data:
-                track_info = self.track_data[track_name]
-                df = track_info['data']
-                lat_col = track_info.get('lat_col')
-                lon_col = track_info.get('lon_col')
-                alt_col = track_info.get('alt_col')
-                aircraft_id = track_info.get('aircraft_id', 'Unknown')
+            if track_callsign in self.track_data:
+                track_info = self.track_data[track_callsign]
+                df = track_info['points']  # Use 'points' instead of 'data'
                 
-                print(f"Plotting track: {track_name} (Aircraft: {aircraft_id})")
+                # Use standard Eurocontrol column names
+                lat_col = 'Latitude'
+                lon_col = 'Longitude' 
+                alt_col = 'Flight Level'
+                aircraft_id = track_info.get('flight_id', 'Unknown')
+                origin = track_info.get('origin', '')
+                destination = track_info.get('destination', '')
+                
+                # Create route info for title
+                route_info = f"{origin}→{destination}" if origin and destination else f"Flight {aircraft_id}"
+                
+                print(f"Plotting track: {track_callsign} (Aircraft: {aircraft_id})")
                 print(f"Data shape: {df.shape}")
                 print(f"Using columns: lat={lat_col}, lon={lon_col}, alt={alt_col}")
                 
@@ -5127,7 +6374,7 @@ class PhaseAltitudeConfigDialog(QDialog):
                     print(f"Setting extent: {extent}")
                     self.geo_ax.set_extent(extent, ccrs.PlateCarree())
                     
-                    self.geo_ax.set_title(f"{aircraft_id} ({len(lons)} waypoints)", fontsize=10, pad=10)
+                    self.geo_ax.set_title(f"{track_callsign} ({route_info}) - {len(lons)} waypoints", fontsize=10, pad=10)
                     
                     # Add gridlines with optimized layout for space
                     gl = self.geo_ax.gridlines(draw_labels=True, alpha=0.5, linewidth=0.5)
@@ -5138,13 +6385,13 @@ class PhaseAltitudeConfigDialog(QDialog):
                     gl.xlabel_style = {'size': 7}  # Smaller font for labels
                     gl.ylabel_style = {'size': 7}
                 else:
-                    print(f"No valid data found for track {track_name}")
-                    self.geo_ax.text(0.5, 0.5, f"No geographic data\nfor track: {track_name}", 
+                    print(f"No valid data found for track {track_callsign}")
+                    self.geo_ax.text(0.5, 0.5, f"No geographic data\nfor aircraft: {track_callsign}", 
                                    transform=self.geo_ax.transAxes, ha='center', va='center',
                                    bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow"))
             else:
-                print(f"Track {track_name} not found in track_data")
-                self.geo_ax.text(0.5, 0.5, f"Track data not loaded\nfor: {track_name}", 
+                print(f"Track {track_callsign} not found in track_data")
+                self.geo_ax.text(0.5, 0.5, f"Track data not loaded\nfor aircraft: {track_callsign}", 
                                transform=self.geo_ax.transAxes, ha='center', va='center',
                                bbox=dict(boxstyle="round,pad=0.3", facecolor="orange"))
             
@@ -5250,6 +6497,37 @@ class PhaseAltitudeConfigDialog(QDialog):
     def get_phase_altitudes(self):
         """Return the configured phase altitudes in the expected format"""
         return self._calculate_ranges()
+    
+    def accept(self):
+        """Override accept to validate that all aircraft have been configured"""
+        # Save current track configuration before validation
+        self._save_current_config()
+        
+        # Check if all tracks have been configured
+        unconfigured_tracks = []
+        for track_callsign in self.track_names:
+            if track_callsign not in self.track_configurations:
+                unconfigured_tracks.append(track_callsign)
+        
+        if unconfigured_tracks:
+            # Show warning dialog
+            from PyQt6.QtWidgets import QMessageBox
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Configuration Incomplete")
+            msg.setText("Not all aircraft have been configured with phase altitudes.")
+            msg.setInformativeText(
+                f"The following aircraft still need configuration:\n\n" +
+                "\n".join(f"• {callsign}" for callsign in unconfigured_tracks[:10]) +
+                (f"\n... and {len(unconfigured_tracks) - 10} more" if len(unconfigured_tracks) > 10 else "") +
+                "\n\nPlease navigate through all aircraft and configure their phase altitudes before finishing."
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            return  # Don't close the dialog
+        
+        # All tracks are configured, proceed with normal accept
+        super().accept()
 
 
 class PhaseVisualizationWidget(QWidget):
@@ -5648,8 +6926,8 @@ class GCAbsolutePage(QWidget):
         gb1_layout.addWidget(cpa_scroll)
         main.addWidget(gb1)
 
-        gb2 = QGroupBox("2) Flight profile")
-        gb2_layout = QVBoxLayout(gb2)
+        self.gb_flight_profile = QGroupBox("2) Flight profile")
+        gb2_layout = QVBoxLayout(self.gb_flight_profile)
         
         # Create a scroll area for flight profile
         profile_scroll = QScrollArea()
@@ -5687,7 +6965,7 @@ class GCAbsolutePage(QWidget):
         
         # Add the scroll area to the group box
         gb2_layout.addWidget(profile_scroll)
-        main.addWidget(gb2)
+        main.addWidget(self.gb_flight_profile)
 
         gb3 = QGroupBox("3) Actions")
         f3 = QFormLayout(gb3)
