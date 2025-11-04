@@ -1,0 +1,40 @@
+{
+  "files": {
+    "flights_file": "C:/Users/javie/Desktop/bluesky/satg_data/eurocontrol_sample/Flights_extract.csv",
+    "filed_file": "C:/Users/javie/Desktop/bluesky/satg_data/eurocontrol_sample/Flight_Points_Filed_extract.csv",
+    "actual_file": "C:/Users/javie/Desktop/bluesky/satg_data/eurocontrol_sample/Flight_Points_Actual_extract.csv",
+    "fir_file": "C:/Users/javie/Desktop/bluesky/satg_data/eurocontrol_sample/FIR_1502_extract.csv"
+  },
+  "model_type": "Tree-based (XGBoost)",
+  "n_estimators": 100,
+  "max_depth": 8,
+  "learning_rate": 0.1,
+  "kde_bandwidth": 1.0,
+  "kde_kernel": "gaussian",
+  "kde_atol": 1e-06,
+  "derivative_bandwidth": 0.8,
+  "derivative_order": 1,
+  "derivative_smoothing": 0.5,
+  "derivative_kernel": "gaussian",
+  "n_flights": 50,
+  "n_points": 200,
+  "scn_name": "synthetic",
+  "synthetic_seed": 42,
+  "synthetic_overwrite": false,
+  "historic_filters": {
+    "lat_min": -90,
+    "lat_max": 90,
+    "lon_min": -180,
+    "lon_max": 180,
+    "fl_min": 0,
+    "fl_max": 500,
+    "exclude_airspace": [],
+    "time_start": null,
+    "time_end": null,
+    "aircraft_types": []
+  },
+  "model_trained": false,
+  "synthetic_data_generated": false,
+  "saved_at": "2025-11-04T04:26:27.821859",
+  "tab_type": "Historic Sampling"
+}

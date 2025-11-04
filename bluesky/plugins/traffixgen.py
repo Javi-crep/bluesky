@@ -331,6 +331,604 @@ class FlightTrajectorySampler:
         return trajectories
 
 # ============================================================================
+# ENHANCED TRAFFIXGEN FUNCTIONALITY (Historic Sampling)
+# ============================================================================
+
+def holt_smooth(x: np.ndarray, alpha: float = 0.3, beta: float = 0.1):
+    """Apply Holt exponential smoothing to trajectory data."""
+    if len(x) < 2:
+        return x
+        
+    y = np.zeros_like(x, dtype=float)
+    s = np.zeros_like(x, dtype=float)
+    b = np.zeros_like(x, dtype=float)
+    
+    # Initialize
+    s[0] = x[0]
+    b[0] = x[1] - x[0] if len(x) > 1 else 0
+    y[0] = s[0]
+    
+    for t in range(1, len(x)):
+        s[t] = alpha * x[t] + (1 - alpha) * (s[t-1] + b[t-1])
+        b[t] = beta * (s[t] - s[t-1]) + (1 - beta) * b[t-1]
+        y[t] = s[t] + b[t]
+    
+    return y
+
+class EnhancedFlightTrajectory:
+    """Enhanced flight trajectory container with additional methods."""
+    
+    def __init__(self, data: np.ndarray, columns: List[str]):
+        self.data = data
+        self.columns = columns
+        self._col_index = {name: i for i, name in enumerate(columns)}
+        
+    def __len__(self):
+        return len(self.data)
+        
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            if key in self.columns:
+                idx = self.columns.index(key)
+                return self.data[:, idx]
+            else:
+                raise KeyError(f"Column '{key}' not found")
+        return self.data[key]
+    
+    @property
+    def array(self) -> np.ndarray:
+        """Get the full trajectory array."""
+        return self.data
+    
+    def get_column(self, name: str) -> np.ndarray:
+        """Get a column by name."""
+        return self[name]
+    
+    def to_dict(self) -> Dict:
+        """Convert trajectory to dictionary format."""
+        return {col: self.data[:, i].tolist() for i, col in enumerate(self.columns)}
+
+class EnhancedFlightStateSpaceTreesPhased:
+    """Enhanced tree-based trajectory generator with full TraffixGen features."""
+    
+    def __init__(self, flights_df: pd.DataFrame, route_df: pd.DataFrame, 
+                 model_cls, model_kwargs: Optional[Dict] = None,
+                 features: Optional[List[str]] = None, target_cols: Optional[List[str]] = None,
+                 n_interp: int = 5, transition_fl: int = 240, descent_fl: int = 200):
+        
+        self.model_cls = model_cls
+        self.model_kwargs = model_kwargs or {}
+        self.n_interp = n_interp
+        self.transition_fl = transition_fl
+        self.descent_fl = descent_fl
+        
+        # Create OD column
+        flights_df = flights_df.copy()
+        flights_df["OD"] = flights_df["ADEP"] + "-" + flights_df["ADES"]
+        
+        # Merge data
+        merged_df = route_df.merge(
+            flights_df[["ECTRL ID", "OD", "AC Type"]], 
+            on="ECTRL ID", how="left"
+        )
+        
+        # Add derived features
+        self._add_derived_features(merged_df)
+        
+        # Add previous features
+        self._add_previous_features(merged_df)
+        
+        # Compute elapsed time
+        merged_df = compute_elapsed_time_per_flight(merged_df)
+        
+        # Interpolate trajectories for denser data
+        if n_interp > 1:
+            merged_df = self._interpolate_flight_data(merged_df, n_interp)
+        
+        # Define features and targets
+        self.features = features or [
+            "elapsed_time", "prev_latitude", "prev_longitude",
+            "prev_flight_level", "prev_ground_speed", "prev_heading", "prev_climb_angle"
+        ]
+        self.target_cols = target_cols or [
+            "Latitude", "Longitude", "Flight Level",
+            "ground_speed", "heading", "climb_angle"
+        ]
+        
+        # Clean data
+        merged_df = merged_df.dropna(subset=self.features + self.target_cols)
+        
+        # Store initial states and max times
+        self._compute_initial_states(merged_df)
+        
+        # Fit phased models
+        self._fit_phased_models(merged_df)
+        
+    def _add_derived_features(self, df):
+        """Add derived features like ground speed, heading, climb angle."""
+        # Sort by flight and time
+        df.sort_values(['ECTRL ID', 'Time Over'], inplace=True)
+        
+        # Calculate ground speed from consecutive positions
+        for flight_id, group in df.groupby('ECTRL ID'):
+            if len(group) < 2:
+                continue
+                
+            indices = group.index
+            lats = group['Latitude'].values
+            lons = group['Longitude'].values
+            alts = group['Flight Level'].values * 100  # Convert to feet
+            times = group['Time Over'].values
+            
+            # Convert time to seconds if needed
+            if not pd.api.types.is_numeric_dtype(df['Time Over']):
+                # Convert datetime to seconds from start
+                time_deltas = pd.to_datetime(times) - pd.to_datetime(times[0])
+                times = time_deltas.dt.total_seconds()
+            
+            # Calculate ground speed, heading, climb angle
+            for i in range(1, len(indices)):
+                dt = times[i] - times[i-1]
+                if dt > 0:
+                    # Ground speed calculation (approximate)
+                    dlat = lats[i] - lats[i-1]
+                    dlon = lons[i] - lons[i-1]
+                    dist_nm = np.sqrt(dlat**2 + dlon**2) * 60  # Rough approximation
+                    gs = dist_nm / (dt / 3600)  # nm/h
+                    df.loc[indices[i], 'ground_speed'] = max(0, min(gs, 600))  # Cap at reasonable values
+                    
+                    # Heading calculation
+                    heading = np.arctan2(dlon, dlat) * 180 / np.pi
+                    if heading < 0:
+                        heading += 360
+                    df.loc[indices[i], 'heading'] = heading
+                    
+                    # Climb angle calculation
+                    dalt = alts[i] - alts[i-1]
+                    climb_rate = dalt / dt  # ft/s
+                    gs_fps = gs * 1.688  # Convert knots to ft/s
+                    climb_angle = np.arctan(climb_rate / max(gs_fps, 1)) * 180 / np.pi
+                    df.loc[indices[i], 'climb_angle'] = max(-10, min(climb_angle, 10))  # Cap climb angle
+        
+        # Fill missing values with reasonable defaults
+        df['ground_speed'].fillna(450, inplace=True)
+        df['heading'].fillna(0, inplace=True)
+        df['climb_angle'].fillna(0, inplace=True)
+                
+    def _add_previous_features(self, df):
+        """Add previous timestep features."""
+        prev_mapping = {
+            "prev_latitude": "Latitude",
+            "prev_longitude": "Longitude", 
+            "prev_flight_level": "Flight Level",
+            "prev_ground_speed": "ground_speed",
+            "prev_heading": "heading",
+            "prev_climb_angle": "climb_angle"
+        }
+        
+        for prev_col, orig_col in prev_mapping.items():
+            if orig_col in df.columns:
+                df[prev_col] = df.groupby("ECTRL ID")[orig_col].shift(1)
+                
+    def _interpolate_flight_data(self, df: pd.DataFrame, n_interp: int = 5):
+        """Linearly interpolate between consecutive points of each flight."""
+        interp_list = []
+        
+        for flight_id, group in df.groupby("ECTRL ID"):
+            group = group.sort_values("elapsed_time").reset_index(drop=True)
+            for i in range(len(group) - 1):
+                start = group.iloc[i]
+                end = group.iloc[i + 1]
+                for t in range(n_interp + 1):
+                    alpha = t / n_interp
+                    row = start.copy()
+                    for col in group.columns:
+                        if col != "ECTRL ID" and pd.api.types.is_numeric_dtype(group[col]):
+                            row[col] = (1 - alpha) * start[col] + alpha * end[col]
+                    interp_list.append(row)
+            # Add last point
+            interp_list.append(group.iloc[-1])
+        
+        return pd.DataFrame(interp_list).reset_index(drop=True)
+                
+    def _compute_initial_states(self, df):
+        """Compute initial states and max times for each OD/AC combination."""
+        self.initial_states = {}
+        self.max_times = {}
+        
+        for (od, ac), group in df.groupby(["OD", "AC Type"]):
+            if len(group) > 0:
+                self.initial_states[(od, ac)] = group[self.features].iloc[0].to_numpy()
+                self.max_times[(od, ac)] = group["elapsed_time"].max()
+                
+    def _fit_phased_models(self, df):
+        """Fit separate models for takeoff, cruise, and landing phases."""
+        self.models = {}
+        
+        for (od, ac), group in df.groupby(["OD", "AC Type"]):
+            if len(group) < 20:  # Need sufficient data for phased modeling
+                continue
+                
+            self.models[(od, ac)] = {"takeoff": {}, "cruise": {}, "landing": {}}
+            
+            # Determine phase boundaries
+            max_fl = group["Flight Level"].max()
+            climb_end_fl = min(self.transition_fl, max_fl * 0.8)
+            descent_start_fl = min(self.descent_fl, max_fl * 0.6)
+            
+            # Define phase masks
+            takeoff_mask = group["Flight Level"] <= climb_end_fl
+            landing_mask = group["Flight Level"] <= descent_start_fl
+            cruise_mask = ~(takeoff_mask | landing_mask)
+            
+            phase_masks = {
+                "takeoff": takeoff_mask,
+                "cruise": cruise_mask, 
+                "landing": landing_mask
+            }
+            
+            for phase, mask in phase_masks.items():
+                phase_data = group[mask]
+                if len(phase_data) < 5:  # Skip if insufficient data
+                    continue
+                    
+                X = phase_data[self.features]
+                
+                for target in self.target_cols:
+                    y = phase_data[target]
+                    model = self.model_cls(**self.model_kwargs)
+                    model.fit(X, y)
+                    self.models[(od, ac)][phase][target] = model
+                    
+    def _select_phase(self, flight_level: float, prev_phase: str = "takeoff") -> str:
+        """Select flight phase based on current flight level."""
+        if prev_phase == "takeoff" and flight_level >= self.transition_fl:
+            return "cruise"
+        elif prev_phase == "cruise" and flight_level <= self.descent_fl:
+            return "landing"
+        return prev_phase
+    
+    def sample_state(self, od: str, ac_type: str, n_points: int = 200) -> np.ndarray:
+        """Sample a trajectory for given OD and aircraft type with phased modeling."""
+        key = (od, ac_type)
+        
+        if key not in self.models:
+            raise ValueError(f"No model for OD={od}, AC={ac_type}")
+            
+        model_set = self.models[key]
+        features = dict(zip(self.features, self.initial_states[key]))
+        dt = self.max_times[key] / n_points
+        
+        # Initialize trajectory array
+        traj = np.zeros((n_points, 1 + len(self.target_cols)))
+        phase = "takeoff"
+        
+        for t in range(n_points):
+            # Build feature vector
+            X = np.array([features[f] for f in self.features]).reshape(1, -1)
+            
+            # Determine current phase
+            current_fl = features.get("prev_flight_level", 0)
+            phase = self._select_phase(current_fl, phase)
+            
+            # Get phase models (fallback to cruise if phase not available)
+            phase_models = model_set.get(phase, model_set.get("cruise", {}))
+            
+            if not phase_models:
+                raise ValueError(f"No models for OD={od}, AC={ac_type} at phase={phase}")
+            
+            # Predict targets
+            preds = {}
+            for target in self.target_cols:
+                if target in phase_models:
+                    preds[target] = phase_models[target].predict(X)[0]
+                else:
+                    # Use previous value if no model for this target in this phase
+                    prev_name = f"prev_{target.lower().replace(' ', '_')}"
+                    preds[target] = features.get(prev_name, 0)
+                
+            # Store results
+            traj[t, 0] = features["elapsed_time"]
+            for i, target in enumerate(self.target_cols):
+                traj[t, i + 1] = preds[target]
+                
+            # Update features for next timestep
+            features["elapsed_time"] += dt
+            for target in self.target_cols:
+                prev_name = f"prev_{target.lower().replace(' ', '_')}"
+                if prev_name in features:
+                    features[prev_name] = preds[target]
+                    
+        # Apply smoothing
+        for i in range(1, len(self.target_cols) + 1):
+            traj[:, i] = exponential_average(traj[:, i], alpha=0.3)
+            
+        return traj
+
+class EnhancedFlightStateSpaceKDE:
+    """Enhanced KDE-based trajectory generator with full TraffixGen features."""
+    
+    def __init__(self, flights_df: pd.DataFrame, route_df: pd.DataFrame):
+        # Import KDE functionality
+        try:
+            from scipy.stats import gaussian_kde
+            self.gaussian_kde = gaussian_kde
+        except ImportError:
+            raise ImportError("scipy is required for KDE-based trajectory generation")
+        
+        # Create OD column
+        flights_df = flights_df.copy()
+        flights_df["OD"] = flights_df["ADEP"] + "-" + flights_df["ADES"]
+        
+        # Merge data
+        merged_df = route_df.merge(
+            flights_df[["ECTRL ID", "OD", "AC Type"]], 
+            on="ECTRL ID", how="left"
+        )
+        
+        # Add derived features
+        self._add_derived_features(merged_df)
+        
+        # Compute elapsed time
+        merged_df = compute_elapsed_time_per_flight(merged_df)
+        
+        # Define feature columns
+        self.feature_cols = [
+            "elapsed_time", "Flight Level", "Latitude", "Longitude",
+            "ground_speed", "heading", "climb_angle"
+        ]
+        self.target_cols = [
+            "Latitude", "Longitude", "Flight Level",
+            "ground_speed", "heading", "climb_angle"
+        ]
+        
+        # Build KDE models per OD
+        self._build_kde_models(merged_df)
+        
+    def _add_derived_features(self, df):
+        """Add derived features (same as tree-based approach)."""
+        # Sort by flight and time
+        df.sort_values(['ECTRL ID', 'Time Over'], inplace=True)
+        
+        # Calculate ground speed, heading, climb angle (simplified)
+        df['ground_speed'] = 450  # Default ground speed
+        df['heading'] = 0  # Default heading
+        df['climb_angle'] = 0  # Default climb angle
+        
+        for flight_id, group in df.groupby('ECTRL ID'):
+            indices = group.index
+            if len(indices) < 2:
+                continue
+                
+            # Simple calculations for demo
+            for i in range(1, len(indices)):
+                # Basic heading from lat/lon changes
+                lat_diff = group.loc[indices[i], 'Latitude'] - group.loc[indices[i-1], 'Latitude']
+                lon_diff = group.loc[indices[i], 'Longitude'] - group.loc[indices[i-1], 'Longitude']
+                
+                if abs(lat_diff) > 0.001 or abs(lon_diff) > 0.001:
+                    heading = np.arctan2(lon_diff, lat_diff) * 180 / np.pi
+                    if heading < 0:
+                        heading += 360
+                    df.loc[indices[i], 'heading'] = heading
+        
+    def _build_kde_models(self, df):
+        """Build KDE models for each OD pair."""
+        self.od_kde_models = {}
+        self.od_ac_types = {}
+        
+        for od, od_group in df.groupby("OD"):
+            # Store aircraft types for this OD
+            self.od_ac_types[od] = od_group["AC Type"].unique()
+            
+            # Prepare feature data
+            feature_data = od_group[self.feature_cols].dropna()
+            
+            if len(feature_data) < 10:  # Need sufficient data for KDE
+                continue
+                
+            # Build KDE
+            try:
+                data_array = feature_data.values.T
+                kde_model = self.gaussian_kde(data_array)
+                self.od_kde_models[od] = kde_model
+            except Exception as e:
+                print(f"Warning: Could not build KDE for OD {od}: {e}")
+                continue
+                
+    def sample_state(self, od: str, ac_type: str, n_points: int = 200) -> np.ndarray:
+        """Sample a trajectory using KDE approach."""
+        if od not in self.od_kde_models:
+            raise ValueError(f"No KDE model for OD={od}")
+            
+        kde_model = self.od_kde_models[od]
+        
+        # Sample points from KDE
+        sampled_data = kde_model.resample(n_points).T
+        
+        # Sort by elapsed time
+        sort_indices = np.argsort(sampled_data[:, 0])
+        sampled_data = sampled_data[sort_indices]
+        
+        # Ensure elapsed time is monotonic
+        sampled_data[:, 0] = np.linspace(0, sampled_data[-1, 0], n_points)
+        
+        # Apply smoothing
+        for i in range(1, sampled_data.shape[1]):
+            sampled_data[:, i] = exponential_average(sampled_data[:, i], alpha=0.3)
+        
+        # Prepare output array (elapsed_time + target columns)
+        traj = np.zeros((n_points, 1 + len(self.target_cols)))
+        traj[:, 0] = sampled_data[:, 0]  # elapsed_time
+        
+        # Map KDE features to target columns
+        feature_to_target_map = {
+            "Latitude": "Latitude",
+            "Longitude": "Longitude", 
+            "Flight Level": "Flight Level",
+            "ground_speed": "ground_speed",
+            "heading": "heading",
+            "climb_angle": "climb_angle"
+        }
+        
+        for i, target in enumerate(self.target_cols):
+            if target in feature_to_target_map:
+                # Find corresponding feature index
+                try:
+                    feature_idx = self.feature_cols.index(target)
+                    traj[:, i + 1] = sampled_data[:, feature_idx]
+                except ValueError:
+                    # Default value if feature not found
+                    traj[:, i + 1] = 0
+        
+        return traj
+
+class EnhancedFlightTrajectorySampler:
+    """Enhanced trajectory sampler with full TraffixGen capabilities."""
+    
+    def __init__(self):
+        self.flights_df = None
+        self.route_df = None
+        self.state_space = None
+        self.od_dist = None
+        self.ac_type_dists = None
+        self.preprocessed = False
+        self.model_type = "tree"
+        
+    def load_data(self, flights_df: pd.DataFrame, route_df: pd.DataFrame):
+        """Load flight and route data."""
+        self.flights_df = flights_df.copy()
+        self.route_df = route_df.copy()
+        self.preprocessed = False
+        
+    def preprocess(self):
+        """Preprocess data and fit distributions."""
+        if self.flights_df is None or self.route_df is None:
+            raise ValueError("Data not loaded. Call load_data() first.")
+            
+        # Create OD column
+        self.flights_df["OD"] = self.flights_df["ADEP"] + "-" + self.flights_df["ADES"]
+        
+        # Convert time to numeric if needed
+        if not pd.api.types.is_numeric_dtype(self.route_df["Time Over"]):
+            # Handle different time formats
+            try:
+                self.route_df["Time Over"] = pd.to_datetime(self.route_df["Time Over"])
+                # Convert to seconds from start of day
+                self.route_df["Time Over"] = (
+                    self.route_df["Time Over"].dt.hour * 3600 +
+                    self.route_df["Time Over"].dt.minute * 60 +
+                    self.route_df["Time Over"].dt.second
+                )
+            except Exception:
+                # Fallback: use sequence number as time
+                self.route_df["Time Over"] = self.route_df.get("Sequence Number", 0) * 60
+            
+        # Fit distributions
+        self._create_distributions()
+        self.preprocessed = True
+        
+    def _create_distributions(self):
+        """Create distributions for OD pairs and aircraft types."""
+        # OD distribution
+        od_series = self.flights_df["OD"]
+        od_codes, self.od_categories = pd.factorize(od_series)
+        self.od_dist = fit_simple_distribution(od_codes)
+        
+        # AC type distributions per OD
+        self.ac_type_dists = {}
+        for od_label in pd.unique(od_series):
+            mask = od_series == od_label
+            ac_types = self.flights_df.loc[mask, "AC Type"]
+            ac_codes, ac_categories = pd.factorize(ac_types)
+            ac_dist = fit_simple_distribution(ac_codes)
+            self.ac_type_dists[od_label] = (ac_dist, ac_categories)
+            
+    def initialize_state_space(self, model_type: str = "tree", model_config: Optional[Dict] = None):
+        """Initialize the state space model."""
+        if not self.preprocessed:
+            self.preprocess()
+            
+        self.model_type = model_type
+        model_config = model_config or {}
+        
+        if model_type.lower().startswith("tree"):
+            # Import XGBoost for tree-based models
+            try:
+                from xgboost import XGBRegressor
+                model_cls = XGBRegressor
+            except ImportError:
+                print("Warning: XGBoost not available, falling back to sklearn RandomForest")
+                try:
+                    from sklearn.ensemble import RandomForestRegressor
+                    model_cls = RandomForestRegressor
+                except ImportError:
+                    raise ImportError("Neither XGBoost nor scikit-learn available for tree-based models")
+            
+            # Configure model parameters
+            model_kwargs = {
+                'n_estimators': model_config.get('n_estimators', 100),
+                'max_depth': model_config.get('max_depth', 8),
+                'random_state': model_config.get('random_state', 42)
+            }
+            
+            if 'learning_rate' in model_config and hasattr(model_cls, 'learning_rate'):
+                model_kwargs['learning_rate'] = model_config['learning_rate']
+            
+            self.state_space = EnhancedFlightStateSpaceTreesPhased(
+                self.flights_df, self.route_df, model_cls, model_kwargs,
+                n_interp=model_config.get('interpolation_points', 5)
+            )
+            
+        elif model_type.lower().startswith("kde"):
+            self.state_space = EnhancedFlightStateSpaceKDE(
+                self.flights_df, self.route_df
+            )
+            
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+            
+    def sample_od_ac(self, n_samples: int = 1) -> Tuple[List[str], List[str]]:
+        """Sample OD pairs and aircraft types."""
+        # Sample ODs
+        od_indices = self.od_dist.sample(n_samples).astype(int)
+        ods_sampled = [self.od_categories[i] for i in od_indices]
+        
+        # Sample aircraft types
+        acs_sampled = []
+        for od in ods_sampled:
+            dist, categories = self.ac_type_dists[od]
+            ac_index = int(dist.sample(1)[0])
+            acs_sampled.append(categories[ac_index])
+            
+        return ods_sampled, acs_sampled
+        
+    def sample_trajectories(self, n_samples: int = 1, n_points: int = 200) -> List[Tuple[str, str, EnhancedFlightTrajectory]]:
+        """Sample enhanced flight trajectories."""
+        if self.state_space is None:
+            raise RuntimeError("State space not initialized")
+            
+        ods, ac_types = self.sample_od_ac(n_samples)
+        
+        trajectories = []
+        for od, ac_type in zip(ods, ac_types):
+            try:
+                traj_array = self.state_space.sample_state(od, ac_type, n_points)
+                traj = EnhancedFlightTrajectory(
+                    traj_array, 
+                    ["elapsed_time"] + self.state_space.target_cols
+                )
+                trajectories.append((od, ac_type, traj))
+            except Exception as e:
+                print(f"Warning: Could not generate trajectory for {od} {ac_type}: {e}")
+                continue
+                
+        return trajectories
+
+# Global instance for enhanced functionality
+_enhanced_sampler = None
+
+# ============================================================================
 # BLUESKY PLUGIN CLASS
 # ============================================================================
 
@@ -2230,3 +2828,590 @@ def _point_in_polygon(lat, lon, polygon_points):
         p1x, p1y = p2x, p2y
     
     return inside
+
+# ============================================================================
+# ENHANCED TRAFFIXGEN FUNCTIONS (Historic Sampling)
+# ============================================================================
+
+def traffixgen_train_synthetic_models(flights_file: str, filed_file: str, actual_file: str, 
+                                     fir_file: str, model_config: Dict) -> bool:
+    """Train synthetic route generation models using historical data.
+    
+    Args:
+        flights_file: Path to flights CSV file
+        filed_file: Path to filed route points CSV file  
+        actual_file: Path to actual route points CSV file
+        fir_file: Path to FIR CSV file (optional)
+        model_config: Model configuration dictionary
+        
+    Returns:
+        bool: True if training succeeded, False otherwise
+    """
+    global _enhanced_sampler
+    
+    try:
+        print("Loading historical data for model training...")
+        
+        # Load data files
+        flights_df = pd.read_csv(flights_file)
+        filed_df = pd.read_csv(filed_file) if filed_file else pd.DataFrame()
+        actual_df = pd.read_csv(actual_file)
+        
+        # Use actual route points for training (more accurate than filed)
+        route_df = actual_df
+        
+        print(f"Loaded {len(flights_df)} flights and {len(route_df)} route points")
+        
+        # Validate required columns
+        required_flight_cols = ['ECTRL ID', 'ADEP', 'ADES', 'AC Type']
+        required_route_cols = ['ECTRL ID', 'Time Over', 'Latitude', 'Longitude', 'Flight Level']
+        
+        missing_flight = [col for col in required_flight_cols if col not in flights_df.columns]
+        missing_route = [col for col in required_route_cols if col not in route_df.columns]
+        
+        if missing_flight:
+            print(f"Error: Missing flight columns: {missing_flight}")
+            return False
+        if missing_route:
+            print(f"Error: Missing route columns: {missing_route}")
+            return False
+        
+        # Initialize enhanced sampler
+        _enhanced_sampler = EnhancedFlightTrajectorySampler()
+        _enhanced_sampler.load_data(flights_df, route_df)
+        
+        # Preprocess data
+        print("Preprocessing data...")
+        _enhanced_sampler.preprocess()
+        
+        # Initialize state space with selected model type
+        print(f"Training {model_config.get('model_type', 'tree-based')} models...")
+        model_type = model_config.get('model_type', 'Tree-based (XGBoost)')
+        
+        if model_type.startswith('Tree'):
+            _enhanced_sampler.initialize_state_space('tree', model_config)
+        elif model_type.startswith('KDE'):
+            _enhanced_sampler.initialize_state_space('kde', model_config)
+        else:
+            _enhanced_sampler.initialize_state_space('tree', model_config)  # Default fallback
+        
+        print("Model training completed successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"Error training synthetic models: {e}")
+        return False
+
+def traffixgen_generate_synthetic_trajectories(n_flights: int, n_points: int) -> List[Dict]:
+    """Generate synthetic flight trajectories using trained models.
+    
+    Args:
+        n_flights: Number of flights to generate
+        n_points: Number of points per trajectory
+        
+    Returns:
+        List of flight dictionaries with trajectory data
+    """
+    global _enhanced_sampler
+    
+    if _enhanced_sampler is None:
+        print("Error: Models not trained. Call traffixgen_train_synthetic_models first.")
+        return []
+    
+    try:
+        print(f"Generating {n_flights} synthetic trajectories with {n_points} points each...")
+        
+        # Generate trajectories
+        trajectories = _enhanced_sampler.sample_trajectories(n_flights, n_points)
+        
+        if not trajectories:
+            print("Warning: No valid trajectories generated")
+            return []
+        
+        # Convert to JSON-friendly format for SATG integration
+        flight_data = []
+        for i, (od, ac_type, traj) in enumerate(trajectories):
+            origin, dest = od.split('-') if '-' in od else (od[:4], od[4:])
+            
+            # Create waypoints from trajectory
+            waypoints = []
+            for j in range(len(traj)):
+                waypoint = {
+                    'time': float(traj['elapsed_time'][j]),
+                    'latitude': float(traj['Latitude'][j]),
+                    'longitude': float(traj['Longitude'][j]),
+                    'altitude': float(traj['Flight Level'][j]) * 100,  # Convert to feet
+                    'ground_speed': float(traj['ground_speed'][j]),
+                    'heading': float(traj['heading'][j])
+                }
+                waypoints.append(waypoint)
+            
+            # Generate realistic callsign
+            callsign = _generate_callsign(f"SYN{origin}", i + 1000)
+            
+            flight_info = {
+                'id': i + 1,
+                'callsign': callsign,
+                'aircraft_type': ac_type,
+                'origin': origin,
+                'destination': dest,
+                'od_pair': od,
+                'waypoints': waypoints,
+                'synthetic': True,  # Mark as synthetic data
+                'generated_at': datetime.now().isoformat()
+            }
+            flight_data.append(flight_info)
+        
+        print(f"Generated {len(flight_data)} synthetic trajectories successfully!")
+        return flight_data
+        
+    except Exception as e:
+        print(f"Error generating synthetic trajectories: {e}")
+        return []
+
+def traffixgen_export_synthetic_to_satg(synthetic_data: List[Dict]) -> bool:
+    """Export synthetic trajectory data to SATG for scenario creation.
+    
+    Args:
+        synthetic_data: List of synthetic flight dictionaries
+        
+    Returns:
+        bool: True if export succeeded, False otherwise
+    """
+    if not synthetic_data:
+        print("Error: No synthetic data to export")
+        return False
+    
+    try:
+        print(f"Exporting {len(synthetic_data)} synthetic flights to SATG...")
+        
+        # Convert to SATG format (same as realistic replay format)
+        flights_data = []
+        points_data = []
+        
+        for flight in synthetic_data:
+            # Flight entry
+            flight_entry = {
+                'ECTRL ID': flight['callsign'],  # Use callsign as ID
+                'Callsign': flight['callsign'],
+                'ADEP': flight['origin'],
+                'ADES': flight['destination'],
+                'AC Type': flight['aircraft_type'],
+                'AC Operator': 'SYN',  # Mark as synthetic
+                'Synthetic': True,
+                'Generated': flight.get('generated_at', datetime.now().isoformat())
+            }
+            flights_data.append(flight_entry)
+            
+            # Route points
+            for seq, waypoint in enumerate(flight['waypoints']):
+                # Convert time back to formatted string
+                total_seconds = int(waypoint['time'])
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                seconds = total_seconds % 60
+                time_formatted = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                
+                point = {
+                    'ECTRL ID': flight['callsign'],
+                    'Callsign': flight['callsign'],
+                    'Sequence Number': seq,
+                    'Time Over': time_formatted,
+                    'Flight Level': int(waypoint['altitude'] / 100),  # Convert back to flight level
+                    'Latitude': waypoint['latitude'],
+                    'Longitude': waypoint['longitude'],
+                    'ground_speed': waypoint['ground_speed'],
+                    'heading': waypoint['heading'],
+                    'Synthetic': True
+                }
+                points_data.append(point)
+        
+        # Convert to JSON and call SATG function
+        import json
+        flights_json = json.dumps(flights_data)
+        points_json = json.dumps(points_data)
+        
+        # Call SATG function for synthetic data loading
+        from . import SATG
+        success, message = SATG.SATG_SYNTH_LOAD_DATA(flights_json, points_json)
+        
+        if success:
+            print(f"Successfully exported {len(flights_data)} synthetic flights to SATG!")
+            return True
+        else:
+            print(f"Error: Failed to export synthetic data to SATG - {message}")
+            return False
+            
+    except Exception as e:
+        print(f"Error exporting synthetic data to SATG: {e}")
+        return False
+
+def get_synthetic_model_status() -> Dict:
+    """Get status of synthetic model training and data.
+    
+    Returns:
+        Dictionary with model status information
+    """
+    global _enhanced_sampler
+    
+    status = {
+        'model_trained': _enhanced_sampler is not None,
+        'model_type': None,
+        'data_loaded': False,
+        'od_pairs': 0,
+        'aircraft_types': 0
+    }
+    
+    if _enhanced_sampler is not None:
+        status.update({
+            'model_type': _enhanced_sampler.model_type,
+            'data_loaded': _enhanced_sampler.preprocessed,
+            'od_pairs': len(_enhanced_sampler.od_categories) if _enhanced_sampler.od_categories is not None else 0,
+            'aircraft_types': sum(len(cats[1]) for cats in _enhanced_sampler.ac_type_dists.values()) if _enhanced_sampler.ac_type_dists else 0
+        })
+    
+    return status
+
+def traffixgen_create_and_run_synthetic_scenario(scenario_name: str) -> bool:
+    """Create and run a synthetic scenario using loaded SATG data.
+    
+    Args:
+        scenario_name: Name for the scenario file
+        
+    Returns:
+        bool: True if scenario created and run successfully
+    """
+    try:
+        from . import SATG
+        
+        # Create and run the scenario using Historic Sampling methods
+        success = SATG.SATG_HS_RUN(scenario_name)
+        
+        if success:
+            print(f"Created and running Historic Sampling scenario: {scenario_name}")
+            return True
+        else:
+            print(f"Failed to create Historic Sampling scenario: {scenario_name}")
+            return False
+            
+    except Exception as e:
+        print(f"Error creating/running synthetic scenario: {e}")
+        return False
+
+def traffixgen_apply_data_filters(filter_params: Dict) -> bool:
+    """Apply filtering parameters to loaded data before training.
+    
+    Args:
+        filter_params: Dictionary containing filtering parameters
+        
+    Returns:
+        bool: True if filters applied successfully, False otherwise
+    """
+    global _enhanced_sampler
+    
+    if _enhanced_sampler is None or _enhanced_sampler.flights_df is None:
+        print("Error: No data loaded. Load data first.")
+        return False
+    
+    try:
+        print("Applying data filters before training...")
+        
+        # Create filtered copies of the data
+        filtered_flights_df = _enhanced_sampler.flights_df.copy()
+        filtered_route_df = _enhanced_sampler.route_df.copy() if _enhanced_sampler.route_df is not None else None
+        
+        # Apply geographic filtering
+        geo_region = filter_params.get('geo_region', 'No Filter')
+        if geo_region != 'No Filter':
+            if geo_region == 'Custom Bounds':
+                lat_bounds = filter_params.get('lat_bounds')
+                lon_bounds = filter_params.get('lon_bounds')
+                if lat_bounds and lon_bounds and filtered_route_df is not None:
+                    lat_min, lat_max = lat_bounds
+                    lon_min, lon_max = lon_bounds
+                    
+                    # Filter route data by geographic bounds
+                    geo_mask = (
+                        (filtered_route_df['Latitude'] >= lat_min) & 
+                        (filtered_route_df['Latitude'] <= lat_max) &
+                        (filtered_route_df['Longitude'] >= lon_min) & 
+                        (filtered_route_df['Longitude'] <= lon_max)
+                    )
+                    filtered_route_df = filtered_route_df[geo_mask]
+                    
+                    # Filter flights data to include only flights with route points in bounds
+                    valid_flight_ids = filtered_route_df['ECTRL ID'].unique()
+                    filtered_flights_df = filtered_flights_df[filtered_flights_df['ECTRL ID'].isin(valid_flight_ids)]
+            
+            elif geo_region in ['Europe', 'North America', 'Asia-Pacific']:
+                # Apply predefined regional bounds
+                region_bounds = {
+                    'Europe': {'lat': (35.0, 70.0), 'lon': (-15.0, 35.0)},
+                    'North America': {'lat': (25.0, 60.0), 'lon': (-130.0, -60.0)},
+                    'Asia-Pacific': {'lat': (-10.0, 50.0), 'lon': (100.0, 180.0)}
+                }
+                
+                if geo_region in region_bounds and filtered_route_df is not None:
+                    bounds = region_bounds[geo_region]
+                    lat_min, lat_max = bounds['lat']
+                    lon_min, lon_max = bounds['lon']
+                    
+                    geo_mask = (
+                        (filtered_route_df['Latitude'] >= lat_min) & 
+                        (filtered_route_df['Latitude'] <= lat_max) &
+                        (filtered_route_df['Longitude'] >= lon_min) & 
+                        (filtered_route_df['Longitude'] <= lon_max)
+                    )
+                    filtered_route_df = filtered_route_df[geo_mask]
+                    
+                    valid_flight_ids = filtered_route_df['ECTRL ID'].unique()
+                    filtered_flights_df = filtered_flights_df[filtered_flights_df['ECTRL ID'].isin(valid_flight_ids)]
+        
+        # Apply flight level filtering
+        fl_bounds = filter_params.get('fl_bounds')
+        if fl_bounds and filtered_route_df is not None:
+            fl_min, fl_max = fl_bounds
+            if 'Flight Level' in filtered_route_df.columns:
+                fl_mask = (
+                    (filtered_route_df['Flight Level'] >= fl_min) & 
+                    (filtered_route_df['Flight Level'] <= fl_max)
+                )
+                filtered_route_df = filtered_route_df[fl_mask]
+                
+                valid_flight_ids = filtered_route_df['ECTRL ID'].unique()
+                filtered_flights_df = filtered_flights_df[filtered_flights_df['ECTRL ID'].isin(valid_flight_ids)]
+        
+        # Apply aircraft type filtering
+        ac_filter_mode = filter_params.get('ac_filter_mode', 'All Types')
+        if ac_filter_mode == 'Specific Types':
+            selected_ac_types = filter_params.get('selected_ac_types', [])
+            if selected_ac_types and 'AC Type' in filtered_flights_df.columns:
+                ac_mask = filtered_flights_df['AC Type'].isin(selected_ac_types)
+                filtered_flights_df = filtered_flights_df[ac_mask]
+                
+                # Filter route data to match
+                if filtered_route_df is not None:
+                    valid_flight_ids = filtered_flights_df['ECTRL ID'].unique()
+                    filtered_route_df = filtered_route_df[filtered_route_df['ECTRL ID'].isin(valid_flight_ids)]
+        
+        # Apply OD pair filtering
+        od_filter_mode = filter_params.get('od_filter_mode', 'All Available')
+        if od_filter_mode == 'Specific Pairs':
+            selected_od_pairs = filter_params.get('selected_od_pairs', [])
+            if selected_od_pairs:
+                # Create OD column if it doesn't exist
+                if 'OD' not in filtered_flights_df.columns:
+                    if 'ADEP' in filtered_flights_df.columns and 'ADES' in filtered_flights_df.columns:
+                        filtered_flights_df['OD'] = filtered_flights_df['ADEP'] + '-' + filtered_flights_df['ADES']
+                
+                if 'OD' in filtered_flights_df.columns:
+                    od_mask = filtered_flights_df['OD'].isin(selected_od_pairs)
+                    filtered_flights_df = filtered_flights_df[od_mask]
+                    
+                    # Filter route data to match
+                    if filtered_route_df is not None:
+                        valid_flight_ids = filtered_flights_df['ECTRL ID'].unique()
+                        filtered_route_df = filtered_route_df[filtered_route_df['ECTRL ID'].isin(valid_flight_ids)]
+        
+        # Check if any data remains after filtering
+        if len(filtered_flights_df) == 0:
+            print("Warning: No flights remain after applying filters")
+            return False
+        
+        if filtered_route_df is not None and len(filtered_route_df) == 0:
+            print("Warning: No route points remain after applying filters")
+            return False
+        
+        # Update the sampler with filtered data
+        _enhanced_sampler.flights_df = filtered_flights_df
+        _enhanced_sampler.route_df = filtered_route_df
+        _enhanced_sampler.preprocessed = False  # Force reprocessing
+        
+        print(f"Filtering complete: {len(filtered_flights_df)} flights, {len(filtered_route_df) if filtered_route_df is not None else 0} route points remain")
+        return True
+        
+    except Exception as e:
+        print(f"Error applying data filters: {e}")
+        return False
+
+def traffixgen_get_available_options() -> Tuple[List[str], List[str]]:
+    """Get available OD pairs and aircraft types from loaded data.
+    
+    Returns:
+        Tuple[List[str], List[str]]: (od_pairs, aircraft_types)
+    """
+    global _enhanced_sampler
+    
+    if _enhanced_sampler is None or _enhanced_sampler.flights_df is None:
+        return [], []
+    
+    try:
+        flights_df = _enhanced_sampler.flights_df
+        
+        # Get unique OD pairs
+        od_pairs = []
+        if 'OD' in flights_df.columns:
+            od_pairs = flights_df['OD'].unique().tolist()
+        elif 'ADEP' in flights_df.columns and 'ADES' in flights_df.columns:
+            od_pairs = (flights_df['ADEP'] + '-' + flights_df['ADES']).unique().tolist()
+        
+        # Get unique aircraft types
+        ac_types = []
+        if 'AC Type' in flights_df.columns:
+            ac_types = flights_df['AC Type'].unique().tolist()
+        
+        return od_pairs, ac_types
+        
+    except Exception as e:
+        print(f"Error getting available options: {e}")
+        return [], []
+
+def traffixgen_generate_synthetic_trajectories_filtered(gen_params: Dict) -> List[Dict]:
+    """Generate synthetic flight trajectories with filtering parameters.
+    
+    Args:
+        gen_params: Dictionary containing all generation and filtering parameters
+        
+    Returns:
+        List of flight dictionaries with trajectory data
+    """
+    global _enhanced_sampler
+    
+    if _enhanced_sampler is None:
+        print("Error: Models not trained. Call traffixgen_train_synthetic_models first.")
+        return []
+    
+    try:
+        n_flights = gen_params.get('n_flights', 50)
+        n_points = gen_params.get('n_points', 200)
+        
+        print(f"Generating {n_flights} synthetic trajectories with filters...")
+        
+        # Apply filtering to the data before generation
+        filtered_sampler = _apply_generation_filters(_enhanced_sampler, gen_params)
+        
+        if filtered_sampler is None:
+            print("Warning: No valid data after applying filters")
+            return []
+        
+        # Generate trajectories using filtered sampler
+        trajectories = filtered_sampler.sample_trajectories(n_flights, n_points)
+        
+        if not trajectories:
+            print("Warning: No valid trajectories generated with current filters")
+            return []
+        
+        # Convert to JSON-friendly format for SATG integration
+        flight_data = []
+        for i, (od, ac_type, traj) in enumerate(trajectories):
+            origin, dest = od.split('-') if '-' in od else (od[:4], od[4:])
+            
+            # Create waypoints from trajectory
+            waypoints = []
+            for j in range(len(traj)):
+                waypoint = {
+                    'time': float(traj['elapsed_time'][j]),
+                    'latitude': float(traj['Latitude'][j]),
+                    'longitude': float(traj['Longitude'][j]),
+                    'altitude': float(traj['Flight Level'][j]) * 100,  # Convert to feet
+                    'ground_speed': float(traj['ground_speed'][j]),
+                    'heading': float(traj['heading'][j])
+                }
+                waypoints.append(waypoint)
+            
+            # Generate realistic callsign
+            callsign = _generate_callsign(f"SYN{origin}", i + 1000)
+            
+            flight_info = {
+                'id': i + 1,
+                'callsign': callsign,
+                'aircraft_type': ac_type,
+                'origin': origin,
+                'destination': dest,
+                'od_pair': od,
+                'waypoints': waypoints,
+                'synthetic': True,  # Mark as synthetic data
+                'generated_at': datetime.now().isoformat(),
+                'filters_applied': gen_params  # Store filter info
+            }
+            flight_data.append(flight_info)
+        
+        print(f"Generated {len(flight_data)} filtered synthetic trajectories successfully!")
+        return flight_data
+        
+    except Exception as e:
+        print(f"Error generating filtered synthetic trajectories: {e}")
+        return []
+
+def _apply_generation_filters(sampler: EnhancedFlightTrajectorySampler, gen_params: Dict) -> EnhancedFlightTrajectorySampler:
+    """Apply filtering parameters to the sampler data.
+    
+    Args:
+        sampler: The original enhanced sampler
+        gen_params: Generation parameters including filters
+        
+    Returns:
+        Filtered sampler or None if no data remains
+    """
+    if sampler.flights_df is None:
+        return None
+    
+    try:
+        # Create a copy to filter
+        filtered_sampler = EnhancedFlightTrajectorySampler()
+        filtered_sampler.flights_df = sampler.flights_df.copy()
+        filtered_sampler.route_df = sampler.route_df.copy() if sampler.route_df is not None else None
+        filtered_sampler.model_type = sampler.model_type
+        filtered_sampler.state_space = sampler.state_space
+        
+        df = filtered_sampler.flights_df
+        
+        # Apply OD filtering
+        od_mode = gen_params.get('od_mode', 'All Available')
+        if od_mode == 'Specific Pairs':
+            selected_pairs = gen_params.get('selected_od_pairs', [])
+            if selected_pairs:
+                if 'OD' in df.columns:
+                    df = df[df['OD'].isin(selected_pairs)]
+                else:
+                    # Create OD column and filter
+                    df['OD'] = df['ADEP'] + '-' + df['ADES']
+                    df = df[df['OD'].isin(selected_pairs)]
+        
+        elif od_mode == 'Distance Range':
+            min_dist = gen_params.get('min_distance', 0)
+            max_dist = gen_params.get('max_distance', 10000)
+            # Note: This would require distance calculation between airports
+            # For now, we'll skip distance filtering as it requires airport coordinates
+            
+        # Apply aircraft type filtering
+        ac_mode = gen_params.get('ac_mode', 'All Types')
+        if ac_mode == 'Specific Types':
+            selected_types = gen_params.get('selected_ac_types', [])
+            if selected_types and 'AC Type' in df.columns:
+                df = df[df['AC Type'].isin(selected_types)]
+        
+        elif ac_mode == 'Performance Category':
+            # This would require aircraft performance categorization
+            # For now, we'll skip this filter
+            pass
+        
+        # Apply temporal filtering (if time columns exist)
+        # This would require proper time column handling
+        
+        if len(df) == 0:
+            print("Warning: No flights remain after filtering")
+            return None
+        
+        filtered_sampler.flights_df = df
+        filtered_sampler.preprocessed = False  # Force reprocessing
+        
+        # Reprocess the filtered data
+        if hasattr(filtered_sampler, 'preprocess'):
+            filtered_sampler.preprocess()
+        
+        return filtered_sampler
+        
+    except Exception as e:
+        print(f"Error applying filters: {e}")
+        return sampler  # Return original on error
