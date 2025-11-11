@@ -28,7 +28,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Union, Type
 from pathlib import Path
 import pickle
 from datetime import datetime
@@ -38,6 +38,115 @@ import bluesky as bs
 from bluesky import stack
 from bluesky.stack import command
 from bluesky.tools import geo
+
+# ============================================================================
+# METRIC FUNCTIONS
+# ============================================================================
+
+def r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Compute the R² score for a given set of true and predicted values.
+
+    Parameters
+    ----------
+    y_true : numpy.ndarray
+        The true values.
+    y_pred : numpy.ndarray
+        The predicted values.
+
+    Returns
+    -------
+    float
+        The R² score (1.0 is perfect prediction, 0.0 is average random prediction).
+
+    Notes
+    -----
+    This function computes the R² score, also known as the coefficient of determination.
+    It is a measure of how well the predicted values fit the true values.
+    """
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    return 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
+
+def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Compute the Root Mean Squared Error (RMSE) between true and predicted values.
+
+    Parameters
+    ----------
+    y_true : numpy.ndarray
+        The true values.
+    y_pred : numpy.ndarray
+        The predicted values.
+
+    Returns
+    -------
+    float
+        The Root Mean Squared Error (RMSE) between true and predicted values.
+
+    Notes
+    -----
+    The RMSE is a measure of how well the predicted values fit the true values.
+    It is a measure of the average magnitude of the errors without considering their direction.
+    """
+    return np.sqrt(np.mean((y_true - y_pred) ** 2))
+
+def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Compute Mean Absolute Error (MAE) between true and predicted values.
+
+    Parameters
+    ----------
+    y_true : numpy.ndarray
+        The true values.
+    y_pred : numpy.ndarray
+        The predicted values.
+
+    Returns
+    -------
+    float
+        The Mean Absolute Error (MAE) between true and predicted values.
+
+    Notes
+    -----
+    The MAE is a measure of how well the predicted values fit the true values.
+    It is a measure of the average magnitude of the errors without considering their direction.
+    """
+    return np.mean(np.abs(y_true - y_pred))
+
+def mape(y_true: np.ndarray, y_pred: np.ndarray, epsilon: float = 1e-8) -> float:
+    """
+    Compute the Mean Absolute Percentage Error (MAPE) between true and predicted values.
+
+    Parameters
+    ----------
+    y_true : numpy.ndarray
+        The true values.
+    y_pred : numpy.ndarray
+        The predicted values.
+    epsilon : float, optional
+        A small value added to the true values to avoid division by zero.
+
+    Returns
+    -------
+    float
+        The Mean Absolute Percentage Error (MAPE) between true and predicted values.
+
+    Notes
+    -----
+    The MAPE is a measure of how well the predicted values fit the true values.
+    It is a measure of the average magnitude of the errors, relative to the true values.
+    """
+    return np.mean(np.abs((y_true - y_pred) / (y_true + epsilon))) * 100
+
+def compute_elapsed_time_per_flight(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute elapsed time (seconds) for each flight individually.
+    Each flight starts at t=0, preserving relative times.
+    """
+    df = df.copy()
+    df["elapsed_time"] = df.groupby("ECTRL ID")["Time Over"].transform(lambda x: (x - x.min()))
+    return df
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -248,26 +357,46 @@ class FlightTrajectorySampler:
         self.flights_df = flights_df.copy()
         self.route_df = route_df.copy()
         self.state_space = None
-        self.od_dist = None
+        self.od_dist_obj = None
+        self.od_categories = None
         self.ac_type_dists = None
+        self.dep_time_dists = None
         self.preprocessed = False
         
-    def preprocess(self):
-        """Preprocess data and fit distributions."""
-        # Create OD column
+    def preprocess(self, criterion: str = "log_likelihood"):
+        """
+        Preprocess the flight data and fit distributions over origin-destination (OD) pairs and aircraft types.
+
+        Parameters
+        ----------
+        criterion : str, optional
+            The criterion to use when fitting distributions.
+            Defaults to "log_likelihood".
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        This method must be called before sampling flight trajectories.
+        """
+        # Create origin-destination (OD) column
         self.flights_df["OD"] = self.flights_df["ADEP"] + "-" + self.flights_df["ADES"]
         
-        # Convert time to seconds if needed
-        if not pd.api.types.is_numeric_dtype(self.route_df["Time Over"]):
-            self.route_df["Time Over"] = pd.to_datetime(self.route_df["Time Over"])
-            self.route_df["Time Over"] = (
-                self.route_df["Time Over"].dt.hour * 3600 +
-                self.route_df["Time Over"].dt.minute * 60 +
-                self.route_df["Time Over"].dt.second
-            )
-            
-        # Fit distributions
-        self._create_distributions()
+        # Compute departure times
+        self.compute_departure_times()
+        
+        # Convert "Time Over" column to seconds
+        self.route_df["Time Over"] = pd.to_datetime(self.route_df["Time Over"])
+        self.route_df["Time Over"] = (
+            self.route_df["Time Over"].dt.hour * 3600 +
+            self.route_df["Time Over"].dt.minute * 60 +
+            self.route_df["Time Over"].dt.second
+        )
+        
+        # Fit OD and AC type distributions  
+        self.create_od_distributions(criterion=criterion)
         self.preprocessed = True
         
     def _create_distributions(self):
@@ -277,58 +406,273 @@ class FlightTrajectorySampler:
         od_codes, self.od_categories = pd.factorize(od_series)
         self.od_dist = fit_simple_distribution(od_codes)
         
-        # AC type distributions per OD
+        # AC type distributions per OD and departure time distributions per (OD, AC Type)
         self.ac_type_dists = {}
+        self.dep_time_dists = {}
+        
         for od_label in pd.unique(od_series):
-            mask = od_series == od_label
-            ac_types = self.flights_df.loc[mask, "AC Type"]
+            mask_od = od_series == od_label
+            ac_types = self.flights_df.loc[mask_od, "AC Type"]
             ac_codes, ac_categories = pd.factorize(ac_types)
             ac_dist = fit_simple_distribution(ac_codes)
             self.ac_type_dists[od_label] = (ac_dist, ac_categories)
             
-    def initialize_state_space(self, state_space_cls, model_cls, 
-                             model_kwargs: Optional[Dict] = None):
-        """Initialize the state space model."""
+            # Departure time distributions per (OD, AC Type)
+            for ac_type in pd.unique(ac_types):
+                mask_od_ac = mask_od & (self.flights_df["AC Type"] == ac_type)
+                dep_times = self.flights_df.loc[mask_od_ac, "Departure Time"]
+
+                if dep_times.empty or dep_times.isna().all():
+                    continue
+                
+                # Fit simple distribution for departure times
+                dep_dist = fit_simple_distribution(dep_times.to_numpy())
+                self.dep_time_dists[(od_label, ac_type)] = dep_dist
+    
+    def compute_departure_times(self):
+        """
+        Computes departure times for all flights in the route data.
+        
+        This method first ensures that the 'Time Over' column is in datetime format.
+        Then, it groups the route data by 'ECTRL ID', takes the minimum 'Time Over' per group,
+        and resets the index. The resulting DataFrame is then renamed to replace 'Time Over'
+        with 'Departure Time'. Finally, the 'Departure Time' is converted to seconds since
+        midnight and merged back into the flights_df DataFrame.
+        """
+        self.route_df["Time Over"] = pd.to_datetime(self.route_df["Time Over"], errors="coerce")
+
+        # Get first Time Over (departure time) per flight
+        dep_times = (
+            self.route_df.groupby("ECTRL ID")["Time Over"]
+            .min()
+            .reset_index()
+            .rename(columns={"Time Over": "Departure Time"})
+        )
+
+        # Convert to seconds since midnight
+        dep_times["Departure Time"] = (
+            dep_times["Departure Time"].dt.hour * 3600
+            + dep_times["Departure Time"].dt.minute * 60
+            + dep_times["Departure Time"].dt.second
+        )
+
+        # Merge back into flights_df
+        self.flights_df = self.flights_df.merge(dep_times, on="ECTRL ID", how="left")
+
+    def initialize_state_space(self, state_space_cls: Type, model_cls: Optional[Type] = None, 
+                             model_kwargs: Optional[Dict[str, Any]] = None, **kwargs):
+        """
+        Initialize the flight state space.
+
+        Parameters
+        ----------
+        state_space_cls : Type
+            The class of the flight state space to initialize.
+        model_cls : Optional[Type], optional
+            The class of the tree-based regressor model to use.
+            Defaults to None.
+        model_kwargs : Optional[Dict[str, Any]], optional
+            Additional keyword arguments to pass to the model's constructor.
+            Defaults to None.
+        **kwargs
+            Additional keyword arguments to pass to the state space's constructor.
+        """
+        if self.state_space is not None:
+            raise ValueError("State space is already initialized.")
+
+        if model_cls is None:
+            raise ValueError("Model class must be provided.")
+
         if not self.preprocessed:
             self.preprocess()
-            
+
+        model_kwargs = model_kwargs or {}
+
         self.state_space = state_space_cls(
-            self.flights_df, self.route_df, model_cls, model_kwargs
+            self.flights_df,
+            self.route_df,
+            model_cls=model_cls,
+            model_kwargs=model_kwargs,
+            **kwargs
         )
         
     def sample_od_ac(self, n_samples: int = 1) -> Tuple[List[str], List[str]]:
-        """Sample OD pairs and aircraft types."""
+        """
+        Sample origin-destination (OD) pairs and aircraft types.
+
+        Parameters
+        ----------
+        n_samples : int, optional
+            The number of OD + AC Type combinations to sample.
+            Defaults to 1.
+
+        Returns
+        -------
+        Tuple[List[str], List[str]]
+            A tuple containing two lists: the first contains the sampled OD labels,
+            and the second contains the corresponding aircraft type labels.
+        """
         # Sample ODs
-        od_indices = self.od_dist.sample(n_samples).astype(int)
+        od_indices = self.od_dist_obj.sample(n_samples).astype(int)  # get indices
         ods_sampled = [self.od_categories[i] for i in od_indices]
         
-        # Sample aircraft types
         acs_sampled = []
-        for od in ods_sampled:
-            dist, categories = self.ac_type_dists[od]
-            ac_index = int(dist.sample(1)[0])
+        for od_sampled in ods_sampled:
+            dist_obj, categories = self.ac_type_dists[od_sampled]
+            ac_index = int(dist_obj.sample(1)[0])
             acs_sampled.append(categories[ac_index])
             
         return ods_sampled, acs_sampled
+    
+    def sample_departure_times(self, ods: List[str], acs: List[str]) -> np.ndarray:
+        """
+        Sample departure times (in seconds since midnight) for each (OD, AC Type) pair.
+
+        Parameters
+        ----------
+        ods : List[str]
+            List of origin-destination pairs.
+        acs : List[str]
+            List of aircraft types corresponding to each OD pair.
+
+        Returns
+        -------
+        np.ndarray
+            Array of sampled departure times (seconds since midnight).
+        """
+        dep_times = []
+
+        for od, ac in zip(ods, acs):
+            key = (od, ac)
+
+            # If we don't have a fitted distribution, fallback to uniform [0, 86400)
+            if self.dep_time_dists is None or key not in self.dep_time_dists:
+                dep_times.append(np.random.uniform(0, 86400))
+            else:
+                dist_obj = self.dep_time_dists[key]
+                dep_time = dist_obj.sample(1)[0]
+                dep_times.append(dep_time)
+
+        return np.array(dep_times)
         
-    def sample_trajectories(self, n_samples: int = 1, n_points: int = 200) -> List[Tuple[str, str, FlightTrajectory]]:
-        """Sample flight trajectories."""
+    def sample_trajectories(self, n_samples: int = 3, n_points: int = 200, target_cols: Optional[List[str]] = None) -> List[Tuple[str, str, float, FlightTrajectory]]:
+        """
+        Sample flight trajectories given the state space.
+
+        Parameters
+        ----------
+        n_samples : int, optional
+            The number of trajectories to sample.
+            Defaults to 3.
+        n_points : int, optional
+            The number of points in each trajectory.
+            Defaults to 200.
+        target_cols : Optional[List[str]], optional
+            The target columns of the flight trajectory.
+            Defaults to ["Latitude", "Longitude", "Flight Level", "ground_speed", "heading", "vertical_speed", "climb_angle"].
+
+        Returns
+        -------
+        List[Tuple[str, str, float, FlightTrajectory]]
+            A list of tuples containing the OD label, aircraft type label, the departure time (seconds since midnight), and the sampled flight trajectory.
+        """
         if self.state_space is None:
-            raise RuntimeError("State space not initialized")
-            
-        ods, ac_types = self.sample_od_ac(n_samples)
+            raise RuntimeError("State space not initialized. Call initialize_state_space() first.")
+
+        if target_cols is None:
+            target_cols = [
+                "Latitude", "Longitude", "Flight Level",
+                "ground_speed", "heading", "vertical_speed", "climb_angle"
+            ]
+
+        # Take first n_samples of (OD, AC Type) groups
+        ods, ac_types = self.sample_od_ac(n_samples=n_samples)
+        
+        # Sample departure times
+        dep_times = self.sample_departure_times(ods, ac_types)
         
         trajectories = []
-        for od, ac_type in zip(ods, ac_types):
+        for od, ac_type, dep_time in zip(ods, ac_types, dep_times):
             try:
-                traj_array = self.state_space.sample_state(od, ac_type, n_points)
-                traj = FlightTrajectory(traj_array, ["elapsed_time"] + self.state_space.target_cols)
-                trajectories.append((od, ac_type, traj))
+                traj_array = self.state_space.sample_state(od, ac_type, n_points=n_points)
+                traj = FlightTrajectory(traj_array, target_cols)
+                trajectories.append((od, ac_type, dep_time, traj))
             except ValueError as e:
                 print(f"Warning: Could not generate trajectory for {od} {ac_type}: {e}")
                 continue
                 
         return trajectories
+    
+    def compute_metrics(self, samples: List[Tuple[str, str, float, FlightTrajectory]], target_cols: Optional[List[str]] = None, as_dataframe: bool = False) -> Union[Dict[str, Any], pd.DataFrame]:
+        """
+        Compute evaluation metrics for the given samples.
+
+        Parameters
+        ----------
+        samples : List[Tuple[str, str, float, FlightTrajectory]]
+            A list of tuples containing the OD label, aircraft type label, the departure time (seconds since midnight), and the sampled flight trajectory.
+        target_cols : Optional[List[str]], optional
+            The target columns of the flight trajectory.
+            Defaults to ["Latitude", "Longitude", "Flight Level", "ground_speed", "heading"].
+        as_dataframe : bool, optional
+            If True, return the results as a pandas DataFrame.
+            Defaults to False.
+
+        Returns
+        -------
+        Union[Dict[str, Any], pd.DataFrame]
+            A dictionary containing the evaluation metrics for each OD + AC type pair.
+            If as_dataframe is True, returns a pandas DataFrame containing the evaluation metrics.
+        """
+        if target_cols is None:
+            target_cols = ["Latitude", "Longitude", "Flight Level", "ground_speed", "heading"]
+
+        results = {}
+
+        for od, ac_type, dep_time, traj in samples:
+            flight_ids = self.flights_df.loc[
+                (self.flights_df["OD"] == od) & (self.flights_df["AC Type"] == ac_type), "ECTRL ID"
+            ].unique()
+            real_subset = self.route_df[self.route_df["ECTRL ID"].isin(flight_ids)]
+            if real_subset.empty:
+                continue
+
+            real_subset = compute_elapsed_time_per_flight(real_subset)
+            metrics_per_col = {}
+
+            for col in target_cols:
+                if col not in real_subset.columns or col not in traj.columns:
+                    continue
+
+                real_vals = real_subset.groupby("elapsed_time")[col].mean().values
+                model_vals = traj[col][:len(real_vals)]  # match lengths
+
+                metrics_per_col[col] = {
+                    "R2": r2_score(real_vals, model_vals),
+                    "RMSE": rmse(real_vals, model_vals),
+                    "MAE": mae(real_vals, model_vals),
+                    "MAPE": mape(real_vals, model_vals)
+                }
+
+            results[f"{od} ({ac_type})"] = metrics_per_col
+
+        if not as_dataframe:
+            return results
+
+        # Convert to DataFrame for easier viewing
+        rows = []
+        for od_ac_key, col_metrics in results.items():
+            for col, vals in col_metrics.items():
+                row = {
+                    "OD_AC": od_ac_key,
+                    "Column": col,
+                    "R2": vals["R2"],
+                    "RMSE": vals["RMSE"],
+                    "MAE": vals["MAE"],
+                    "MAPE": vals["MAPE"]
+                }
+                rows.append(row)
+        return pd.DataFrame(rows)
 
 # ============================================================================
 # ENHANCED TRAFFIXGEN FUNCTIONALITY (Historic Sampling)
@@ -790,8 +1134,10 @@ class EnhancedFlightTrajectorySampler:
         self.flights_df = None
         self.route_df = None
         self.state_space = None
-        self.od_dist = None
+        self.od_dist_obj = None
+        self.od_categories = None
         self.ac_type_dists = None
+        self.dep_time_dists = None
         self.preprocessed = False
         self.model_type = "tree"
         
@@ -809,6 +1155,9 @@ class EnhancedFlightTrajectorySampler:
         # Create OD column
         self.flights_df["OD"] = self.flights_df["ADEP"] + "-" + self.flights_df["ADES"]
         
+        # Compute departure times
+        self.compute_departure_times()
+        
         # Convert time to numeric if needed
         if not pd.api.types.is_numeric_dtype(self.route_df["Time Over"]):
             # Handle different time formats
@@ -825,24 +1174,134 @@ class EnhancedFlightTrajectorySampler:
                 self.route_df["Time Over"] = self.route_df.get("Sequence Number", 0) * 60
             
         # Fit distributions
-        self._create_distributions()
+        self.create_od_distributions()
         self.preprocessed = True
         
-    def _create_distributions(self):
-        """Create distributions for OD pairs and aircraft types."""
-        # OD distribution
+    def create_od_distributions(self, criterion: str = "log_likelihood"):
+        """
+        Creates distributions over origin-destination (OD) pairs and aircraft types per OD.
+
+        Parameters
+        ----------
+        criterion : str, optional
+            The criterion to use when fitting distributions.
+            Defaults to "log_likelihood".
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        The distributions are stored in the `od_dist_obj`, `od_categories`, and `ac_type_dists` attributes.
+        """
+        # OD factorization
         od_series = self.flights_df["OD"]
         od_codes, self.od_categories = pd.factorize(od_series)
-        self.od_dist = fit_simple_distribution(od_codes)
         
-        # AC type distributions per OD
+        # Fit OD distribution (using simple fitting for BlueSky compatibility)
+        self.od_dist_obj = fit_simple_distribution(od_codes)
+        
+        # Fit AC type distributions per OD and fit dep time distributions per OD and AC type
         self.ac_type_dists = {}
+        self.dep_time_dists = {}
+        
         for od_label in pd.unique(od_series):
-            mask = od_series == od_label
-            ac_types = self.flights_df.loc[mask, "AC Type"]
-            ac_codes, ac_categories = pd.factorize(ac_types)
-            ac_dist = fit_simple_distribution(ac_codes)
-            self.ac_type_dists[od_label] = (ac_dist, ac_categories)
+            mask_od = od_series == od_label
+            sub_types = self.flights_df.loc[mask_od, "AC Type"]
+            
+            sub_codes, sub_categories = pd.factorize(sub_types)
+            sub_type_dist = fit_simple_distribution(sub_codes)
+            self.ac_type_dists[od_label] = (sub_type_dist, sub_categories)
+            
+            # Departure-time distributions per (OD, AC Type)
+            for ac_type in pd.unique(sub_types):
+                mask_od_ac = mask_od & (self.flights_df["AC Type"] == ac_type)
+                dep_times = self.flights_df.loc[mask_od_ac, "Departure Time"]
+
+                if dep_times.empty or dep_times.isna().all():
+                    print(f"[DEBUG] No departure times for {(od_label, ac_type)}")
+                    continue
+                
+                dep_times_array = dep_times.to_numpy()
+                print(f"[DEBUG] Creating distribution for {(od_label, ac_type)}: {len(dep_times_array)} samples")
+                print(f"[DEBUG] Departure time values: {dep_times_array}")
+                
+                # Fit distribution for departure times (continuous data)
+                dep_dist = fit_simple_distribution(dep_times_array)
+                self.dep_time_dists[(od_label, ac_type)] = dep_dist
+                
+                # Test the distribution immediately after creation
+                test_samples = [dep_dist.sample(1)[0] for _ in range(3)]
+                print(f"[DEBUG] Test samples from {(od_label, ac_type)} distribution: {test_samples}")
+    
+    def compute_departure_times(self):
+        """
+        Computes departure times for all flights in the route data.
+        """
+        self.route_df["Time Over"] = pd.to_datetime(self.route_df["Time Over"], errors="coerce")
+
+        # Get first Time Over (departure time) per flight
+        dep_times = (
+            self.route_df.groupby("ECTRL ID")["Time Over"]
+            .min()
+            .reset_index()
+            .rename(columns={"Time Over": "Departure Time"})
+        )
+
+        # Convert to seconds since midnight
+        dep_times["Departure Time"] = (
+            dep_times["Departure Time"].dt.hour * 3600
+            + dep_times["Departure Time"].dt.minute * 60
+            + dep_times["Departure Time"].dt.second
+        )
+
+        # Merge back into flights_df
+        self.flights_df = self.flights_df.merge(dep_times, on="ECTRL ID", how="left")
+    
+    def sample_departure_times(self, ods: List[str], acs: List[str]) -> np.ndarray:
+        """
+        Sample departure times (in seconds since midnight) for each (OD, AC Type) pair.
+        """
+        dep_times = []
+        
+        print(f"[DEBUG] Sampling departure times for {len(ods)} aircraft:")
+        print(f"[DEBUG] ODs: {ods}")
+        print(f"[DEBUG] ACs: {acs}")
+        print(f"[DEBUG] Available distributions: {list(self.dep_time_dists.keys()) if self.dep_time_dists else 'None'}")
+
+        for i, (od, ac) in enumerate(zip(ods, acs)):
+            key = (od, ac)
+            
+            print(f"[DEBUG] Aircraft {i}: Sampling for {key}")
+
+            # If we don't have a fitted distribution, fallback to uniform [0, 86400)
+            if self.dep_time_dists is None or key not in self.dep_time_dists:
+                # Fallback: random time between 6 AM and 10 PM (realistic flight hours)
+                fallback_time = np.random.uniform(6*3600, 22*3600)
+                dep_times.append(fallback_time)
+                print(f"[DEBUG] Aircraft {i}: No distribution for {key}, using fallback: {fallback_time}s ({fallback_time/3600:.1f}h)")
+            else:
+                try:
+                    dist_obj = self.dep_time_dists[key]
+                    print(f"[DEBUG] Aircraft {i}: Found distribution for {key}: {type(dist_obj)}")
+                    if dist_obj is not None:
+                        dep_time = dist_obj.sample(1)[0]
+                        dep_times.append(dep_time)
+                        print(f"[DEBUG] Aircraft {i}: Sampled time: {dep_time}s ({dep_time/3600:.1f}h)")
+                    else:
+                        # Fallback if distribution object is None
+                        fallback_time = np.random.uniform(6*3600, 22*3600)
+                        dep_times.append(fallback_time)
+                        print(f"[DEBUG] Aircraft {i}: Distribution is None, using fallback: {fallback_time}s ({fallback_time/3600:.1f}h)")
+                except Exception as e:
+                    print(f"[DEBUG] Aircraft {i}: Error sampling departure time for {key}: {e}")
+                    fallback_time = np.random.uniform(6*3600, 22*3600)
+                    dep_times.append(fallback_time)
+                    print(f"[DEBUG] Aircraft {i}: Using fallback after error: {fallback_time}s ({fallback_time/3600:.1f}h)")
+
+        print(f"[DEBUG] Final departure times: {dep_times}")
+        return np.array(dep_times)
             
     def initialize_state_space(self, model_type: str = "tree", model_config: Optional[Dict] = None):
         """Initialize the state space model."""
@@ -891,34 +1350,37 @@ class EnhancedFlightTrajectorySampler:
     def sample_od_ac(self, n_samples: int = 1) -> Tuple[List[str], List[str]]:
         """Sample OD pairs and aircraft types."""
         # Sample ODs
-        od_indices = self.od_dist.sample(n_samples).astype(int)
+        od_indices = self.od_dist_obj.sample(n_samples).astype(int)
         ods_sampled = [self.od_categories[i] for i in od_indices]
         
         # Sample aircraft types
         acs_sampled = []
-        for od in ods_sampled:
-            dist, categories = self.ac_type_dists[od]
-            ac_index = int(dist.sample(1)[0])
+        for od_sampled in ods_sampled:
+            dist_obj, categories = self.ac_type_dists[od_sampled]
+            ac_index = int(dist_obj.sample(1)[0])
             acs_sampled.append(categories[ac_index])
             
         return ods_sampled, acs_sampled
         
-    def sample_trajectories(self, n_samples: int = 1, n_points: int = 200) -> List[Tuple[str, str, EnhancedFlightTrajectory]]:
-        """Sample enhanced flight trajectories."""
+    def sample_trajectories(self, n_samples: int = 1, n_points: int = 200) -> List[Tuple[str, str, float, EnhancedFlightTrajectory]]:
+        """Sample enhanced flight trajectories with departure times."""
         if self.state_space is None:
             raise RuntimeError("State space not initialized")
             
         ods, ac_types = self.sample_od_ac(n_samples)
         
+        # Sample departure times
+        dep_times = self.sample_departure_times(ods, ac_types)
+        
         trajectories = []
-        for od, ac_type in zip(ods, ac_types):
+        for od, ac_type, dep_time in zip(ods, ac_types, dep_times):
             try:
                 traj_array = self.state_space.sample_state(od, ac_type, n_points)
                 traj = EnhancedFlightTrajectory(
                     traj_array, 
                     ["elapsed_time"] + self.state_space.target_cols
                 )
-                trajectories.append((od, ac_type, traj))
+                trajectories.append((od, ac_type, dep_time, traj))
             except Exception as e:
                 print(f"Warning: Could not generate trajectory for {od} {ac_type}: {e}")
                 continue
@@ -1080,13 +1542,13 @@ class TraffixGenPlugin(bs.core.Entity):
             
             # Convert to JSON-friendly format for SATG integration
             flight_data = []
-            for i, (od, ac_type, traj) in enumerate(trajectories):
+            for i, (od, ac_type, dep_time, traj) in enumerate(trajectories):
                 origin, dest = od.split('-') if '-' in od else (od[:4], od[4:])
                 
                 waypoints = []
                 for j in range(len(traj)):
                     waypoint = {
-                        'time': float(traj['elapsed_time'][j]),
+                        'time': float(traj['elapsed_time'][j]) + float(dep_time),  # Add departure time offset
                         'latitude': float(traj['Latitude'][j]),
                         'longitude': float(traj['Longitude'][j]),
                         'altitude': float(traj['Flight Level'][j]) * 100,  # Convert to feet
@@ -1102,6 +1564,7 @@ class TraffixGenPlugin(bs.core.Entity):
                     'origin': origin,
                     'destination': dest,
                     'od_pair': od,
+                    'departure_time': float(dep_time),  # Store departure time
                     'waypoints': waypoints
                 }
                 flight_data.append(flight_info)
@@ -2930,14 +3393,15 @@ def traffixgen_generate_synthetic_trajectories(n_flights: int, n_points: int) ->
         
         # Convert to JSON-friendly format for SATG integration
         flight_data = []
-        for i, (od, ac_type, traj) in enumerate(trajectories):
+        for i, (od, ac_type, dep_time, traj) in enumerate(trajectories):
             origin, dest = od.split('-') if '-' in od else (od[:4], od[4:])
             
             # Create waypoints from trajectory
             waypoints = []
             for j in range(len(traj)):
+                # Add departure time offset to each waypoint time
                 waypoint = {
-                    'time': float(traj['elapsed_time'][j]),
+                    'time': float(traj['elapsed_time'][j]) + float(dep_time),  # Add departure time offset
                     'latitude': float(traj['Latitude'][j]),
                     'longitude': float(traj['Longitude'][j]),
                     'altitude': float(traj['Flight Level'][j]) * 100,  # Convert to feet
@@ -2947,7 +3411,7 @@ def traffixgen_generate_synthetic_trajectories(n_flights: int, n_points: int) ->
                 waypoints.append(waypoint)
             
             # Generate realistic callsign
-            callsign = _generate_callsign(f"SYN{origin}", i + 1000)
+            callsign = f"SYN{i + 1:03d}"
             
             flight_info = {
                 'id': i + 1,
@@ -2956,6 +3420,7 @@ def traffixgen_generate_synthetic_trajectories(n_flights: int, n_points: int) ->
                 'origin': origin,
                 'destination': dest,
                 'od_pair': od,
+                'departure_time': float(dep_time),  # Store departure time
                 'waypoints': waypoints,
                 'synthetic': True,  # Mark as synthetic data
                 'generated_at': datetime.now().isoformat()
@@ -3303,14 +3768,15 @@ def traffixgen_generate_synthetic_trajectories_filtered(gen_params: Dict) -> Lis
         
         # Convert to JSON-friendly format for SATG integration
         flight_data = []
-        for i, (od, ac_type, traj) in enumerate(trajectories):
+        for i, (od, ac_type, dep_time, traj) in enumerate(trajectories):
             origin, dest = od.split('-') if '-' in od else (od[:4], od[4:])
             
             # Create waypoints from trajectory
             waypoints = []
             for j in range(len(traj)):
+                # Add departure time offset to each waypoint time
                 waypoint = {
-                    'time': float(traj['elapsed_time'][j]),
+                    'time': float(traj['elapsed_time'][j]) + float(dep_time),  # Add departure time offset
                     'latitude': float(traj['Latitude'][j]),
                     'longitude': float(traj['Longitude'][j]),
                     'altitude': float(traj['Flight Level'][j]) * 100,  # Convert to feet
@@ -3320,7 +3786,7 @@ def traffixgen_generate_synthetic_trajectories_filtered(gen_params: Dict) -> Lis
                 waypoints.append(waypoint)
             
             # Generate realistic callsign
-            callsign = _generate_callsign(f"SYN{origin}", i + 1000)
+            callsign = f"SYN{i + 1:03d}"
             
             flight_info = {
                 'id': i + 1,
@@ -3329,6 +3795,7 @@ def traffixgen_generate_synthetic_trajectories_filtered(gen_params: Dict) -> Lis
                 'origin': origin,
                 'destination': dest,
                 'od_pair': od,
+                'departure_time': float(dep_time),  # Store departure time
                 'waypoints': waypoints,
                 'synthetic': True,  # Mark as synthetic data
                 'generated_at': datetime.now().isoformat(),

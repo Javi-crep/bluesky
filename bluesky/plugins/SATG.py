@@ -6128,16 +6128,20 @@ def SATG_SYNTH_RUN(scenario_name: str):
 # but are specifically designed for Historic Sampling synthetic data
 
 def SATG_HS_MAKE(name: str) -> bool:
-    """Create Historic Sampling scenario file using proven Realistic Replay logic."""
-    # Use the same data that Realistic Replay uses (STATE.flights and STATE.base_points)
-    # The synthetic data was already exported to these variables by traffixgen_export_synthetic_to_satg
+    """Create Historic Sampling scenario file using synthetic data from TraffixGen."""
+    global _synthetic_flights, _synthetic_points
     
-    if not STATE.loaded_ok:
-        print("[SATG HS] Error: No data loaded. Historic Sampling data should be exported to Realistic Replay pipeline first.")
-        return False
-    
-    if not STATE.flights or not STATE.base_points:
-        print("[SATG HS] Error: No flights or points data available in Realistic Replay pipeline.")
+    # Check for synthetic data first (this is the preferred source for Historic Sampling)
+    if _synthetic_flights and _synthetic_points:
+        print(f"[SATG HS] Using synthetic data: {len(_synthetic_flights)} flights, {len(_synthetic_points)} points")
+        flights_data = _synthetic_flights
+        points_data = _synthetic_points
+    elif STATE.loaded_ok and STATE.flights and STATE.base_points:
+        print("[SATG HS] Using realistic replay data")
+        flights_data = STATE.flights
+        points_data = STATE.base_points
+    else:
+        print("[SATG HS] Error: No data available. Either load synthetic data via TraffixGen or historic data via Realistic Replay.")
         return False
     
     try:
@@ -6166,20 +6170,37 @@ def SATG_HS_MAKE(name: str) -> bool:
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
         
-        # Use the same data processing pipeline as Realistic Replay
-        points = _get_points_for_run()  # Use same function as Realistic Replay
-        print(f"[DEBUG] Historic Sampling: _get_points_for_run() returned {len(points) if points else 0} aircraft")
+        # Convert synthetic data to the same format as Realistic Replay
+        print("[SATG HS] Converting synthetic data to scenario format...")
+        
+        # Use the same _build_base_points function that Realistic Replay uses
+        points = _build_base_points(points_data)
+        
+        # Create flights dictionary in the same format as Realistic Replay
+        flights = {}
+        for flight in flights_data:
+            callsign = flight.get('Callsign', flight.get('ECTRL ID', 'UNKNOWN'))
+            # Match the exact format used by Realistic Replay
+            flights[callsign] = {
+                'AC Type': flight.get('AC Type', ''),
+                'ADEP': flight.get('ADEP', ''),
+                'ADES': flight.get('ADES', ''),
+                'Callsign': flight.get('Callsign', callsign),  # Keep original data for reference
+                'Synthetic': flight.get('Synthetic', True)
+            }
+            
+        print(f"[SATG HS] Prepared {len(flights)} flights and {len(points)} point groups")
 
         # When appending, avoid duplicate callsigns (same logic as Realistic Replay)
         used = _scan_existing_acids(scn_path)  # Scan the file we just created
         name_map = {}  # original_acid -> new_acid
 
         # Compute deterministic mapping (same logic as Realistic Replay)
-        print(f"[DEBUG] Historic Sampling: STATE.flights contains {len(STATE.flights)} flights: {list(STATE.flights.keys())}")
+        print(f"[DEBUG] Historic Sampling: flights contains {len(flights)} flights: {list(flights.keys())}")
         print(f"[DEBUG] Historic Sampling: Points contains {len(points)} aircraft: {list(points.keys())}")
         
-        for acid in STATE.flights.keys():
-            meta = STATE.flights[acid]
+        for acid in flights.keys():
+            meta = flights[acid]
             # Prefer callsign from metadata if available, otherwise use acid
             preferred_name = meta.get('Callsign', acid) if meta.get('Callsign') else acid
             
@@ -6194,24 +6215,41 @@ def SATG_HS_MAKE(name: str) -> bool:
 
         # Generate aircraft using the exact same logic as Realistic Replay with time diversity
         print(f"[DEBUG] Historic Sampling: Starting aircraft generation loop...")
-        aircraft_list = list(STATE.flights.items())
+        aircraft_list = list(flights.items())
+        
+        # Step 1: Collect all departure times for normalization
+        departure_times = []
+        valid_aircraft = []
+        for acid, meta in aircraft_list:
+            if acid in points and points[acid]:
+                segs = points[acid]
+                r0 = segs[0]
+                departure_times.append(r0['t'])
+                valid_aircraft.append((acid, meta))
+        
+        # Step 2: Find earliest departure time for normalization
+        if departure_times:
+            earliest_departure = min(departure_times)
+            print(f"[DEBUG] Historic Sampling: Normalizing departure times - earliest: {earliest_departure}s")
+        else:
+            earliest_departure = 0
+            print(f"[DEBUG] Historic Sampling: No valid departure times found")
+        
         with open(scn_path, "a", encoding="utf-8") as f:
-            for aircraft_idx, (acid, meta) in enumerate(aircraft_list):
+            for aircraft_idx, (acid, meta) in enumerate(valid_aircraft):
                 print(f"[DEBUG] Historic Sampling: Processing aircraft {acid}")
                 print(f"[DEBUG] Historic Sampling: Metadata: {meta}")
                 # Use the pre-computed unique name from name_map
                 acid_out = name_map.get(acid, acid)
                 print(f"[DEBUG] Historic Sampling: Using unique callsign: '{acid_out}'")
 
-                if acid not in points or not points[acid]:
-                    print(f"[DEBUG] Historic Sampling: Skipping {acid} - no points data")
-                    continue
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid} has {len(points[acid])} points, using callsign: {acid_out}")
                 segs = points[acid]; r0 = segs[0]; last = segs[-1]
-                # Add time diversity - spread aircraft every 2-3 minutes for Historic Sampling
+                
+                # Step 3: Use normalized departure time (preserve distribution-based timing)
                 base_time = r0['t']
-                time_offset = aircraft_idx * 150  # 2.5 minutes between aircraft
-                adjusted_time = base_time + time_offset
+                adjusted_time = base_time - earliest_departure  # Normalize to start at 0
+                
+                print(f"[DEBUG] Historic Sampling: Aircraft {acid} times: base={base_time}s, final={adjusted_time}s")
                 t0 = timedelta(seconds=adjusted_time); stamp0 = _stamp(t0)
                 fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
                 cas0 = _gs_to_cas_kt(r0['gs'], fl0)
