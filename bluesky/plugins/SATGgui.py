@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QSlider, QListWidget, QListWidgetItem, QTextEdit,
     QDialog, QDialogButtonBox, QTimeEdit, QDateEdit, QScrollArea, QRadioButton, QButtonGroup,
     QInputDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QFrame, QSplitter
+    QAbstractItemView, QFrame, QSplitter, QProgressDialog, QApplication
 )
 from PyQt6 import sip
 from bluesky import stack
@@ -2943,6 +2943,8 @@ class TopStrip(QWidget):
         config['n_estimators'] = tab_widget.n_estimators_spin.value()
         config['max_depth'] = tab_widget.max_depth_spin.value()
         config['learning_rate'] = tab_widget.learning_rate_spin.value()
+        config['min_child_weight'] = tab_widget.min_child_weight_spin.value()
+        config['subsample'] = tab_widget.subsample_spin.value()
         config['kde_bandwidth'] = tab_widget.kde_bandwidth_spin.value()
         config['kde_kernel'] = tab_widget.kde_kernel_combo.currentText()
         config['kde_atol'] = tab_widget.kde_atol_spin.value()
@@ -2951,9 +2953,13 @@ class TopStrip(QWidget):
         config['derivative_smoothing'] = tab_widget.derivative_smoothing_spin.value()
         config['derivative_kernel'] = tab_widget.derivative_kernel_combo.currentText()
         
+        # Trajectory parameters
+        config['n_points'] = tab_widget.n_points_spin.value()
+        config['smoothing_alpha'] = tab_widget.smoothing_alpha_spin.value()
+        config['interpolation_points'] = tab_widget.interpolation_spin.value()
+        
         # Generation parameters
         config['n_flights'] = tab_widget.n_flights_spin.value()
-        config['n_points'] = tab_widget.n_points_spin.value()
         
         # Scenario parameters
         config['scn_name'] = tab_widget.scn_name.text()
@@ -3036,6 +3042,10 @@ class TopStrip(QWidget):
                 tab_widget.max_depth_spin.setValue(config_data['max_depth'])
             if 'learning_rate' in config_data:
                 tab_widget.learning_rate_spin.setValue(config_data['learning_rate'])
+            if 'min_child_weight' in config_data:
+                tab_widget.min_child_weight_spin.setValue(config_data['min_child_weight'])
+            if 'subsample' in config_data:
+                tab_widget.subsample_spin.setValue(config_data['subsample'])
             if 'kde_bandwidth' in config_data:
                 tab_widget.kde_bandwidth_spin.setValue(config_data['kde_bandwidth'])
             if 'kde_kernel' in config_data:
@@ -3055,11 +3065,15 @@ class TopStrip(QWidget):
                 if index >= 0:
                     tab_widget.derivative_kernel_combo.setCurrentIndex(index)
             
-            # Apply generation parameters
+            # Apply generation and trajectory parameters
             if 'n_flights' in config_data:
                 tab_widget.n_flights_spin.setValue(config_data['n_flights'])
             if 'n_points' in config_data:
                 tab_widget.n_points_spin.setValue(config_data['n_points'])
+            if 'smoothing_alpha' in config_data:
+                tab_widget.smoothing_alpha_spin.setValue(config_data['smoothing_alpha'])
+            if 'interpolation_points' in config_data:
+                tab_widget.interpolation_spin.setValue(config_data['interpolation_points'])
             
             # Apply scenario parameters
             if 'scn_name' in config_data:
@@ -5037,9 +5051,9 @@ class EurocontrolFilterDialog(QDialog):
         button_layout.addStretch()  # Push OK/Cancel to the right
         
         # OK button
-        ok_btn = QPushButton("Apply Filters")
-        ok_btn.setToolTip("Apply the configured filters and close dialog")
-        ok_btn.clicked.connect(self._apply_filters_and_close)
+        ok_btn = QPushButton("OK")
+        ok_btn.setToolTip("Save filter configuration and close dialog")
+        ok_btn.clicked.connect(self._save_and_close)
         ok_btn.setAutoDefault(False)
         button_layout.addWidget(ok_btn)
         
@@ -5676,7 +5690,7 @@ class EurocontrolFilterDialog(QDialog):
         
         return filters
 
-    def _apply_filters_and_close(self):
+    def _save_and_close(self):
         """Apply filters and close dialog (for non-modal operation)"""
         try:
             # Get filter settings
@@ -7534,17 +7548,8 @@ class HistoricSamplingTab(QWidget):
                 'interpolation_points': self.interpolation_spin.value()
             }
             
-            # Get filters if configured
-            filters = getattr(self, 'historic_filters', None)
-            
-            # Apply filters before training if they exist
-            if filters:
-                # First apply the filters to the data
-                filter_success = traffixgen.traffixgen_apply_filters(filters)
-                if not filter_success:
-                    return False
-                    
-            # Train models via TraffixGen (data is already filtered if filters were applied)
+            # Note: Filters are now applied earlier in the workflow, not here
+            # Train models via TraffixGen (data should already be filtered)
             print(f"Training models with files:")
             print(f"  Flights: {self._flights_file}")
             print(f"  Filed: {self._filed_file}")
@@ -7682,9 +7687,15 @@ class HistoricSamplingTab(QWidget):
             
         return current_config != last_config
     
-    def _execute_complete_workflow(self):
-        """Execute the complete automated workflow: train -> generate -> return success."""
+    def _execute_complete_workflow(self, progress_dialog=None):
+        """Execute the complete automated workflow: load data -> apply filters -> train -> generate -> return success."""
         try:
+            def update_progress(text, value):
+                if progress_dialog:
+                    progress_dialog.setLabelText(text)
+                    progress_dialog.setValue(value)
+                    QApplication.processEvents()
+            
             # Validate required files are loaded (same logic as Realistic Replay)
             if not getattr(self, '_flights_file', ''):
                 QMessageBox.warning(self, "Files Required", 
@@ -7704,30 +7715,66 @@ class HistoricSamplingTab(QWidget):
                                   "Use 'Browse...' to select the required data files.")
                 return False
             
-            # Step 1: Train models if not trained or configuration changed
-            if not self._model_trained or self._has_model_config_changed():
-                if self._has_model_config_changed():
-                    print("Model configuration changed, retraining models...")
-                else:
-                    print("Training models...")
-                    
-                success = self._train_models()
-                if not success:
-                    QMessageBox.critical(self, "Training Failed", "Failed to train models.")
+            # Step 0: Ensure data is loaded into TraffixGen (critical for model training)
+            update_progress("Loading historic flight data...", 15)
+            print("Loading data into TraffixGen...")
+            from . import traffixgen
+            
+            # Check if data is already loaded
+            data_already_loaded = (hasattr(traffixgen, '_dataset_collection') and 
+                                 traffixgen._dataset_collection is not None)
+            
+            if not data_already_loaded:
+                # Load data using the same approach as Configure Filters dialog
+                fir_file = getattr(self, '_fir_file', '') or ''
+                load_success = traffixgen.traffixgen_load_eurocontrol(
+                    self._flights_file,
+                    self._filed_file,
+                    self._actual_file,
+                    fir_file
+                )
+                
+                if not load_success:
+                    QMessageBox.critical(self, "Data Loading Failed", 
+                                       "Failed to load historic flight data into TraffixGen.\n\n"
+                                       "Please check your data files and try again.")
                     return False
+                print("Data loaded successfully into TraffixGen")
+            else:
+                print("Data already loaded in TraffixGen")
             
-            # Step 2: Generate trajectories (regenerate if model changed or no data available)
-            need_regeneration = (not hasattr(self, '_synthetic_data') or 
-                               not self._synthetic_data or 
-                               self._has_model_config_changed())
-            
-            if need_regeneration:
-                print("Generating synthetic trajectories...")
-                success = self._auto_generate_trajectories()
-                if not success:
-                    QMessageBox.critical(self, "Generation Failed", "Failed to generate synthetic trajectories.")
+            # Step 1: Apply filters if they are configured
+            update_progress("Applying data filters...", 25)
+            filters = getattr(self, 'historic_filters', None)
+            if filters:
+                print("Applying historic data filters...")
+                filter_success = traffixgen.traffixgen_apply_filters(filters)
+                if not filter_success:
+                    QMessageBox.critical(self, "Filter Error", "Failed to apply data filters.")
                     return False
+                print("Filters applied successfully")
+            else:
+                print("No filters configured, proceeding with all data")
             
+            # Step 2: Train models if not trained or configuration changed
+            update_progress("Training machine learning models...", 40)
+            # FORCE RETRAINING: Always train models to ensure fresh results
+            print("Training models (forced for fresh results)...")
+            success = self._train_models()
+            if not success:
+                QMessageBox.critical(self, "Training Failed", "Failed to train models.")
+                return False
+            
+            # Step 3: Generate trajectories (always regenerate for fresh scenarios)
+            update_progress("Generating synthetic trajectories...", 60)
+            # FORCE REGENERATION: Always generate new trajectories
+            print("Generating synthetic trajectories (forced for fresh scenarios)...")
+            success = self._auto_generate_trajectories()
+            if not success:
+                QMessageBox.critical(self, "Generation Failed", "Failed to generate synthetic trajectories.")
+                return False
+            
+            update_progress("Workflow completed successfully!", 75)
             return True
             
         except Exception as e:
@@ -7735,19 +7782,108 @@ class HistoricSamplingTab(QWidget):
             return False
     
     def _make(self):
-        """Create synthetic trajectory scenario."""
+        """Create synthetic trajectory scenario via complete automated workflow."""
+        # Validate scenario name
         name = self.scn_name.text().strip()
         if not name:
             QMessageBox.warning(self, "Scenario Name Required", "Please enter a scenario name.")
             return
         
-        # Execute complete automated workflow
-        if not self._execute_complete_workflow():
-            return
+        # Create progress dialog for scenario creation
+        progress = QProgressDialog("Creating scenario...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Creating Synthetic Scenario")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.setLabelText("Initializing workflow...")
+        QApplication.processEvents()
         
         try:
+            # Step 1: Execute complete workflow (10% - 80%)
+            progress.setLabelText("Loading data and training models...")
+            progress.setValue(10)
+            QApplication.processEvents()
+            
+            if not self._execute_complete_workflow(progress):
+                progress.close()
+                return  # Workflow failed, don't proceed
+            
+            progress.setLabelText("Workflow complete, creating scenario file...")
+            progress.setValue(80)
+            QApplication.processEvents()
+            
+            # Step 2: Create scenario file (80% - 100%)
+            self._create_scenario_file(name, progress)
+            
+            progress.setLabelText("Scenario created successfully!")
+            progress.setValue(100)
+            QApplication.processEvents()
+            
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Error", f"Failed to create scenario: {str(e)}")
+        finally:
+            if progress:
+                progress.close()
+    
+    def _run(self):
+        """Create and run synthetic trajectory scenario via complete automated workflow."""
+        # Validate scenario name
+        name = self.scn_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Scenario Name Required", "Please enter a scenario name.")
+            return
+        
+        # Create progress dialog for scenario creation and running
+        progress = QProgressDialog("Creating and running scenario...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Creating & Running Synthetic Scenario")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.setLabelText("Initializing workflow...")
+        QApplication.processEvents()
+        
+        try:
+            # Step 1: Execute complete workflow (10% - 70%)
+            progress.setLabelText("Loading data and training models...")
+            progress.setValue(10)
+            QApplication.processEvents()
+            
+            if not self._execute_complete_workflow(progress):
+                progress.close()
+                return  # Workflow failed, don't proceed
+            
+            progress.setLabelText("Workflow complete, creating and running scenario...")
+            progress.setValue(70)
+            QApplication.processEvents()
+            
+            # Step 2: Create and run scenario (70% - 100%)
+            self._create_and_run_scenario(name, progress)
+            
+            progress.setLabelText("Scenario created and running successfully!")
+            progress.setValue(100)
+            QApplication.processEvents()
+            
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Error", f"Failed to create and run scenario: {str(e)}")
+        finally:
+            if progress:
+                progress.close()
+    
+    def _create_scenario_file(self, name, progress_dialog=None):
+        """Create scenario file after successful workflow execution."""
+        try:
+            def update_progress(text, value):
+                if progress_dialog:
+                    progress_dialog.setLabelText(text)
+                    progress_dialog.setValue(value)
+                    QApplication.processEvents()
+            
             # Import TraffixGen functions
             from . import traffixgen
+            
+            update_progress("Exporting synthetic data to SATG format...", 85)
             
             # Export to SATG format first
             success = traffixgen.traffixgen_export_synthetic_to_satg(self._synthetic_data)
@@ -7756,11 +7892,10 @@ class HistoricSamplingTab(QWidget):
                 QMessageBox.critical(self, "Export Failed", "Failed to export synthetic data to SATG.")
                 return
             
+            update_progress("Creating scenario file...", 95)
+            
             # Create scenario using SATG functions
             from . import SATG
-            
-            # Use scenario name with overwrite setting
-            overwrite = 1 if self.synthetic_overwrite.isChecked() else 0
             
             # Create the scenario file using Historic Sampling methods
             scenario_success = SATG.SATG_HS_MAKE(name)
@@ -7773,6 +7908,41 @@ class HistoricSamplingTab(QWidget):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create scenario: {str(e)}")
+    
+    def _create_and_run_scenario(self, name, progress_dialog=None):
+        """Create and run scenario after successful workflow execution."""
+        try:
+            def update_progress(text, value):
+                if progress_dialog:
+                    progress_dialog.setLabelText(text)
+                    progress_dialog.setValue(value)
+                    QApplication.processEvents()
+            
+            # Import TraffixGen functions
+            from . import traffixgen
+            
+            update_progress("Exporting synthetic data to SATG format...", 80)
+            
+            # Export to SATG format first
+            success = traffixgen.traffixgen_export_synthetic_to_satg(self._synthetic_data)
+            
+            if not success:
+                QMessageBox.critical(self, "Export Failed", "Failed to export synthetic data to SATG.")
+                return
+            
+            update_progress("Creating and running scenario...", 90)
+            
+            # Create and run scenario using TraffixGen helper function
+            success = traffixgen.traffixgen_create_and_run_synthetic_scenario(name)
+            
+            if success:
+                QMessageBox.information(self, "Success", f"Scenario '{name}' created and running!")
+                print(f"Synthetic scenario '{name}' created and running!")
+            else:
+                QMessageBox.critical(self, "Creation Failed", f"Failed to create and run scenario '{name}'.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create and run scenario: {str(e)}")
 
     def _run_only(self):
         """Run an existing synthetic scenario without creating it."""
@@ -7801,40 +7971,6 @@ class HistoricSamplingTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to run scenario: {str(e)}")
 
-    def _run(self):
-        """Create and run synthetic trajectory scenario."""
-        name = self.scn_name.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Scenario Name Required", "Please enter a scenario name.")
-            return
-        
-        # Execute complete automated workflow
-        if not self._execute_complete_workflow():
-            return
-        
-        try:
-            # Import TraffixGen functions
-            from . import traffixgen
-            
-            # Export to SATG format first
-            success = traffixgen.traffixgen_export_synthetic_to_satg(self._synthetic_data)
-            
-            if not success:
-                QMessageBox.critical(self, "Export Failed", "Failed to export synthetic data to SATG.")
-                return
-            
-            # Create and run scenario using TraffixGen helper function
-            success = traffixgen.traffixgen_create_and_run_synthetic_scenario(name)
-            
-            if success:
-                QMessageBox.information(self, "Success", f"Scenario '{name}' created and running!")
-                print(f"Synthetic scenario '{name}' created and running!")
-            else:
-                QMessageBox.critical(self, "Creation Failed", f"Failed to create and run scenario '{name}'.")
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create and run scenario: {str(e)}")
-
     def _configure_historic_filters(self):
         """Open dialog to configure historic data filtering - using same approach as realistic replay."""
         # Check if required files are loaded (same warning logic as Eurocontrol tab)
@@ -7854,13 +7990,33 @@ class HistoricSamplingTab(QWidget):
             'aircraft_types': []
         })
         
-        # Get data and FIR file (same as realistic replay approach)
-        data = getattr(self, 'historic_data', None)
+        # ALWAYS refresh data and bounds every time dialog is opened
+        print("DEBUG: Refreshing data for filter dialog...")
+        
+        # Show progress dialog for data loading/caching
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt
+        
+        progress = QProgressDialog("Loading data for filter configuration...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Loading Data")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)  # Show immediately
+        progress.setValue(10)
+        progress.setLabelText("Checking data files...")
+        
         fir_file = getattr(self, '_fir_file', None)
         
-        # Load summary data exactly like realistic replay does
+        # Update progress
+        progress.setValue(30)
+        progress.setLabelText("Loading and caching flight data (this may take a moment for large files)...")
+        
+        # Force reload summary data to get fresh bounds
         summary_data = self._load_and_get_summary_for_historic()
-        print(f"DEBUG: Loaded summary data: {summary_data}")
+        print(f"DEBUG: Refreshed summary data: {summary_data}")
+        
+        # Update progress  
+        progress.setValue(80)
+        progress.setLabelText("Calculating data bounds...")
         
         # Create filter dialog with same interface as EurocontrolFilterDialog
         self.historic_filter_dialog = HistoricSamplingFilterDialog(
@@ -7870,16 +8026,18 @@ class HistoricSamplingTab(QWidget):
             parent=self
         )
         
-        # Pass data context if available
-        if data is not None:
-            print(f"DEBUG: Setting data context with {len(data) if hasattr(data, '__len__') else 'unknown size'} records")
-            self.historic_filter_dialog.set_data_context(data, fir_file)
-        elif summary_data and 'error' not in summary_data:
-            print(f"DEBUG: Using summary data for bounds setting")
+        # Always try to set fresh data context and bounds
+        if summary_data and 'error' not in summary_data:
+            print(f"DEBUG: Setting fresh bounds from updated summary data")
             self.historic_filter_dialog.summary_data = summary_data
             self.historic_filter_dialog._set_bounds_from_data()
         else:
-            print("DEBUG: No valid data available for filter bounds")
+            print("DEBUG: No valid summary data available for filter bounds")
+        
+        # Complete progress
+        progress.setValue(100)
+        progress.setLabelText("Ready!")
+        progress.close()
         
         result = self.historic_filter_dialog.exec()
         if result == QDialog.DialogCode.Accepted:
@@ -8185,9 +8343,9 @@ class HistoricSamplingFilterDialog(QDialog):
         button_layout.addStretch()  # Push OK/Cancel to the right
         
         # OK button
-        ok_btn = QPushButton("Apply Filters")
-        ok_btn.setToolTip("Apply the configured filters and close dialog")
-        ok_btn.clicked.connect(self._apply_filters_and_close)
+        ok_btn = QPushButton("OK")
+        ok_btn.setToolTip("Save filter configuration and close dialog")
+        ok_btn.clicked.connect(self._save_and_close)
         ok_btn.setAutoDefault(False)
         button_layout.addWidget(ok_btn)
         
@@ -8865,7 +9023,62 @@ class HistoricSamplingFilterDialog(QDialog):
         
         # Note: No need to connect itemSelectionChanged since we're using checkboxes
 
-    def _apply_filters_and_close(self):
+    def _save_and_close(self):
+        """Save filter configuration and close dialog (filters will be applied during workflow)"""
+        # Update current_filters with UI values (same as _save_and_close but without applying)
+        if hasattr(self, 'lat_min_spin'):
+            self.current_filters['lat_min'] = self.lat_min_spin.value()
+            self.current_filters['lat_max'] = self.lat_max_spin.value()
+            self.current_filters['lon_min'] = self.lon_min_spin.value()
+            self.current_filters['lon_max'] = self.lon_max_spin.value()
+        
+        if hasattr(self, 'fl_min_spin'):
+            self.current_filters['fl_min'] = self.fl_min_spin.value()
+            self.current_filters['fl_max'] = self.fl_max_spin.value()
+        
+        # Time filters
+        if hasattr(self, 'time_enabled'):
+            if self.time_enabled.isChecked():
+                self.current_filters['time_start'] = self.time_start.time().toString("hh:mm:ss")
+                self.current_filters['time_end'] = self.time_end.time().toString("hh:mm:ss")
+            else:
+                self.current_filters['time_start'] = None
+                self.current_filters['time_end'] = None
+        
+        # Aircraft types - get checked items only (same as realistic replay)
+        if hasattr(self, 'aircraft_list'):
+            selected_types = []
+            for i in range(self.aircraft_list.count()):
+                item = self.aircraft_list.item(i)
+                if item.checkState() == Qt.CheckState.Checked:
+                    # Get the actual aircraft type from UserRole data
+                    ac_type = item.data(Qt.ItemDataRole.UserRole)
+                    if ac_type:
+                        selected_types.append(ac_type)
+                    else:
+                        # Fallback to item text if no UserRole data
+                        selected_types.append(item.text())
+            self.current_filters['aircraft_types'] = selected_types
+        
+        # Airspace exclusions - get checked items only (same as realistic replay)
+        if hasattr(self, 'airspace_list'):
+            excluded_airspace = []
+            for i in range(self.airspace_list.count()):
+                item = self.airspace_list.item(i)
+                if item.checkState() == Qt.CheckState.Checked:
+                    # Get the actual airspace name from UserRole data
+                    airspace_name = item.data(Qt.ItemDataRole.UserRole)
+                    if airspace_name:
+                        excluded_airspace.append(airspace_name)
+                    else:
+                        # Fallback to item text if no UserRole data
+                        excluded_airspace.append(item.text())
+            self.current_filters['exclude_airspace'] = excluded_airspace
+        
+        # Close dialog with accepted result
+        self.accept()
+
+    def _save_and_close(self):
         """Apply the configured filters and close the dialog"""
         # Update current_filters with UI values
         if hasattr(self, 'lat_min_spin'):

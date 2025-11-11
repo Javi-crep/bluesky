@@ -5777,39 +5777,40 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
     """Write Historic Sampling scenario file using same logic as Realistic Replay.
     
     This function follows the exact same structure and logic as _write_rl_scn
-    but uses Historic Sampling synthetic data instead of Realistic Replay data.
+    but operates on synthetic data that has been exported to the Realistic Replay pipeline.
     """
-    global _synthetic_flights, _synthetic_points
+    # Use the same data source as Realistic Replay (STATE.flights and STATE.base_points)
+    # The synthetic data was already exported to these variables by traffixgen_export_synthetic_to_satg
     
     mode = "a" if append else "w"
     with open(out_path, mode, encoding="utf-8") as f:
         if not append:
-            # Write scenario header (same as Realistic Replay)
+            # Write scenario header (same format as Realistic Replay)
             header = _generate_scenario_header("Historic Sampling",
-                num_flights=len(_synthetic_flights),
-                synthetic_data="Yes"
+                jitter_enabled="No",  # Historic Sampling doesn't use jitter
+                autodel_enabled="Yes"  # Always enable auto-delete for Historic Sampling
             )
             for line in header:
                 f.write(f"{line}\n")
             
+            # Use same basic commands as Realistic Replay (no extra commands)
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
-            f.write("0:00:00.00>CDMETHOD STATEBASED\n")
-            f.write("0:00:00.00>SWRAD 10\n")
         
-        # Convert synthetic data to same format as Realistic Replay
-        points = _get_historic_sampling_points_for_run()
-        flights = _get_historic_sampling_flights_for_run()
-        
-        print(f"[DEBUG] Historic Sampling: {len(flights)} flights, {len(points)} aircraft with points")
+        # Use the same data processing pipeline as Realistic Replay
+        points = _get_points_for_run()  # Use same function as Realistic Replay
+        print(f"[DEBUG] Historic Sampling: _get_points_for_run() returned {len(points) if points else 0} aircraft")
 
-        # When appending, avoid duplicate callsigns (same as Realistic Replay)
+        # When appending, avoid duplicate callsigns (same logic as Realistic Replay)
         used = _scan_existing_acids(out_path) if append else set()
         name_map = {}  # original_acid -> new_acid
 
         # Compute deterministic mapping (same logic as Realistic Replay)
-        for acid in flights.keys():
-            meta = flights[acid]
+        print(f"[DEBUG] Historic Sampling: STATE.flights contains {len(STATE.flights)} flights: {list(STATE.flights.keys())}")
+        print(f"[DEBUG] Historic Sampling: Points contains {len(points)} aircraft: {list(points.keys())}")
+        
+        for acid in STATE.flights.keys():
+            meta = STATE.flights[acid]
             # Prefer callsign from metadata if available, otherwise use acid
             preferred_name = meta.get('Callsign', acid) if meta.get('Callsign') else acid
             
@@ -5823,17 +5824,18 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
             used.add(final_name)
 
         print(f"[DEBUG] Historic Sampling: Starting aircraft generation...")
-        for acid, meta in flights.items():
+        for acid, meta in STATE.flights.items():
             print(f"[DEBUG] Historic Sampling: Processing aircraft {acid}")
+            print(f"[DEBUG] Historic Sampling: Metadata: {meta}")
             # Use the pre-computed unique name from name_map
             acid_out = name_map.get(acid, acid)
-            print(f"[DEBUG] Historic Sampling: Using callsign: '{acid_out}'")
+            print(f"[DEBUG] Historic Sampling: Using unique callsign: '{acid_out}'")
 
             if acid not in points or not points[acid]:
                 print(f"[DEBUG] Historic Sampling: Skipping {acid} - no points data")
                 continue
             
-            print(f"[DEBUG] Historic Sampling: Aircraft {acid} has {len(points[acid])} points")
+            print(f"[DEBUG] Historic Sampling: Aircraft {acid} has {len(points[acid])} points, using callsign: {acid_out}")
             segs = points[acid]; r0 = segs[0]; last = segs[-1]
             t0 = timedelta(seconds=r0['t']); stamp0 = _stamp(t0)
             fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
@@ -5844,17 +5846,35 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                 # Use third waypoint since second is often duplicate
                 target_point = segs[2]
                 lat1, lon1 = target_point['lat'], target_point['lon']
-                hdg0 = _calculate_bearing(lat0, lon0, lat1, lon1)
-                print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° using 3rd waypoint")
+                # Calculate bearing from lat0,lon0 to lat1,lon1 (same calculation as Realistic Replay)
+                lat0_rad = math.radians(lat0)
+                lat1_rad = math.radians(lat1)
+                dlon_rad = math.radians(lon1 - lon0)
+                
+                y = math.sin(dlon_rad) * math.cos(lat1_rad)
+                x = math.cos(lat0_rad) * math.sin(lat1_rad) - math.sin(lat0_rad) * math.cos(lat1_rad) * math.cos(dlon_rad)
+                bearing_rad = math.atan2(y, x)
+                bearing_deg = math.degrees(bearing_rad)
+                hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
+                print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 3rd waypoint)")
             elif len(segs) > 1:
-                # Fallback to second waypoint
+                # Fallback to second waypoint if no third available
                 next_point = segs[1]
                 lat1, lon1 = next_point['lat'], next_point['lon']
-                hdg0 = _calculate_bearing(lat0, lon0, lat1, lon1)
-                print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° using 2nd waypoint")
+                # Calculate bearing from lat0,lon0 to lat1,lon1 (same calculation as Realistic Replay)
+                lat0_rad = math.radians(lat0)
+                lat1_rad = math.radians(lat1)
+                dlon_rad = math.radians(lon1 - lon0)
+                
+                y = math.sin(dlon_rad) * math.cos(lat1_rad)
+                x = math.cos(lat0_rad) * math.sin(lat1_rad) - math.sin(lat0_rad) * math.cos(lat1_rad) * math.cos(dlon_rad)
+                bearing_rad = math.atan2(y, x)
+                bearing_deg = math.degrees(bearing_rad)
+                hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
+                print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 2nd waypoint)")
             else:
                 hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
-                print(f"[DEBUG] Historic Sampling: Using stored heading {hdg0}°")
+                print(f"[DEBUG] Historic Sampling: Using stored heading {hdg0}° (no waypoints available)")
             
             actype = meta.get('AC Type',''); alt_ft0 = int(fl0) * 100
 
@@ -5863,7 +5883,8 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
 
             # Auto-delete logic (same as Realistic Replay)
             last_is_landing = int(last['fl']) == 0
-            trigger_on_last = True or last_is_landing  # Always delete for Historic Sampling
+            # For Historic Sampling: always delete landing aircraft, or when auto-delete is enabled for others
+            trigger_on_last = True or last_is_landing  # Always auto-delete for Historic Sampling
 
             pen_wptname = None; last_wptname = None
             if trigger_on_last:
@@ -5886,75 +5907,96 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                 else:
                     f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
 
-            # Takeoff logic (same as Realistic Replay)
-            print(f"[DEBUG] Historic Sampling: Checking initial commands for {acid_out}")
+            # Robust takeoff logic (same logic as Realistic Replay)
+            print(f"[DEBUG] Historic Sampling: Checking initial commands for {acid_out}: cas0={cas0}, alt_ft0={alt_ft0}")
             if cas0 <= 0 or alt_ft0 <= 0:
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} needs initial commands")
+                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} needs initial commands - searching for first climbing waypoint")
                 
-                # Find first airborne waypoint (same logic as Realistic Replay)
+                # Find first waypoint with non-zero altitude (same logic as Realistic Replay)
                 first_airborne_waypoint = None
+                first_airborne_index = -1
+                
                 for idx, waypoint in enumerate(segs):
                     wp_fl = waypoint.get('fl', 0)
-                    if wp_fl > 0:
+                    if wp_fl > 0:  # Found first waypoint above ground
                         first_airborne_waypoint = waypoint
-                        print(f"[DEBUG] Historic Sampling: First airborne at index {idx}: FL{wp_fl:.0f}")
+                        first_airborne_index = idx
+                        print(f"[DEBUG] Historic Sampling: Found first airborne waypoint at index {idx}: FL{wp_fl:.0f}")
                         break
                 
                 if first_airborne_waypoint:
                     try:
+                        # Use the first airborne waypoint for realistic initial climb conditions
                         target_gs = first_airborne_waypoint.get('gs', 0)
                         target_fl = first_airborne_waypoint.get('fl', 0)
                         target_cas = _gs_to_cas_kt(target_gs, target_fl)
                         
-                        # Set realistic conditions (same as Realistic Replay)
+                        print(f"[DEBUG] Historic Sampling: First airborne waypoint: gs={target_gs:.1f}, fl={target_fl}, cas={target_cas:.1f}")
+                        
+                        # Set realistic takeoff/climb conditions (same logic as Realistic Replay)
                         if cas0 <= 0:
                             if target_cas > 0:
-                                initial_speed = min(max(target_cas, 160), 250)
-                                print(f"[DEBUG] Historic Sampling: SPD {acid_out} {initial_speed:.0f}")
+                                # Use actual climb speed from data
+                                initial_speed = min(max(target_cas, 160), 250)  # Realistic takeoff/climb speed range
+                                print(f"[DEBUG] Historic Sampling: Adding realistic SPD command: SPD {acid_out} {initial_speed:.0f}")
                                 f.write(f"{stamp0}SPD {acid_out} {initial_speed:.0f}\n")
                             else:
-                                initial_speed = 180
-                                print(f"[DEBUG] Historic Sampling: Takeoff SPD {acid_out} {initial_speed}")
+                                # Use realistic takeoff speed
+                                initial_speed = 180  # Typical takeoff/initial climb speed
+                                print(f"[DEBUG] Historic Sampling: Using realistic takeoff SPD: SPD {acid_out} {initial_speed}")
                                 f.write(f"{stamp0}SPD {acid_out} {initial_speed}\n")
                                 
                         if alt_ft0 <= 0:
                             if target_fl > 0:
-                                print(f"[DEBUG] Historic Sampling: ALT {acid_out} FL{target_fl:03.0f}")
+                                # Use the first climbing altitude as target
+                                print(f"[DEBUG] Historic Sampling: Adding realistic ALT command: ALT {acid_out} FL{target_fl:03.0f}")
                                 f.write(f"{stamp0}ALT {acid_out} FL{target_fl:03.0f}\n")
                             else:
-                                initial_alt = "FL050"
-                                print(f"[DEBUG] Historic Sampling: Initial ALT {acid_out} {initial_alt}")
+                                # Use realistic initial climb altitude
+                                initial_alt = "FL050"  # Typical initial climb clearance
+                                print(f"[DEBUG] Historic Sampling: Using realistic initial climb ALT: ALT {acid_out} {initial_alt}")
                                 f.write(f"{stamp0}ALT {acid_out} {initial_alt}\n")
                                 
                     except Exception as e:
-                        print(f"[DEBUG] Historic Sampling: Error processing waypoint for {acid_out}: {e}")
-                        # Fallback defaults (same as Realistic Replay)
+                        print(f"[DEBUG] Historic Sampling: Error processing first airborne waypoint for {acid_out}: {e}")
+                        # Use realistic takeoff defaults as fallback
                         if cas0 <= 0:
-                            f.write(f"{stamp0}SPD {acid_out} 180\n")
+                            takeoff_speed = 180
+                            print(f"[DEBUG] Historic Sampling: Using takeoff SPD fallback: SPD {acid_out} {takeoff_speed}")
+                            f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                         if alt_ft0 <= 0:
-                            f.write(f"{stamp0}ALT {acid_out} FL050\n")
+                            takeoff_alt = "FL050"
+                            print(f"[DEBUG] Historic Sampling: Using takeoff ALT fallback: ALT {acid_out} {takeoff_alt}")
+                            f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
                 else:
-                    print(f"[DEBUG] Historic Sampling: No airborne waypoints for {acid_out}")
+                    print(f"[DEBUG] Historic Sampling: No airborne waypoints found for {acid_out} - using takeoff defaults")
+                    # All waypoints are at ground level - use realistic takeoff values
                     if cas0 <= 0:
-                        f.write(f"{stamp0}SPD {acid_out} 180\n")
+                        takeoff_speed = 180  # Realistic takeoff speed
+                        print(f"[DEBUG] Historic Sampling: Using takeoff SPD (no airborne waypoints): SPD {acid_out} {takeoff_speed}")
+                        f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                     if alt_ft0 <= 0:
-                        f.write(f"{stamp0}ALT {acid_out} FL050\n")
+                        takeoff_alt = "FL050"  # Realistic initial climb clearance
+                        print(f"[DEBUG] Historic Sampling: Using takeoff ALT (no airborne waypoints): ALT {acid_out} {takeoff_alt}")
+                        f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
+            else:
+                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} doesn't need initial commands")
 
-            # LNAV/VNAV commands with delay for takeoff aircraft (same as Realistic Replay)
+            # Write LNAV/VNAV commands (same logic as Realistic Replay)
             if alt_ft0 <= 0:
-                # Aircraft starts on ground - apply 30 second delay
+                # Aircraft starts on ground (takeoff) - apply 30 second delay
                 t0_plus_30 = timedelta(seconds=r0['t'] + 30)
                 stamp_lnav_vnav = _stamp(t0_plus_30)
-                print(f"[DEBUG] Historic Sampling: Ground start - 30s delay for LNAV/VNAV")
+                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts on ground - applying 30s delay for LNAV/VNAV")
             else:
-                # Aircraft starts airborne - no delay
+                # Aircraft starts airborne - no delay needed
                 stamp_lnav_vnav = stamp0
-                print(f"[DEBUG] Historic Sampling: Airborne start - no delay")
+                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts airborne - no delay for LNAV/VNAV")
             
             f.write(f"{stamp_lnav_vnav}LNAV {acid_out} ON\n")
             f.write(f"{stamp_lnav_vnav}VNAV {acid_out} ON\n")
             
-            # Landing and deletion commands (same as Realistic Replay)
+            # Landing and deletion commands (same logic as Realistic Replay)
             if last_is_landing and pen_wptname:
                 f.write(f"{stamp0}{acid_out} AT {pen_wptname} DO {acid_out} ALT 0\n")
             if trigger_on_last and last_wptname:
@@ -5965,50 +6007,61 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
 
 
 def _get_historic_sampling_points_for_run():
-    """Convert synthetic points data to same format as Realistic Replay points."""
+    """Convert synthetic points data to same format as Realistic Replay points.
+    
+    This follows the exact same logic as _get_points_for_run() but for synthetic data.
+    """
     global _synthetic_points
     
     if not _synthetic_points:
         return {}
     
-    # Group points by aircraft and convert to Realistic Replay format
-    points = {}
+    # Build points dictionary in same format as Realistic Replay
+    pts = {}
     for point in _synthetic_points:
         callsign = point.get('Callsign', point.get('ECTRL ID', 'UNKNOWN'))
-        if callsign not in points:
-            points[callsign] = []
+        if callsign not in pts:
+            pts[callsign] = []
         
-        # Convert to same format as Realistic Replay
+        # Convert to exact same format as Realistic Replay _build_base_points
         converted_point = {
-            't': point.get('Sequence', 0) * 10,  # Convert sequence to time
+            'seq': int(point.get('Sequence Number', 0)),
+            't': 0,  # TODO: Will be fixed when time distribution is implemented
+            'fl': float(point.get('Flight Level', 0)),
             'lat': float(point.get('Latitude', 0)),
             'lon': float(point.get('Longitude', 0)),
-            'fl': float(point.get('Flight Level', 0)),
-            'gs': float(point.get('Ground Speed', 200)),  # Default speed if missing
-            'hdg': float(point.get('Heading', 0))
+            'gs': float(point.get('ground_speed', 200)),  # Use correct field name
+            'hdg': float(point.get('heading', 0))         # Use correct field name
         }
-        points[callsign].append(converted_point)
+        pts[callsign].append(converted_point)
     
-    # Sort points by time for each aircraft
-    for callsign in points:
-        points[callsign].sort(key=lambda p: p['t'])
+    # Sort points by sequence for each aircraft (same as Realistic Replay)
+    for callsign in pts:
+        pts[callsign].sort(key=lambda r: r['seq'])
     
-    return points
+    return pts
 
 
 def _get_historic_sampling_flights_for_run():
-    """Convert synthetic flights data to same format as Realistic Replay flights."""
+    """Convert synthetic flights data to same format as Realistic Replay flights.
+    
+    This follows the exact same logic as STATE.flights structure.
+    """
     global _synthetic_flights
     
     if not _synthetic_flights:
         return {}
     
+    # Build flights dictionary in same format as Realistic Replay
     flights = {}
     for flight in _synthetic_flights:
-        callsign = flight.get('callsign', flight.get('Callsign', 'UNKNOWN'))
+        callsign = flight.get('Callsign', flight.get('ECTRL ID', 'UNKNOWN'))
         flights[callsign] = {
+            'AC Type': flight.get('AC Type', flight.get('aircraft_type', 'A320')),
+            'ADEP': flight.get('ADEP', flight.get('origin', '')),
+            'ADES': flight.get('ADES', flight.get('destination', '')),
             'Callsign': callsign,
-            'AC Type': flight.get('ac_type', flight.get('AC Type', 'A320'))
+            'AC Operator': flight.get('AC Operator', 'SYN')
         }
     
     return flights
@@ -6076,10 +6129,15 @@ def SATG_SYNTH_RUN(scenario_name: str):
 
 def SATG_HS_MAKE(name: str) -> bool:
     """Create Historic Sampling scenario file using proven Realistic Replay logic."""
-    global _synthetic_flights, _synthetic_points
+    # Use the same data that Realistic Replay uses (STATE.flights and STATE.base_points)
+    # The synthetic data was already exported to these variables by traffixgen_export_synthetic_to_satg
     
-    if not _synthetic_flights or not _synthetic_points:
-        print("[SATG HS] Error: No Historic Sampling data loaded. Use TraffixGen first.")
+    if not STATE.loaded_ok:
+        print("[SATG HS] Error: No data loaded. Historic Sampling data should be exported to Realistic Replay pipeline first.")
+        return False
+    
+    if not STATE.flights or not STATE.base_points:
+        print("[SATG HS] Error: No flights or points data available in Realistic Replay pipeline.")
         return False
     
     try:
@@ -6088,7 +6146,244 @@ def SATG_HS_MAKE(name: str) -> bool:
             os.makedirs(STATE.scn_dir, exist_ok=True)
         
         scn_path = os.path.join(STATE.scn_dir, f"{name}.scn")
-        _write_historic_sampling_scn(scn_path, append=False)
+        
+        # Use the EXACT SAME scenario generation logic as Realistic Replay
+        # This ensures identical command structure, ordering, and logic
+        print("[SATG HS] Using proven Realistic Replay scenario generation logic...")
+        
+        # Write scenario file with Historic Sampling header but Realistic Replay logic
+        mode = "w"  # Never append for Historic Sampling
+        with open(scn_path, mode, encoding="utf-8") as f:
+            # Write Historic Sampling header
+            header = _generate_scenario_header("Historic Sampling",
+                jitter_enabled="No",   # Historic Sampling doesn't use jitter
+                autodel_enabled="Yes"  # Always enable auto-delete for Historic Sampling
+            )
+            for line in header:
+                f.write(f"{line}\n")
+            
+            # Use same basic commands as Realistic Replay (no extra commands)
+            f.write("0:00:00.00>HOLD\n")
+            f.write("0:00:00.00>ASAS ON\n")
+        
+        # Use the same data processing pipeline as Realistic Replay
+        points = _get_points_for_run()  # Use same function as Realistic Replay
+        print(f"[DEBUG] Historic Sampling: _get_points_for_run() returned {len(points) if points else 0} aircraft")
+
+        # When appending, avoid duplicate callsigns (same logic as Realistic Replay)
+        used = _scan_existing_acids(scn_path)  # Scan the file we just created
+        name_map = {}  # original_acid -> new_acid
+
+        # Compute deterministic mapping (same logic as Realistic Replay)
+        print(f"[DEBUG] Historic Sampling: STATE.flights contains {len(STATE.flights)} flights: {list(STATE.flights.keys())}")
+        print(f"[DEBUG] Historic Sampling: Points contains {len(points)} aircraft: {list(points.keys())}")
+        
+        for acid in STATE.flights.keys():
+            meta = STATE.flights[acid]
+            # Prefer callsign from metadata if available, otherwise use acid
+            preferred_name = meta.get('Callsign', acid) if meta.get('Callsign') else acid
+            
+            # Ensure the preferred name is unique
+            final_name = preferred_name
+            if final_name in used or final_name in name_map.values():
+                final_name = _next_unique_acid(preferred_name, used | set(name_map.values()))
+                print(f"[DEBUG] Historic Sampling duplicate: '{preferred_name}' -> '{final_name}'")
+            
+            name_map[acid] = final_name
+            used.add(final_name)
+
+        # Generate aircraft using the exact same logic as Realistic Replay with time diversity
+        print(f"[DEBUG] Historic Sampling: Starting aircraft generation loop...")
+        aircraft_list = list(STATE.flights.items())
+        with open(scn_path, "a", encoding="utf-8") as f:
+            for aircraft_idx, (acid, meta) in enumerate(aircraft_list):
+                print(f"[DEBUG] Historic Sampling: Processing aircraft {acid}")
+                print(f"[DEBUG] Historic Sampling: Metadata: {meta}")
+                # Use the pre-computed unique name from name_map
+                acid_out = name_map.get(acid, acid)
+                print(f"[DEBUG] Historic Sampling: Using unique callsign: '{acid_out}'")
+
+                if acid not in points or not points[acid]:
+                    print(f"[DEBUG] Historic Sampling: Skipping {acid} - no points data")
+                    continue
+                print(f"[DEBUG] Historic Sampling: Aircraft {acid} has {len(points[acid])} points, using callsign: {acid_out}")
+                segs = points[acid]; r0 = segs[0]; last = segs[-1]
+                # Add time diversity - spread aircraft every 2-3 minutes for Historic Sampling
+                base_time = r0['t']
+                time_offset = aircraft_idx * 150  # 2.5 minutes between aircraft
+                adjusted_time = base_time + time_offset
+                t0 = timedelta(seconds=adjusted_time); stamp0 = _stamp(t0)
+                fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
+                cas0 = _gs_to_cas_kt(r0['gs'], fl0)
+                
+                # Calculate initial heading (same calculation as Realistic Replay)
+                if len(segs) > 2:
+                    # Use third waypoint since second is often duplicate
+                    target_point = segs[2]
+                    lat1, lon1 = target_point['lat'], target_point['lon']
+                    # Calculate bearing from lat0,lon0 to lat1,lon1 (same calculation as Realistic Replay)
+                    lat0_rad = math.radians(lat0)
+                    lat1_rad = math.radians(lat1)
+                    dlon_rad = math.radians(lon1 - lon0)
+                    
+                    y = math.sin(dlon_rad) * math.cos(lat1_rad)
+                    x = math.cos(lat0_rad) * math.sin(lat1_rad) - math.sin(lat0_rad) * math.cos(lat1_rad) * math.cos(dlon_rad)
+                    bearing_rad = math.atan2(y, x)
+                    bearing_deg = math.degrees(bearing_rad)
+                    hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
+                    print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 3rd waypoint)")
+                elif len(segs) > 1:
+                    # Fallback to second waypoint if no third available
+                    next_point = segs[1]
+                    lat1, lon1 = next_point['lat'], next_point['lon']
+                    # Calculate bearing from lat0,lon0 to lat1,lon1 (same calculation as Realistic Replay)
+                    lat0_rad = math.radians(lat0)
+                    lat1_rad = math.radians(lat1)
+                    dlon_rad = math.radians(lon1 - lon0)
+                    
+                    y = math.sin(dlon_rad) * math.cos(lat1_rad)
+                    x = math.cos(lat0_rad) * math.sin(lat1_rad) - math.sin(lat0_rad) * math.cos(lat1_rad) * math.cos(dlon_rad)
+                    bearing_rad = math.atan2(y, x)
+                    bearing_deg = math.degrees(bearing_rad)
+                    hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
+                    print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 2nd waypoint)")
+                else:
+                    hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
+                    print(f"[DEBUG] Historic Sampling: Using stored heading {hdg0}° (no waypoints available)")
+                
+                actype = meta.get('AC Type',''); alt_ft0 = int(fl0) * 100
+
+                # Create aircraft (same format as Realistic Replay)
+                f.write(f"{stamp0}CRE {acid_out},{actype},{lat0:.6f},{lon0:.6f},{hdg0:03d},{alt_ft0},{cas0:.1f}\n")
+
+                # Auto-delete logic (same as Realistic Replay)
+                last_is_landing = int(last['fl']) == 0
+                # For Historic Sampling: always delete landing aircraft, or when auto-delete is enabled for others
+                trigger_on_last = True or last_is_landing  # Always auto-delete for Historic Sampling
+
+                pen_wptname = None; last_wptname = None
+                if trigger_on_last:
+                    last_wptname = _sanitize_name(f"{acid_out}_DEST")
+                    f.write(f"{stamp0}DEFWPT {last_wptname},{last['lat']:.6f},{last['lon']:.6f}\n")
+                if last_is_landing and len(segs) >= 2:
+                    pen = segs[-2]
+                    pen_wptname = _sanitize_name(f"{acid_out}_APP")
+                    f.write(f"{stamp0}DEFWPT {pen_wptname},{pen['lat']:.6f},{pen['lon']:.6f}\n")
+
+                # Add waypoints (same logic as Realistic Replay)
+                for idx, r in enumerate(segs[1:], start=2):
+                    cas_i = _gs_to_cas_kt(r['gs'], r['fl'])
+                    is_pen = (idx == len(segs)-1); is_last = (r is last)
+                    if is_last and trigger_on_last and last_wptname:
+                        alt_tok = "0" if int(r['fl']) <= 0 else _fmt_alt_token(r['fl'])
+                        f.write(f"{stamp0}ADDWPT {acid_out} {last_wptname},{alt_tok},{cas_i:.1f}\n")
+                    elif is_pen and last_is_landing and pen_wptname:
+                        f.write(f"{stamp0}ADDWPT {acid_out} {pen_wptname},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
+                    else:
+                        f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
+
+                # Robust takeoff logic (same logic as Realistic Replay)
+                print(f"[DEBUG] Historic Sampling: Checking initial commands for {acid_out}: cas0={cas0}, alt_ft0={alt_ft0}")
+                # Use proper thresholds: cas < 50 knots or alt <= 0 feet (ground level)
+                needs_spd = cas0 < 50  # Very low speed indicates aircraft needs initial speed
+                needs_alt = alt_ft0 <= 0  # Ground level or below indicates aircraft needs initial climb
+                
+                if needs_spd or needs_alt:
+                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} needs initial commands (SPD: {needs_spd}, ALT: {needs_alt}) - searching for first climbing waypoint")
+                    
+                    # Find first waypoint with non-zero altitude (same logic as Realistic Replay)
+                    first_airborne_waypoint = None
+                    first_airborne_index = -1
+                    
+                    for idx, waypoint in enumerate(segs):
+                        wp_fl = waypoint.get('fl', 0)
+                        if wp_fl > 0:  # Found first waypoint above ground
+                            first_airborne_waypoint = waypoint
+                            first_airborne_index = idx
+                            print(f"[DEBUG] Historic Sampling: Found first airborne waypoint at index {idx}: FL{wp_fl:.0f}")
+                            break
+                    
+                    if first_airborne_waypoint:
+                        try:
+                            # Use the first airborne waypoint for realistic initial climb conditions
+                            target_gs = first_airborne_waypoint.get('gs', 0)
+                            target_fl = first_airborne_waypoint.get('fl', 0)
+                            target_cas = _gs_to_cas_kt(target_gs, target_fl)
+                            
+                            print(f"[DEBUG] Historic Sampling: First airborne waypoint: gs={target_gs:.1f}, fl={target_fl}, cas={target_cas:.1f}")
+                            
+                            # Set realistic takeoff/climb conditions (same logic as Realistic Replay)
+                            if needs_spd:
+                                if target_cas > 50:  # Use target speed if it's reasonable
+                                    # Use actual climb speed from data
+                                    initial_speed = min(max(target_cas, 160), 250)  # Realistic takeoff/climb speed range
+                                    print(f"[DEBUG] Historic Sampling: Adding realistic SPD command: SPD {acid_out} {initial_speed:.0f}")
+                                    f.write(f"{stamp0}SPD {acid_out} {initial_speed:.0f}\n")
+                                else:
+                                    # Use realistic takeoff speed
+                                    initial_speed = 180  # Typical takeoff/initial climb speed
+                                    print(f"[DEBUG] Historic Sampling: Using realistic takeoff SPD: SPD {acid_out} {initial_speed}")
+                                    f.write(f"{stamp0}SPD {acid_out} {initial_speed}\n")
+                                    
+                            if needs_alt:
+                                if target_fl > 0:
+                                    # Use the first climbing altitude as target
+                                    print(f"[DEBUG] Historic Sampling: Adding realistic ALT command: ALT {acid_out} FL{target_fl:03.0f}")
+                                    f.write(f"{stamp0}ALT {acid_out} FL{target_fl:03.0f}\n")
+                                else:
+                                    # Use realistic initial climb altitude
+                                    initial_alt = "FL050"  # Typical initial climb clearance
+                                    print(f"[DEBUG] Historic Sampling: Using realistic initial climb ALT: ALT {acid_out} {initial_alt}")
+                                    f.write(f"{stamp0}ALT {acid_out} {initial_alt}\n")
+                                    
+                        except Exception as e:
+                            print(f"[DEBUG] Historic Sampling: Error processing first airborne waypoint for {acid_out}: {e}")
+                            # Use realistic takeoff defaults as fallback
+                            if needs_spd:
+                                takeoff_speed = 180
+                                print(f"[DEBUG] Historic Sampling: Using takeoff SPD fallback: SPD {acid_out} {takeoff_speed}")
+                                f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
+                            if needs_alt:
+                                takeoff_alt = "FL050"
+                                print(f"[DEBUG] Historic Sampling: Using takeoff ALT fallback: ALT {acid_out} {takeoff_alt}")
+                                f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
+                    else:
+                        print(f"[DEBUG] Historic Sampling: No airborne waypoints found for {acid_out} - using takeoff defaults")
+                        # All waypoints are at ground level - use realistic takeoff values
+                        if needs_spd:
+                            takeoff_speed = 180  # Realistic takeoff speed
+                            print(f"[DEBUG] Historic Sampling: Using takeoff SPD (no airborne waypoints): SPD {acid_out} {takeoff_speed}")
+                            f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
+                        if needs_alt:
+                            takeoff_alt = "FL050"  # Realistic initial climb clearance
+                            print(f"[DEBUG] Historic Sampling: Using takeoff ALT (no airborne waypoints): ALT {acid_out} {takeoff_alt}")
+                            f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
+                else:
+                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} doesn't need initial commands")
+
+                # Write LNAV/VNAV commands (same logic as Realistic Replay)
+                if alt_ft0 <= 0:
+                    # Aircraft starts on ground (takeoff) - apply 30 second delay
+                    t0_plus_30 = timedelta(seconds=adjusted_time + 30)
+                    stamp_lnav_vnav = _stamp(t0_plus_30)
+                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts on ground - applying 30s delay for LNAV/VNAV")
+                else:
+                    # Aircraft starts airborne - no delay needed
+                    stamp_lnav_vnav = stamp0
+                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts airborne - no delay for LNAV/VNAV")
+                
+                f.write(f"{stamp_lnav_vnav}LNAV {acid_out} ON\n")
+                f.write(f"{stamp_lnav_vnav}VNAV {acid_out} ON\n")
+                
+                # Landing and deletion commands (same logic as Realistic Replay)
+                if last_is_landing and pen_wptname:
+                    f.write(f"{stamp0}{acid_out} AT {pen_wptname} DO {acid_out} ALT 0\n")
+                if trigger_on_last and last_wptname:
+                    f.write(f"{stamp0}{acid_out} AT {last_wptname} DO DEL {acid_out}\n")
+        
+        # Sort scenario file by timestamp (same as Realistic Replay)
+        _sort_scn_file(scn_path)
+        
         print(f"[SATG HS] Created scenario: {scn_path}")
         return True
         
