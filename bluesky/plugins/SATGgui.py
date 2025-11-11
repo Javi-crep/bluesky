@@ -7757,16 +7757,45 @@ class HistoricSamplingTab(QWidget):
                 print("No filters configured, proceeding with all data")
             
             # Step 2: Train models if not trained or configuration changed
-            update_progress("Training machine learning models...", 40)
-            # FORCE RETRAINING: Always train models to ensure fresh results
-            print("Training models (forced for fresh results)...")
-            success = self._train_models()
-            if not success:
-                QMessageBox.critical(self, "Training Failed", "Failed to train models.")
-                return False
+            update_progress("Checking model training status...", 40)
+            
+            # Check if models are already trained
+            from . import traffixgen
+            status = traffixgen.get_synthetic_model_status()
+            models_already_trained = status.get('model_trained', False)
+            
+            should_train = True
+            if models_already_trained:
+                # Ask user if they want to retrain
+                reply = QMessageBox.question(
+                    self, 
+                    "Models Already Trained", 
+                    "Machine learning models are already trained.\n\n"
+                    "Do you want to retrain them? This will take some time but ensures fresh results.\n\n"
+                    "• Click 'Yes' to retrain models (recommended for new data or changed filters)\n"
+                    "• Click 'No' to use existing trained models (faster)",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No  # Default to No for faster workflow
+                )
+                should_train = (reply == QMessageBox.StandardButton.Yes)
+            
+            if should_train:
+                update_progress("Training machine learning models...", 50)
+                if models_already_trained:
+                    print("Retraining models (user requested fresh training)...")
+                else:
+                    print("Training models (first time training)...")
+                    
+                success = self._train_models()
+                if not success:
+                    QMessageBox.critical(self, "Training Failed", "Failed to train models.")
+                    return False
+            else:
+                print("Using existing trained models (user opted to skip retraining)...")
+                update_progress("Using existing trained models...", 50)
             
             # Step 3: Generate trajectories (always regenerate for fresh scenarios)
-            update_progress("Generating synthetic trajectories...", 60)
+            update_progress("Generating synthetic trajectories...", 65)
             # FORCE REGENERATION: Always generate new trajectories
             print("Generating synthetic trajectories (forced for fresh scenarios)...")
             success = self._auto_generate_trajectories()
