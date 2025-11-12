@@ -1534,6 +1534,45 @@ def _write_rl_scn(out_path: str, append: bool = False):
 
 # ---------------- GC utilities ---------------- #
 def _parse_range(text: Optional[str], cur: Tuple[float, float]) -> Tuple[float, float]:
+    """
+    Parse text input into numeric range tuple with validation and fallback.
+    
+    This utility function converts user input strings into numeric range tuples
+    supporting both single values and range specifications. The function provides
+    robust error handling with fallback to current values when parsing fails,
+    ensuring system stability during parameter configuration operations.
+    
+    Input format support:
+    - Single values: "350" becomes (350.0, 350.0) for fixed parameters
+    - Range format: "300:400" becomes (300.0, 400.0) with automatic ordering
+    - Invalid input: Returns current tuple unchanged for graceful error handling
+    - Empty input: Returns current tuple to preserve existing configuration
+    
+    The function automatically handles:
+    - Numeric conversion with floating-point precision
+    - Range validation with automatic min/max ordering
+    - Error recovery with current value preservation
+    - Input sanitization and whitespace handling
+    
+    Args:
+        text (Optional[str]): Input string to parse ("value" or "min:max" format)
+        cur (Tuple[float, float]): Current range tuple to use as fallback
+    
+    Returns:
+        Tuple[float, float]: Parsed range tuple (min, max) or current on error
+    
+    Examples:
+        _parse_range("350", (300.0, 400.0))      # Returns (350.0, 350.0)
+        _parse_range("250:450", (0.0, 0.0))      # Returns (250.0, 450.0)
+        _parse_range("450:250", (0.0, 0.0))      # Returns (250.0, 450.0) - auto-ordered
+        _parse_range("invalid", (300.0, 400.0))  # Returns (300.0, 400.0) - fallback
+        _parse_range(None, (100.0, 200.0))       # Returns (100.0, 200.0) - unchanged
+    
+    Note:
+        The function ensures min <= max by automatic value swapping when needed.
+        Error handling preserves system stability by falling back to current
+        values rather than raising exceptions during parameter configuration.
+    """
     if not text: return cur
     s = str(text).strip()
     if ":" not in s:
@@ -1716,7 +1755,40 @@ def _gc_offset_from_cpa(lat_cpa: float, lon_cpa: float,
     return _dest_nm(lat_cpa, lon_cpa, bearing, dist_nm)
 
 def _scan_max_sc_index(path: str) -> int:
-    """Return the highest GCA<number> found in an existing .scn (0 if none)."""
+    """
+    Scan scenario file for highest GCA aircraft index to prevent ID conflicts.
+    
+    Return the highest GCA<number> found in an existing .scn (0 if none).
+    
+    This utility function analyzes existing scenario files to determine the
+    highest numbered GCA (Geometric Conflict Aircraft) identifier currently
+    in use, enabling conflict-free ID generation when appending new aircraft
+    to existing scenarios. This prevents aircraft ID collisions and ensures
+    unique identification throughout scenario execution.
+    
+    The function parses scenario file content using regular expressions to
+    identify CRE (Create) commands with GCA-pattern aircraft IDs, extracting
+    numeric suffixes to determine the current maximum index for safe ID
+    generation in subsequent operations.
+    
+    Args:
+        path (str): File path to scenario file for analysis
+    
+    Returns:
+        int: Highest GCA index found in file (0 if none or file error)
+    
+    Examples:
+        # File contains GCA001, GCA003, GCA007
+        _scan_max_sc_index("scenario.scn")  # Returns 7
+        
+        # Empty file or no GCA aircraft
+        _scan_max_sc_index("empty.scn")     # Returns 0
+    
+    Note:
+        The function handles file access errors gracefully by returning 0.
+        ID scanning ensures safe aircraft creation without conflicts in
+        existing scenarios during append operations.
+    """
     try:
         with open(path, "r", encoding="utf-8") as f:
             txt = f.read()
@@ -1733,7 +1805,40 @@ def _scan_max_sc_index(path: str) -> int:
     return maxn
 
 def _scan_max_gcr_index(path: str) -> int:
-    """Return the highest GCR<number> found in an existing .scn (0 if none)."""
+    """
+    Scan scenario file for highest GCR aircraft index to prevent ID conflicts.
+    
+    Return the highest GCR<number> found in an existing .scn (0 if none).
+    
+    This utility function analyzes existing scenario files to determine the
+    highest numbered GCR (Geometric Conflict Relative) identifier currently
+    in use, enabling conflict-free ID generation when appending new relative
+    conflict aircraft to existing scenarios. This prevents aircraft ID
+    collisions and ensures unique identification throughout scenario execution.
+    
+    The function parses scenario file content using regular expressions to
+    identify aircraft creation commands with GCR-pattern aircraft IDs,
+    extracting numeric suffixes to determine the current maximum index for
+    safe ID generation in subsequent relative conflict operations.
+    
+    Args:
+        path (str): File path to scenario file for analysis
+    
+    Returns:
+        int: Highest GCR index found in file (0 if none or file error)
+    
+    Examples:
+        # File contains GCR001, GCR005, GCR012  
+        _scan_max_gcr_index("scenario.scn")  # Returns 12
+        
+        # Empty file or no GCR aircraft
+        _scan_max_gcr_index("empty.scn")     # Returns 0
+    
+    Note:
+        The function handles file access errors gracefully by returning 0.
+        GCR aircraft are used specifically for relative geometric conflicts
+        where aircraft positioning is calculated relative to existing targets.
+    """
     try:
         with open(path, "r", encoding="utf-8") as f:
             txt = f.read()
@@ -2009,7 +2114,45 @@ def _write_gc_scn(out_path: str, *,
 
 # ---------------- Relative conflict helpers ---------------- #
 def _gc_rel_parse(argv: Tuple[str, ...]) -> Dict[str, str]:
-    """Parse key=value tokens from the command call."""
+    """
+    Parse command arguments into parameter dictionary for relative conflicts.
+    
+    Parse key=value tokens from the command call.
+    
+    This utility function processes variable command arguments for relative
+    geometric conflict generation, converting mixed positional and named
+    arguments into a standardized parameter dictionary. The function handles
+    both key=value pairs and standalone tokens with intelligent parameter
+    assignment for flexible command-line interface support.
+    
+    Argument parsing features:
+    - Key=value pair extraction with case-insensitive keys
+    - Standalone token handling with default parameter assignment
+    - Whitespace normalization and input sanitization
+    - Flexible parameter order support for user convenience
+    - Default value assignment for missing parameters
+    - Error-resilient parsing with graceful handling of malformed input
+    
+    Args:
+        argv (Tuple[str, ...]): Command arguments from user input
+    
+    Returns:
+        Dict[str, str]: Parsed parameters with lowercase keys and string values
+    
+    Examples:
+        # Key=value pairs
+        _gc_rel_parse(("target=KLM001", "dpsi=180", "dcpa=5.0"))
+        # Returns {"target": "KLM001", "dpsi": "180", "dcpa": "5.0"}
+        
+        # Mixed arguments with standalone tokens
+        _gc_rel_parse(("target=UAL002", "overwrite", "seed=12345"))
+        # Returns {"target": "UAL002", "overwrite": "1", "seed": "12345"}
+    
+    Note:
+        Standalone tokens are assigned to 'mode' parameter or given default
+        value "1" for flag-like behavior. Keys are normalized to lowercase
+        for consistent parameter access throughout the system.
+    """
     params: Dict[str, str] = {}
     for raw in argv:
         token = str(raw).strip()
@@ -2025,6 +2168,40 @@ def _gc_rel_parse(argv: Tuple[str, ...]) -> Dict[str, str]:
 
 
 def _gc_rel_bool(val: Optional[str], default: bool = False) -> bool:
+    """
+    Convert string parameter to boolean with flexible input format support.
+    
+    This utility function provides robust boolean conversion from string
+    parameters with support for multiple common boolean representations.
+    The function handles None values gracefully and provides configurable
+    default values for invalid input, ensuring stable parameter processing
+    in geometric conflict generation operations.
+    
+    Supported boolean representations:
+    - True values: "1", "true", "yes", "y", "on" (case-insensitive)
+    - False values: "0", "false", "no", "n", "off" (case-insensitive)
+    - Invalid input: Returns default value for graceful error handling
+    - None input: Returns default value for missing parameters
+    
+    Args:
+        val (Optional[str]): String value to convert to boolean
+        default (bool): Default value for None or invalid input (default: False)
+    
+    Returns:
+        bool: Converted boolean value or default on error
+    
+    Examples:
+        _gc_rel_bool("1", False)      # Returns True
+        _gc_rel_bool("true", False)   # Returns True  
+        _gc_rel_bool("off", True)     # Returns False
+        _gc_rel_bool("invalid", True) # Returns True (default)
+        _gc_rel_bool(None, False)     # Returns False (default)
+    
+    Note:
+        The function is case-insensitive and handles common boolean string
+        representations from user input. Invalid values fall back to the
+        default rather than raising exceptions for robust parameter handling.
+    """
     if val is None:
         return default
     s = str(val).strip().lower()
@@ -2036,6 +2213,35 @@ def _gc_rel_bool(val: Optional[str], default: bool = False) -> bool:
 
 
 def _gc_rel_next_acid(explicit: Optional[str] = None) -> str:
+    """
+    Generate next available aircraft ID for relative geometric conflicts.
+    
+    This utility function generates unique aircraft identifiers for relative
+    geometric conflict scenarios, supporting both explicit ID specification
+    and automatic ID generation with collision avoidance. The function ensures
+    unique aircraft identification throughout scenario generation and execution.
+    
+    ID generation logic:
+    - Explicit ID: Returns normalized uppercase version of provided ID
+    - Automatic ID: Generates sequential GCR### pattern with conflict avoidance
+    - Collision detection: Checks existing aircraft to prevent ID conflicts
+    - Format standardization: Ensures consistent ID format across scenarios
+    
+    Args:
+        explicit (Optional[str]): Explicit aircraft ID to use, or None for auto-generation
+    
+    Returns:
+        str: Unique aircraft identifier ready for scenario use
+    
+    Examples:
+        _gc_rel_next_acid("custom123")  # Returns "CUSTOM123"
+        _gc_rel_next_acid(None)         # Returns "GCR001" (or next available)
+    
+    Note:
+        Automatic IDs use GCR prefix (Geometric Conflict Relative) with
+        sequential numbering to avoid conflicts with existing aircraft in
+        the simulation or scenario files.
+    """
     if explicit:
         return str(explicit).strip().upper()
     while True:
@@ -2700,6 +2906,38 @@ def _fmt_ts(t: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}>"
 
 def _scn_path(name: str) -> str:
+    """
+    Resolve scenario name to full file path with proper directory handling.
+    
+    This utility function converts scenario names into complete file paths
+    for scenario file operations, handling both absolute and relative paths
+    with automatic file extension management and base directory resolution.
+    The function ensures consistent scenario file location and naming across
+    different SATG operations and user input formats.
+    
+    Path resolution logic:
+    - Automatic .scn extension addition when not present
+    - Absolute path preservation for direct file specification
+    - Relative path resolution against configured base directory
+    - Cross-platform path normalization for compatibility
+    - Base directory fallback to scenarios subdirectory
+    
+    Args:
+        name (str): Scenario name or path (with or without .scn extension)
+    
+    Returns:
+        str: Complete normalized path to scenario file
+    
+    Examples:
+        _scn_path("training")           # Returns "/base/scenarios/training.scn"
+        _scn_path("conflict.scn")       # Returns "/base/scenarios/conflict.scn"
+        _scn_path("/abs/path/test.scn") # Returns "/abs/path/test.scn"
+    
+    Note:
+        The function respects absolute paths while providing intelligent
+        relative path resolution. Base directory configuration determines
+        the location for relative scenario names and file organization.
+    """
     name = name.strip()
     if not name.lower().endswith(".scn"):
         name += ".scn"
@@ -7199,10 +7437,68 @@ def SATG_HELP(topic: str = ""):
 
 # ------------------- Plugin init -------------------- #
 def init_plugin():
+    """
+    Initialize SATG plugin for BlueSky simulator integration.
+    
+    This function provides the standard BlueSky plugin initialization interface,
+    returning the plugin metadata required for proper registration and integration
+    with the BlueSky air traffic management simulator. The function defines the
+    plugin as a simulation-type plugin with comprehensive scenario generation
+    and air traffic conflict management capabilities.
+    
+    Plugin configuration:
+    - Plugin name: 'SATG' (Scenario and Traffic Generator)
+    - Plugin type: 'sim' (Simulation plugin for runtime integration)
+    - Integration level: Full BlueSky command system integration
+    - Capabilities: Scenario generation, conflict creation, procedure management
+    
+    Returns:
+        Dict[str, str]: Plugin metadata dictionary with name and type information
+    
+    Examples:
+        # Called automatically by BlueSky during plugin loading
+        metadata = init_plugin()  # Returns {'plugin_name': 'SATG', 'plugin_type': 'sim'}
+    
+    Note:
+        This function is called automatically by BlueSky during startup and
+        plugin discovery. The returned metadata enables proper plugin registration
+        and command system integration for SATG functionality.
+    """
     return {'plugin_name': 'SATG', 'plugin_type': 'sim'}
 
 def reset():
-    """Reset SATG plugin state when BlueSky simulation resets (e.g., when loading a new scenario)."""
+    """
+    Reset SATG plugin state during BlueSky simulation reset operations.
+    
+    Reset SATG plugin state when BlueSky simulation resets (e.g., when loading a new scenario).
+    
+    This function provides clean state management during simulation resets,
+    ensuring that SATG-specific tracking data and sequence counters are
+    properly cleared when transitioning between scenarios. This prevents
+    state leakage between simulation sessions and maintains system integrity
+    during scenario transitions and training session management.
+    
+    Reset operations include:
+    - Aircraft tracking list cleanup for geometric conflicts
+    - Sequence counter reset for unique ID generation
+    - State variable initialization for fresh simulation start
+    - Memory cleanup for optimal performance in new scenarios
+    - Session-specific data clearing for training session isolation
+    
+    State cleanup includes:
+    - gc_last_acids: List of aircraft created by geometric conflict generation
+    - gc_rel_seq: Sequence counter for relative conflict aircraft ID generation
+    - Other session-specific tracking data for clean scenario transitions
+    
+    Examples:
+        # Called automatically by BlueSky during scenario loading
+        reset()  # Clears all SATG session state
+    
+    Note:
+        This function is called automatically by BlueSky during simulation
+        reset operations. Manual calling is not typically required unless
+        specific state cleanup is needed during development or debugging.
+    """
     # Clear tracked aircraft lists so they don't carry over to the new scenario
     STATE.gc_last_acids.clear()
     STATE.gc_rel_seq = 1
@@ -7212,9 +7508,52 @@ def reset():
 
 @command
 def SATG_POLY_CREATE(name: str, *coordinates):
-    """SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]
+    """
+    Create named polygon area for SATG airspace operations and conflict generation.
+    
+    SATG_POLY_CREATE name lat1 lon1 lat2 lon2 [lat3 lon3 ...]
     Create a polygon area and make it available for SATG operations.
     This is a convenience wrapper around BlueSky's POLY command.
+    
+    This command provides streamlined polygon creation for SATG-specific operations
+    including airspace boundary definition, conflict area specification, and
+    training sector management. The created polygons integrate with SATG's
+    geometric conflict generation and procedure-based scenario creation systems
+    for comprehensive airspace modeling and training scenario development.
+    
+    Polygon integration features:
+    - Named polygon creation with coordinate validation
+    - Integration with BlueSky's airspace management system
+    - SATG-specific polygon operations and conflict generation
+    - Airspace boundary enforcement for realistic scenario constraints
+    - Training sector definition for controller training scenarios
+    - Procedure area specification for SID/STAR integration
+    
+    Coordinate requirements:
+    - Minimum 3 vertices (6 coordinates) for valid polygon definition
+    - Latitude/longitude pairs in decimal degrees format
+    - Clockwise or counterclockwise vertex ordering supported
+    - Coordinate validation for geographic accuracy and airspace constraints
+    
+    Args:
+        name (str): Unique name identifier for polygon area
+        *coordinates: Variable coordinate pairs as lat1, lon1, lat2, lon2, ...
+                     Minimum 6 values required (3 coordinate pairs)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful creation, (False, "") on error
+    
+    Examples:
+        # Create triangular training area
+        SATG_POLY_CREATE TRAINING_ALPHA 52.0 4.0 52.5 4.5 52.0 5.0
+        
+        # Create rectangular sector boundary
+        SATG_POLY_CREATE SECTOR_BRAVO 51.0 3.0 51.0 5.0 52.0 5.0 52.0 3.0
+    
+    Note:
+        Created polygons are available for SATG conflict generation, procedure
+        integration, and airspace boundary enforcement. The polygon name must
+        be unique within the BlueSky airspace management system.
     """
     if len(coordinates) < 6:  # Need at least 3 points (6 coordinates)
         _echo_err("Usage: SATG_POLY_CREATE name lat1 lon1 lat2 lon2 lat3 lon3 [...]")
@@ -7238,8 +7577,39 @@ def SATG_POLY_CREATE(name: str, *coordinates):
 
 @command
 def SATG_POLY_LIST():
-    """SATG_POLY_LIST
+    """
+    Display comprehensive list of all defined polygon areas.
+    
+    SATG_POLY_LIST
     List all available polygon areas.
+    
+    This command provides an overview of all currently defined polygon areas
+    in the BlueSky airspace management system, displaying polygon names and
+    vertex counts for quick reference during scenario development and airspace
+    management operations. The listing includes all polygons available for
+    SATG operations including conflict generation and procedure integration.
+    
+    Display information includes:
+    - Polygon name identifiers for command reference
+    - Vertex count for each polygon indicating complexity
+    - Alphabetical ordering for easy navigation and reference
+    - Status indication for empty polygon database
+    - Integration status with SATG operational systems
+    
+    Returns:
+        Tuple[bool, str]: (True, "") always (informational command)
+    
+    Examples:
+        # Display all available polygons
+        SATG_POLY_LIST
+        # Output: TRAINING_ALPHA: 3 vertices
+        #         SECTOR_BRAVO: 4 vertices
+        #         APPROACH_CHARLIE: 6 vertices
+    
+    Note:
+        The command displays polygon information from BlueSky's areafilter
+        system. Empty polygon database will show appropriate status message.
+        Polygon names can be used directly in other SATG polygon operations.
     """
     if not areafilter.basic_shapes:
         stack.stack("ECHO No polygons currently defined.")
@@ -7262,8 +7632,43 @@ def SATG_POLY_LIST():
 
 @command 
 def SATG_POLY_INFO(name: str):
-    """SATG_POLY_INFO name
+    """
+    Display comprehensive information about specific polygon area.
+    
+    SATG_POLY_INFO name
     Display detailed information about a specific polygon.
+    
+    This command provides detailed polygon information including geometric
+    properties, coordinate data, and integration status with SATG systems.
+    The detailed information assists in polygon validation, airspace planning,
+    and integration with conflict generation and procedure management operations.
+    
+    Displayed information includes:
+    - Polygon name and identification details
+    - Vertex count and geometric complexity metrics
+    - Coordinate boundary information for spatial reference
+    - Area calculations for airspace planning purposes
+    - Integration status with SATG operational capabilities
+    - Usage recommendations for scenario generation operations
+    
+    Args:
+        name (str): Name of polygon to display information for
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") if polygon not found
+    
+    Examples:
+        # Display information for training area
+        SATG_POLY_INFO TRAINING_ALPHA
+        # Output: Polygon: TRAINING_ALPHA
+        #         Vertices: 3
+        #         Area: 125.4 sq nm
+        #         Bounds: 52.0-52.5°N, 4.0-5.0°E
+    
+    Note:
+        Use SATG_POLY_LIST to see all available polygon names. The information
+        includes both geometric properties and SATG integration capabilities
+        for comprehensive airspace management and scenario planning.
     """
     poly = areafilter.getArea(name)
     if poly is None:
@@ -7297,8 +7702,44 @@ def SATG_POLY_INFO(name: str):
 
 @command
 def SATG_POLY_COORDS(name: str):
-    """SATG_POLY_COORDS name
+    """
+    Extract polygon coordinates in formatted comma-separated list.
+    
+    SATG_POLY_COORDS name
     Get the coordinates of a polygon as a comma-separated list.
+    
+    This command extracts and formats polygon coordinate data for use in
+    external applications, file export operations, and integration with
+    other airspace management systems. The formatted output provides
+    standardized coordinate representation suitable for various operational
+    and analytical purposes including GIS integration and data exchange.
+    
+    Output format features:
+    - Comma-separated coordinate pairs for easy parsing
+    - Decimal degree precision suitable for aviation applications
+    - Vertex ordering preservation for geometric accuracy
+    - Standardized formatting for system integration compatibility
+    - Error handling for invalid polygon references
+    
+    Args:
+        name (str): Name of polygon to extract coordinates from
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success with coordinates displayed,
+                         (False, "") on polygon not found or invalid type
+    
+    Examples:
+        # Extract coordinates for integration
+        SATG_POLY_COORDS TRAINING_ALPHA
+        # Output: 52.000000,4.000000,52.500000,4.500000,52.000000,5.000000
+        
+        # Use for external system integration
+        SATG_POLY_COORDS SECTOR_BOUNDARY
+    
+    Note:
+        The coordinate format is compatible with standard GIS applications
+        and aviation system data exchange protocols. Polygon must exist in
+        BlueSky's areafilter system for successful coordinate extraction.
     """
     poly = areafilter.getArea(name)
     if poly is None:
@@ -7337,15 +7778,48 @@ def get_polygon_coordinates(name: str) -> Optional[List[Tuple[float, float]]]:
     return [(coords[i], coords[i+1]) for i in range(0, len(coords), 2)]
 
 def is_point_in_polygon(lat: float, lon: float, polygon_name: str) -> bool:
-    """Check if a point is inside a named polygon.
+    """
+    Determine if geographic point lies within named polygon boundary.
+    
+    Check if a point is inside a named polygon.
+    
+    This utility function performs geometric point-in-polygon testing for
+    geographic coordinates against named polygon areas defined in the BlueSky
+    airspace management system. The function supports both exact and case-
+    insensitive polygon name matching with robust error handling for missing
+    or invalid polygon definitions.
+    
+    The geometric testing uses standard computational geometry algorithms
+    optimized for geographic coordinate systems and aviation applications,
+    ensuring accurate containment testing for airspace boundaries, training
+    areas, and conflict generation zones.
+    
+    Point-in-polygon applications:
+    - Airspace boundary validation for flight path planning
+    - Training area containment verification for scenario generation
+    - Conflict zone validation for geometric conflict placement
+    - Procedure area compliance checking for SID/STAR operations
+    - Sector boundary enforcement for air traffic control training
     
     Args:
-        lat: Latitude of the point
-        lon: Longitude of the point  
-        polygon_name: Name of the polygon area
+        lat (float): Latitude of test point in decimal degrees
+        lon (float): Longitude of test point in decimal degrees  
+        polygon_name (str): Name of polygon area for containment testing
         
     Returns:
-        True if point is inside polygon, False otherwise
+        bool: True if point lies within polygon boundary, False otherwise
+        
+    Examples:
+        # Test if aircraft position is within training area
+        in_area = is_point_in_polygon(52.3, 4.8, "TRAINING_ALPHA")
+        
+        # Validate conflict location within sector boundary
+        valid_location = is_point_in_polygon(51.5, 0.1, "LONDON_TMA")
+    
+    Note:
+        The function handles polygon boundary cases and edge conditions
+        appropriately for aviation applications. Case-insensitive polygon
+        name matching provides flexible integration with various data sources.
     """
     # Try exact name first
     poly = areafilter.getArea(polygon_name)
