@@ -6112,6 +6112,60 @@ def SATG_PROC_OVERRIDE_STAR(override_initial_alt: int, override_initial_spd: int
 
 @command
 def SATG_PROC_CFG_GENERIC(flights: int, alt_fl: int, mach: float, schedule_mode: int, rate_basis_idx: int, final_alt_fl: int, final_spd: int):
+    """
+    Configure global parameters for Generic procedure-based traffic generation.
+    
+    SATG_PROC_CFG_GENERIC flights alt_fl mach schedule_mode rate_basis_idx final_alt_fl final_spd
+    Set operational parameters for generic route procedures including aircraft
+    count, cruise altitude, speed, scheduling mode, and rate calculation basis.
+    
+    This command establishes the operational framework for generic procedure-based
+    traffic generation, defining key parameters that govern aircraft spawning rates,
+    flight profiles, and operational characteristics. Generic procedures provide
+    flexible traffic generation for training scenarios that require customized
+    routing patterns without specific SID/STAR constraints.
+    
+    Configuration parameters control:
+    - Aircraft generation quantity and timing for training scenario population
+    - Cruise flight levels and speed profiles for realistic operational modeling
+    - Scheduling modes for time-based vs. rate-based traffic generation patterns
+    - Rate calculation basis selection for spawn timing optimization
+    - Final approach parameters for arrival phase management and coordination
+    
+    The scheduling system supports both time-based scheduling (predetermined
+    aircraft spawn times) and rate-based generation (continuous spawning at
+    specified intervals), enabling flexible traffic pattern generation for
+    diverse training scenarios and operational complexity requirements.
+    
+    Args:
+        flights (int): Total number of aircraft to generate (minimum: 0)
+        alt_fl (int): Cruise altitude in flight levels (minimum: 0, e.g., 350 for FL350)
+        mach (float): Cruise Mach number (range: 0.40-0.92 for commercial operations)
+        schedule_mode (int): Scheduling mode (0=rate-based, 1=time-based scheduling)
+        rate_basis_idx (int): Rate calculation basis (0=initial waypoint, 1=final waypoint)
+        final_alt_fl (int): Final approach altitude in flight levels (minimum: 0)
+        final_spd (int): Final approach speed in knots (minimum: 0)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration
+    
+    Examples:
+        # Configure for high-altitude cruise with rate-based generation
+        SATG_PROC_CFG_GENERIC 20 370 0.82 0 0 100 240
+        
+        # Configure for medium-altitude with time-based scheduling
+        SATG_PROC_CFG_GENERIC 15 300 0.78 1 1 80 220
+        
+        # Configure for training scenario with lower cruise altitude
+        SATG_PROC_CFG_GENERIC 10 250 0.75 0 0 60 200
+    
+    Note:
+        Mach numbers are automatically constrained to safe operational ranges
+        (0.40-0.92). Rate basis selection affects spawn timing calculations:
+        initial waypoint basis for departure-focused scenarios, final waypoint
+        basis for arrival-focused traffic patterns. Configuration applies to
+        all subsequent generic procedure operations until modified.
+    """
     flights = max(0, int(flights))
     alt_fl = max(0, int(alt_fl))
     mach = max(0.40, min(0.92, float(mach)))
@@ -6138,6 +6192,57 @@ def SATG_PROC_CFG_GENERIC(flights: int, alt_fl: int, mach: float, schedule_mode:
 
 @command
 def SATG_PROC_CFG_SID(flights: int, alt_ft: int, spd_kt: float):
+    """
+    Configure global parameters for Standard Instrument Departure (SID) procedure generation.
+    
+    SATG_PROC_CFG_SID flights alt_ft spd_kt
+    Set operational parameters for SID-based departure traffic generation including
+    aircraft count, initial altitude, and climb speed constraints for realistic
+    departure operations matching published instrument procedures.
+    
+    This command establishes the operational framework for SID procedure-based
+    departure traffic generation, defining critical parameters that govern aircraft
+    departure characteristics, climb profiles, and initial operational constraints.
+    SID procedures ensure realistic departure operations that comply with published
+    instrument departure procedures for enhanced training scenario authenticity.
+    
+    Configuration parameters control:
+    - Departure traffic volume for training scenario complexity management
+    - Initial climb altitude constraints for realistic departure profile modeling
+    - Climb speed limitations matching operational departure procedure requirements
+    - Integration with runway-specific departure procedures and routing constraints
+    - Compliance with published SID altitude and speed restrictions for realism
+    
+    The SID configuration system ensures generated departures follow realistic
+    operational profiles with proper altitude and speed constraints that match
+    published instrument departure procedures, providing authentic air traffic
+    control training scenarios with operationally accurate departure characteristics.
+    
+    Args:
+        flights (int): Number of departure aircraft to generate (minimum: 0)
+        alt_ft (int): Initial departure altitude in feet above ground level (minimum: 0)
+        spd_kt (float): Initial climb speed in knots indicated airspeed (minimum: 0)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration
+    
+    Examples:
+        # Configure standard jet departure parameters
+        SATG_PROC_CFG_SID 25 3000 250
+        
+        # Configure for busy airport with higher initial altitude
+        SATG_PROC_CFG_SID 40 4000 280
+        
+        # Configure for regional aircraft departures
+        SATG_PROC_CFG_SID 15 2500 220
+    
+    Note:
+        Altitude is specified in feet above ground level for departure operations.
+        Speed constraints should match published SID procedure limitations and
+        aircraft performance capabilities. Configuration applies to all runway-
+        specific SID procedures and affects departure traffic generation rates
+        and operational characteristics until modified.
+    """
     flights = max(0, int(flights))
     alt_ft = max(0, int(alt_ft))
     spd_kt = max(0, int(float(spd_kt)))
@@ -6159,6 +6264,63 @@ def SATG_PROC_CFG_STAR(flights: int,
                        rate_basis: int = 0,
                        final_alt_fl: int = 100,
                        final_spd: int = 240):
+    """
+    Configure comprehensive parameters for Standard Terminal Arrival Route (STAR) procedure generation.
+    
+    SATG_PROC_CFG_STAR flights minsep [initial_alt_fl] [mach] [mode] [rate_basis] [final_alt_fl] [final_spd]
+    Set operational parameters for STAR-based arrival traffic generation including
+    aircraft separation, altitude profiles, speed constraints, and scheduling modes
+    for realistic terminal area arrival operations.
+    
+    This command establishes the comprehensive operational framework for STAR
+    procedure-based arrival traffic generation, defining critical parameters that
+    govern aircraft arrival characteristics, descent profiles, separation requirements,
+    and approach coordination. STAR procedures ensure realistic arrival operations
+    that comply with published terminal arrival routes for enhanced training realism.
+    
+    Configuration parameters provide detailed control over:
+    - Arrival traffic volume and temporal separation for realistic flow management
+    - Initial cruise conditions and descent profiles matching operational procedures
+    - Speed and altitude constraints throughout the arrival phase for procedure compliance
+    - Scheduling modes for flexible traffic pattern generation and timing control
+    - Rate calculation basis selection for optimized arrival sequencing and coordination
+    - Final approach parameters for seamless transition to approach and landing phases
+    
+    The advanced STAR configuration system supports both rate-based and schedule-based
+    traffic generation with precise separation control, enabling realistic terminal
+    area operations that match published STAR procedure constraints and operational
+    requirements for comprehensive air traffic control training scenarios.
+    
+    Args:
+        flights (int): Number of arrival aircraft to generate (minimum: 0)
+        minsep (int): Minimum separation between aircraft in seconds (minimum: 0)
+        initial_alt_fl (int, optional): Initial cruise altitude in flight levels (default: 360)
+        mach (float, optional): Initial cruise Mach number (default: 0.79)
+        mode (int, optional): Generation mode (0=rate-based, 1=schedule-based, default: 0)
+        rate_basis (int, optional): Rate calculation basis (0=initial waypoint, 1=final waypoint, default: 0)
+        final_alt_fl (int, optional): Final approach altitude in flight levels (default: 100)
+        final_spd (int, optional): Final approach speed in knots (default: 240)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration
+    
+    Examples:
+        # Configure standard STAR arrivals with 90-second separation
+        SATG_PROC_CFG_STAR 30 90 360 0.79 0 0 100 240
+        
+        # Configure high-density arrivals with tight separation
+        SATG_PROC_CFG_STAR 50 60 380 0.82 1 1 80 220
+        
+        # Configure for training scenario with moderate complexity
+        SATG_PROC_CFG_STAR 20 120 340 0.76 0 0 120 250
+    
+    Note:
+        Minimum separation ensures realistic traffic flow and conflict prevention.
+        Rate basis selection affects arrival timing: initial waypoint for entry-
+        focused sequencing, final waypoint for approach-focused coordination.
+        Configuration integrates with published STAR procedures and affects all
+        subsequent arrival traffic generation until modified.
+    """
     flights = max(0, int(flights))
     minsep = max(0, int(minsep))
     init_alt_fl_val = max(0, int(_to_int(initial_alt_fl, 360)))
@@ -6193,6 +6355,56 @@ def SATG_PROC_CFG_STAR(flights: int,
 
 @command
 def SATG_PROC_CFG_STARRATE(proc_id: str, rate: float):
+    """
+    Configure individual STAR procedure or waypoint-specific traffic generation rates.
+    
+    SATG_PROC_CFG_STARRATE proc_id rate
+    Set custom traffic generation rate for specific STAR procedure or waypoint,
+    overriding global STAR configuration for targeted traffic flow management
+    and realistic arrival rate modeling based on operational capacity constraints.
+    
+    This command enables fine-grained control over arrival traffic rates for
+    individual STAR procedures or waypoints, allowing realistic modeling of
+    operational capacity constraints, runway-specific arrival rates, and
+    procedure-dependent traffic flows. Individual rate configuration supports
+    complex terminal area scenarios with varying arrival densities per route.
+    
+    Rate configuration capabilities:
+    - Procedure-specific arrival rates for realistic capacity modeling per STAR
+    - Waypoint-based rate control for entry point-specific traffic management
+    - Override of global STAR configuration for customized traffic distribution
+    - Operational realism matching published procedure capacity limitations
+    - Dynamic traffic flow adjustment for training scenario complexity control
+    - Integration with rate basis selection for optimized timing calculations
+    
+    The system automatically resolves procedure identifiers to appropriate
+    waypoints based on the current rate basis configuration (initial or final
+    waypoint), ensuring consistent traffic generation aligned with operational
+    flow patterns and training scenario requirements.
+    
+    Args:
+        proc_id (str): STAR procedure name or waypoint identifier for rate assignment
+        rate (float): Traffic generation rate in aircraft per hour (minimum: 0.0)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration, (False, "") on invalid identifier
+    
+    Examples:
+        # Set high arrival rate for busy STAR procedure
+        SATG_PROC_CFG_STARRATE RNAV_STAR_25L 24.0
+        
+        # Configure moderate rate for secondary arrival route
+        SATG_PROC_CFG_STARRATE ILS_STAR_07R 15.0
+        
+        # Set waypoint-specific entry rate
+        SATG_PROC_CFG_STARRATE BIGGIN 18.0
+    
+    Note:
+        Procedure identifier must match loaded STAR procedures or configured
+        waypoints. Rate basis setting (initial/final waypoint) affects which
+        waypoint is used for rate calculations. Individual rates override
+        global STAR configuration for the specified procedure or waypoint.
+    """
     rate_val = max(0.0, float(rate))
     pid = proc_id.strip()
     if not pid:
@@ -6250,7 +6462,55 @@ def SATG_PROC_CFG_STARRATE(proc_id: str, rate: float):
 
 @command
 def SATG_PROC_CFG_GENERICRATE(proc_id: str, rate: float):
-    """Configure Generic procedure spawn rate by waypoint identifier."""
+    """
+    Configure individual Generic procedure waypoint-specific traffic generation rates.
+    
+    SATG_PROC_CFG_GENERICRATE proc_id rate
+    Set custom traffic generation rate for specific Generic procedure waypoint,
+    overriding global Generic configuration for targeted traffic flow management
+    and flexible route-based traffic modeling with waypoint-specific control.
+    
+    This command enables precise control over traffic generation rates for
+    individual waypoints within Generic procedure routing, allowing realistic
+    modeling of traffic flow patterns that vary by route entry/exit points.
+    Generic procedure rate configuration supports complex training scenarios
+    with diverse traffic distributions and operational flow management.
+    
+    Rate configuration capabilities:
+    - Waypoint-specific traffic rates for realistic flow distribution modeling
+    - Override of global Generic procedure configuration for customized patterns
+    - Integration with rate basis selection for optimized timing calculations
+    - Flexible traffic management for complex training scenario requirements
+    - Route-specific capacity modeling matching operational constraints
+    - Dynamic traffic flow adjustment for training complexity control
+    
+    The system applies rates based on the current Generic procedure rate basis
+    configuration (initial or final waypoint), ensuring consistent traffic
+    generation aligned with procedural flow patterns and training objectives.
+    
+    Args:
+        proc_id (str): Waypoint identifier for Generic procedure rate assignment
+        rate (float): Traffic generation rate in aircraft per hour (minimum: 0.0)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration, (False, "") on invalid identifier
+    
+    Examples:
+        # Set high traffic rate for busy waypoint
+        SATG_PROC_CFG_GENERICRATE ENTRY_ALPHA 20.0
+        
+        # Configure moderate rate for secondary route
+        SATG_PROC_CFG_GENERICRATE EXIT_BRAVO 12.0
+        
+        # Set low rate for specialized training waypoint
+        SATG_PROC_CFG_GENERICRATE TRAINING_CHARLIE 8.0
+    
+    Note:
+        Waypoint identifier must match configured Generic procedure waypoints.
+        Rate basis setting affects which waypoint (initial/final) is used for
+        rate calculations. Individual rates override global Generic procedure
+        configuration for the specified waypoint.
+    """
     rate_val = max(0.0, float(rate))
     pid = proc_id.strip()
     if not pid:
@@ -6374,7 +6634,50 @@ def _get_available_aircraft_types():
 
 @command
 def SATG_AVAILABLE_ACTYPES():
-    """Get list of available aircraft types from performance model."""
+    """
+    Display comprehensive list of available aircraft types from BlueSky performance model.
+    
+    SATG_AVAILABLE_ACTYPES
+    Query and display all aircraft types supported by the current BlueSky performance
+    model, providing reference information for aircraft type selection in SATG
+    scenario generation, procedure configuration, and conflict creation operations.
+    
+    This command provides essential reference information for aircraft type selection
+    across all SATG operations, ensuring compatibility with the active BlueSky
+    performance model and enabling informed aircraft type choices for realistic
+    scenario generation. The command automatically detects the active performance
+    model and extracts supported aircraft type designators.
+    
+    Aircraft type information includes:
+    - Complete list of performance model-supported aircraft types
+    - ICAO aircraft type designator format for command compatibility
+    - Organized display format for easy reference and selection
+    - Performance model integration validation for scenario compatibility
+    - Fallback aircraft types for robust operation across BlueSky versions
+    
+    The system queries multiple performance model interfaces including OpenAP,
+    BADA, and legacy performance models, ensuring comprehensive aircraft type
+    coverage and compatibility across different BlueSky configurations and
+    installations for maximum operational flexibility.
+    
+    Returns:
+        Tuple[bool, str]: (True, pipe-separated aircraft types) on success,
+                         (False, "") on performance model access error
+    
+    Examples:
+        # Display all available aircraft types
+        SATG_AVAILABLE_ACTYPES
+        # Output: Available aircraft types (45 total):
+        #         A319, A320, A321, A330, A340, A350, A380, A388
+        #         B737, B738, B739, B744, B747, B777, B787, B78X
+        #         [additional aircraft types...]
+    
+    Note:
+        Aircraft type availability depends on the active BlueSky performance
+        model configuration. The command provides both console display and
+        programmatic access (pipe-separated return value) for integration
+        with GUI components and automated aircraft type selection systems.
+    """
     try:
         actypes = _get_available_aircraft_types()
         if actypes:
@@ -6396,6 +6699,59 @@ def SATG_AVAILABLE_ACTYPES():
 
 @command
 def SATG_PROC_CFG_STARSCHED(proc_id: str, start_min: float, end_min: float, *caps):
+    """
+    Configure time-based scheduling parameters for individual STAR procedures.
+    
+    SATG_PROC_CFG_STARSCHED proc_id start_min end_min cap1 [cap2 cap3 ...]
+    Set scheduled arrival capacity for specific STAR procedure with time-windowed
+    aircraft distribution using 15-minute slot intervals for realistic terminal
+    area traffic management and operational capacity modeling.
+    
+    This command enables sophisticated time-based arrival scheduling for individual
+    STAR procedures, allowing precise control over arrival traffic distribution
+    throughout operational time periods. The scheduling system uses fixed 15-minute
+    time slots with configurable aircraft capacity per slot, enabling realistic
+    modeling of terminal area arrival management and operational flow control.
+    
+    Scheduling system features:
+    - Time-windowed arrival capacity management with 15-minute precision slots
+    - Individual STAR procedure scheduling for route-specific traffic control
+    - Flexible capacity distribution across operational time periods
+    - Realistic terminal area arrival flow modeling matching operational patterns
+    - Integration with STAR procedure configuration for comprehensive traffic management
+    - Schedule clearing capability for dynamic operational adjustments
+    
+    The scheduling system automatically calculates time windows based on slot
+    intervals and capacity specifications, ensuring consistent arrival patterns
+    that match operational terminal area management requirements and controller
+    training scenario objectives with realistic arrival flow distributions.
+    
+    Args:
+        proc_id (str): STAR procedure identifier for scheduling configuration
+        start_min (float): Schedule start time in minutes from scenario start (minimum: 0.0)
+        end_min (float): Schedule end time in minutes from scenario start (minimum: start_min)
+        *caps: Variable aircraft capacity values per 15-minute slot (minimum: 0 per slot)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration, (False, "") on invalid procedure
+    
+    Examples:
+        # Configure peak arrival schedule with varying capacity
+        SATG_PROC_CFG_STARSCHED RNAV_25L 0.0 60.0 8 12 15 10
+        
+        # Configure moderate arrival schedule for secondary route
+        SATG_PROC_CFG_STARSCHED ILS_07R 30.0 90.0 6 8 6 4
+        
+        # Clear existing schedule (no capacity values)
+        SATG_PROC_CFG_STARSCHED RNAV_25L 0.0 15.0
+    
+    Note:
+        Schedule uses 15-minute slots regardless of specified end time. If end
+        time doesn't align with slot intervals, it's automatically adjusted.
+        Empty capacity list clears existing schedule for the procedure. Total
+        aircraft count is distributed across specified time slots for realistic
+        arrival flow patterns.
+    """
     path = _resolve_proc_path(proc_id)
     if not path:
         _echo_err(f"SATG_PROC_CFG_STARSCHED: unknown procedure '{proc_id}'"); return False, ""
@@ -6437,6 +6793,55 @@ def SATG_PROC_CLEAR_STARSCHED(proc_id: str = ''):
 
 @command
 def SATG_PROC_CFG_SIDRATE(runway: str, rate: float):
+    """
+    Configure runway-specific departure rates for Standard Instrument Departure (SID) procedures.
+    
+    SATG_PROC_CFG_SIDRATE runway rate
+    Set departure traffic generation rate for specific runway, enabling realistic
+    modeling of runway capacity constraints and operational departure flow management
+    based on runway-specific operational limitations and traffic management requirements.
+    
+    This command enables precise control over departure traffic rates for individual
+    runways, allowing realistic modeling of airport operational capacity constraints,
+    runway-specific departure procedures, and traffic flow management. Runway-specific
+    rate configuration supports complex multi-runway airport scenarios with varying
+    departure capacities and operational characteristics per runway.
+    
+    Runway rate configuration capabilities:
+    - Individual runway departure capacity modeling for realistic airport operations
+    - Override of global SID configuration for runway-specific traffic management
+    - Operational realism matching published runway capacity limitations
+    - Multi-runway airport support with independent departure rate control
+    - Training scenario complexity management through targeted traffic distribution
+    - Integration with SID procedures for comprehensive departure traffic modeling
+    
+    The system supports standard runway identifier formats with automatic parsing
+    and normalization, ensuring consistent runway identification and rate application
+    across all departure traffic generation operations and training scenarios.
+    
+    Args:
+        runway (str): Runway identifier (e.g., "RW18L", "18L", "07R") for rate assignment
+        rate (float): Departure traffic generation rate in aircraft per hour (minimum: 0.0)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration, (False, "") on invalid runway
+    
+    Examples:
+        # Configure high departure rate for primary runway
+        SATG_PROC_CFG_SIDRATE RW25L 24.0
+        
+        # Configure moderate rate for secondary runway
+        SATG_PROC_CFG_SIDRATE 07R 15.0
+        
+        # Configure low rate for crosswind runway
+        SATG_PROC_CFG_SIDRATE 18C 8.0
+    
+    Note:
+        Runway identifier accepts various formats (RW18L, 18L) with automatic
+        normalization. Rate applies to all SID procedures using the specified
+        runway. Individual runway rates override global SID configuration for
+        departure traffic generation on the specified runway.
+    """
     rw = runway.strip().upper()
     if rw.startswith("RW"):
         rw = rw[2:]
@@ -6450,6 +6855,39 @@ def SATG_PROC_CFG_SIDRATE(runway: str, rate: float):
 
 @command
 def SATG_PROC_CFG_SIDSCHED(runway: str, start_min: float, end_min: float, *caps):
+    """
+    Configure time-based scheduling parameters for runway-specific SID departures.
+    
+    SATG_PROC_CFG_SIDSCHED runway start_min end_min cap1 [cap2 cap3 ...]
+    Set scheduled departure capacity for specific runway with time-windowed
+    aircraft distribution using 15-minute slot intervals for realistic departure
+    flow management and operational capacity modeling.
+    
+    This command enables sophisticated time-based departure scheduling for individual
+    runways, allowing precise control over departure traffic distribution throughout
+    operational time periods. The scheduling system uses fixed 15-minute time slots
+    with configurable aircraft capacity per slot, enabling realistic modeling of
+    runway departure capacity and operational flow control.
+    
+    Args:
+        runway (str): Runway identifier (e.g., "RW18L", "25R") for scheduling
+        start_min (float): Schedule start time in minutes from scenario start
+        end_min (float): Schedule end time in minutes from scenario start  
+        *caps: Aircraft capacity values per 15-minute slot
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") on invalid runway
+    
+    Examples:
+        # Configure peak departure schedule
+        SATG_PROC_CFG_SIDSCHED RW25L 0.0 60.0 6 8 10 6
+        
+        # Clear existing schedule
+        SATG_PROC_CFG_SIDSCHED RW25L 0.0 15.0
+    
+    Note:
+        Uses 15-minute slots. Empty capacity list clears existing schedule.
+    """
     rw = runway.strip().upper()
     if rw.startswith("RW"):
         rw = rw[2:]
@@ -7842,8 +8280,53 @@ def is_point_in_polygon(lat: float, lon: float, polygon_name: str) -> bool:
 
 @command
 def SATG_POLY_TEST(polygon_name: str, lat: float, lon: float):
-    """SATG_POLY_TEST polygon_name lat lon
+    """
+    Test geographic point containment within named polygon boundary.
+    
+    SATG_POLY_TEST polygon_name lat lon
     Test if a specific point is inside the named polygon.
+    
+    This command provides interactive point-in-polygon testing for airspace
+    validation, scenario planning, and geometric verification operations.
+    The command offers immediate feedback on point containment status for
+    use in flight path validation, conflict placement verification, and
+    airspace boundary compliance checking during scenario development.
+    
+    Testing capabilities include:
+    - Real-time point containment verification with immediate results
+    - High-precision coordinate testing for aviation accuracy requirements
+    - Named polygon reference with error handling for invalid polygons
+    - Clear status reporting for operational decision support
+    - Integration with SATG scenario generation and validation workflows
+    
+    Use cases for point testing:
+    - Validate aircraft positions within assigned airspace sectors
+    - Verify conflict placement within designated training areas
+    - Check waypoint containment for procedure compliance validation
+    - Confirm scenario element placement within operational boundaries
+    - Support interactive airspace planning and validation operations
+    
+    Args:
+        polygon_name (str): Name of polygon area for containment testing
+        lat (float): Latitude of test point in decimal degrees
+        lon (float): Longitude of test point in decimal degrees
+    
+    Returns:
+        Tuple[bool, str]: (True, "") with status display, (False, "") if polygon not found
+    
+    Examples:
+        # Test aircraft position within training sector
+        SATG_POLY_TEST TRAINING_ALPHA 52.300000 4.800000
+        # Output: Point (52.300000, 4.800000) is INSIDE polygon 'TRAINING_ALPHA'
+        
+        # Verify conflict location within operational area
+        SATG_POLY_TEST LONDON_TMA 51.500000 0.100000
+        # Output: Point (51.500000, 0.100000) is OUTSIDE polygon 'LONDON_TMA'
+    
+    Note:
+        The test uses high-precision geometric algorithms suitable for aviation
+        applications. Results provide immediate operational feedback for airspace
+        validation and scenario development workflows with clear status indication.
     """
     if not areafilter.getArea(polygon_name):
         _echo_err(f"Polygon '{polygon_name}' not found.")
