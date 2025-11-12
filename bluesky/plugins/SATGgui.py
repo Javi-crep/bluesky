@@ -1386,7 +1386,7 @@ class ProcedureEditorDialog(QDialog):
             
             self.status_label.setText("Procedure saved successfully!")
             
-            # Now perform the unload → reload cycle
+            # Now perform the unload -> reload cycle
             try:
                 from bluesky import stack
                 
@@ -1959,7 +1959,7 @@ class ProcedureEditorDialog(QDialog):
             waypoint_name = name_item.text() if name_item else "Waypoint"
             
             # Create floating label
-            self._drag_widget = QLabel(f"📍 {waypoint_name}", self.waypoints_table.parent())
+            self._drag_widget = QLabel(f"* {waypoint_name}", self.waypoints_table.parent())
             self._drag_widget.setStyleSheet("""
                 QLabel {
                     background-color: rgba(0, 122, 204, 200);
@@ -2398,11 +2398,13 @@ class TopStrip(QWidget):
         btn_save_config = QPushButton("Save Config", self)
         btn_load_config = QPushButton("Load Config", self)
         btn_edit_configs = QPushButton("Edit Configs", self)
+        btn_manage_cache = QPushButton("Manage Cache", self)
         btn_reset = QPushButton("Reset", self)
         btn_reset.setToolTip("Full BlueSky reset")
         btn_save_config.setToolTip("Save current tab configuration")
         btn_load_config.setToolTip("Load saved tab configuration")
         btn_edit_configs.setToolTip("Manage saved configurations")
+        btn_manage_cache.setToolTip("View and manage cache files")
 
         lay.addWidget(btn_browse)
         lay.addWidget(btn_show)
@@ -2411,6 +2413,7 @@ class TopStrip(QWidget):
         lay.addWidget(btn_save_config)
         lay.addWidget(btn_load_config)
         lay.addWidget(btn_edit_configs)
+        lay.addWidget(btn_manage_cache)
         lay.addWidget(btn_reset)
 
         btn_browse.clicked.connect(self._choose_base)
@@ -2419,6 +2422,7 @@ class TopStrip(QWidget):
         btn_save_config.clicked.connect(self._save_config)
         btn_load_config.clicked.connect(self._load_config)
         btn_edit_configs.clicked.connect(self._edit_configs)
+        btn_manage_cache.clicked.connect(self._manage_cache)
         btn_reset.clicked.connect(lambda: _emit("RESET"))
 
     def _choose_base(self):
@@ -2844,9 +2848,9 @@ class TopStrip(QWidget):
             if files_loaded or files_failed:
                 message_parts = []
                 if files_loaded:
-                    message_parts.append(f"Successfully loaded files:\n" + "\n".join(f"  • {f}" for f in files_loaded))
+                    message_parts.append(f"Successfully loaded files:\n" + "\n".join(f"  - {f}" for f in files_loaded))
                 if files_failed:
-                    message_parts.append(f"Failed to load files:\n" + "\n".join(f"  • {f}" for f in files_failed))
+                    message_parts.append(f"Failed to load files:\n" + "\n".join(f"  - {f}" for f in files_failed))
                     
                 QMessageBox.information(self, "File Loading Results", "\n\n".join(message_parts))
                 
@@ -2971,8 +2975,9 @@ class TopStrip(QWidget):
             'lat_min': -90, 'lat_max': 90,
             'lon_min': -180, 'lon_max': 180,
             'fl_min': 0, 'fl_max': 500,
-            'exclude_airspace': [],
+            'include_airspace': [],
             'time_start': None, 'time_end': None,
+            'date_start': None, 'date_end': None,
             'aircraft_types': []
         })
         
@@ -3648,6 +3653,29 @@ class TopStrip(QWidget):
         dialog = ConfigManagerDialog(config_dir, config_files, self)
         dialog.exec()
 
+    def _manage_cache(self):
+        """Open a dialog to manage cache files."""
+        try:
+            # Get cache information from TraffixGen
+            from . import traffixgen
+            cache_info = traffixgen.get_cache_info()
+            
+            if cache_info.get('error'):
+                QMessageBox.warning(self, "Cache Error", f"Error accessing cache: {cache_info['error']}")
+                return
+            
+            cache_files = cache_info.get('cache_files', [])
+            if not cache_files:
+                QMessageBox.information(self, "No Cache Files", "No cache files found.")
+                return
+            
+            # Create cache management dialog
+            dialog = CacheManagerDialog(cache_info, self)
+            dialog.exec()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Error accessing cache: {e}")
+
 # Config Manager Dialog Class
 class ConfigManagerDialog(QDialog):
     """Dialog for managing saved configurations."""
@@ -3845,6 +3873,180 @@ class ConfigManagerDialog(QDialog):
             QMessageBox.information(self, "Success", f"Configuration '{config_file}' deleted successfully.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to delete configuration:\n{str(e)}")
+
+# Cache Manager Dialog Class
+class CacheManagerDialog(QDialog):
+    """Dialog for managing cache files."""
+    
+    def __init__(self, cache_info: dict, parent=None):
+        super().__init__(parent)
+        self.cache_info = cache_info
+        self.cache_files = cache_info.get('cache_files', [])
+        
+        self.setWindowTitle("Manage Cache Files")
+        self.setModal(True)
+        self.resize(800, 600)
+        
+        self._setup_ui()
+        self.refresh_list()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Info section
+        info_group = QGroupBox("Cache Information")
+        info_layout = QVBoxLayout(info_group)
+        
+        total_size = self.cache_info.get('total_size_mb', 0)
+        file_count = self.cache_info.get('count', 0)
+        info_text = f"Total cache size: {total_size:.1f} MB ({file_count} files)"
+        info_label = QLabel(info_text)
+        info_label.setStyleSheet("font-weight: bold; color: #333;")
+        info_layout.addWidget(info_label)
+        
+        layout.addWidget(info_group)
+        
+        # Cache files list
+        files_group = QGroupBox("Cache Files")
+        files_layout = QVBoxLayout(files_group)
+        
+        self.files_list = QListWidget()
+        self.files_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        files_layout.addWidget(self.files_list)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh_list)
+        button_layout.addWidget(self.refresh_btn)
+        
+        button_layout.addStretch()
+        
+        self.delete_selected_btn = QPushButton("Delete Selected")
+        self.delete_selected_btn.clicked.connect(self._delete_selected)
+        button_layout.addWidget(self.delete_selected_btn)
+        
+        self.clear_all_btn = QPushButton("Clear All Cache")
+        self.clear_all_btn.clicked.connect(self._clear_all_cache)
+        button_layout.addWidget(self.clear_all_btn)
+        
+        files_layout.addLayout(button_layout)
+        layout.addWidget(files_group)
+        
+        # Dialog buttons
+        dialog_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        dialog_buttons.rejected.connect(self.close)
+        layout.addWidget(dialog_buttons)
+        
+        # Connect selection changes
+        self.files_list.itemSelectionChanged.connect(self._update_button_states)
+        self._update_button_states()
+    
+    def refresh_list(self):
+        """Refresh the cache files list."""
+        try:
+            from . import traffixgen
+            self.cache_info = traffixgen.get_cache_info()
+            self.cache_files = self.cache_info.get('cache_files', [])
+            
+            self.files_list.clear()
+            
+            for file_info in self.cache_files:
+                file_name = file_info['file']
+                file_size = file_info['size_mb']
+                file_type = file_info['type']
+                
+                # Format modified time
+                import time
+                modified_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_info['modified']))
+                
+                display_text = f"{file_name} ({file_size:.1f} MB, {file_type}, {modified_time})"
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.ItemDataRole.UserRole, file_info)
+                self.files_list.addItem(item)
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Error refreshing cache list: {e}")
+    
+    def _get_selected_files(self):
+        """Get list of selected cache file info."""
+        selected_files = []
+        for item in self.files_list.selectedItems():
+            file_info = item.data(Qt.ItemDataRole.UserRole)
+            if file_info:
+                selected_files.append(file_info)
+        return selected_files
+    
+    def _update_button_states(self):
+        """Update button states based on selection."""
+        has_selection = len(self.files_list.selectedItems()) > 0
+        has_files = self.files_list.count() > 0
+        
+        self.delete_selected_btn.setEnabled(has_selection)
+        self.clear_all_btn.setEnabled(has_files)
+    
+    def _delete_selected(self):
+        """Delete selected cache files."""
+        selected_files = self._get_selected_files()
+        if not selected_files:
+            return
+        
+        # Confirm deletion
+        file_list = '\n'.join([f['file'] for f in selected_files])
+        reply = QMessageBox.question(self, "Confirm Deletion", 
+                                   f"Are you sure you want to delete the following cache files?\n\n"
+                                   f"{file_list}\n\n"
+                                   f"This action cannot be undone.",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            from . import traffixgen
+            # Delete files through TraffixGen
+            for file_info in selected_files:
+                result = traffixgen.delete_cache_file(file_info['file'])
+                if not result.get('success', False):
+                    QMessageBox.warning(self, "Error", f"Failed to delete {file_info['file']}: {result.get('error', 'Unknown error')}")
+            
+            # Refresh the list
+            self.refresh_list()
+            QMessageBox.information(self, "Success", f"Deleted {len(selected_files)} cache file(s)")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to delete cache files:\n{str(e)}")
+    
+    def _clear_all_cache(self):
+        """Clear all cache files."""
+        if not self.cache_files:
+            return
+        
+        # Confirm clearing all
+        total_size = self.cache_info.get('total_size_mb', 0)
+        reply = QMessageBox.question(self, "Confirm Clear All", 
+                                   f"Are you sure you want to clear ALL cache files?\n\n"
+                                   f"This will delete {len(self.cache_files)} files ({total_size:.1f} MB)\n\n"
+                                   f"This action cannot be undone.",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            from . import traffixgen
+            result = traffixgen.clear_cache()
+            
+            if result.get('success', False):
+                self.refresh_list()
+                QMessageBox.information(self, "Success", "All cache files cleared successfully")
+            else:
+                QMessageBox.warning(self, "Error", f"Failed to clear cache: {result.get('error', 'Unknown error')}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to clear cache:\n{str(e)}")
+
 
 # Aircraft Type Selection Dialog
 class AircraftTypeDialog(QDialog):
@@ -4143,8 +4345,9 @@ class RLTab(QWidget):
             'lat_min': -90, 'lat_max': 90,
             'lon_min': -180, 'lon_max': 180,
             'fl_min': 0, 'fl_max': 500,
-            'exclude_airspace': [],
+            'include_airspace': [],
             'time_start': None, 'time_end': None,
+            'date_start': None, 'date_end': None,
             'aircraft_types': [],  # Empty means all types
             'polygon_filter': None  # Polygon filter (disabled by default)
         }
@@ -4358,7 +4561,7 @@ class RLTab(QWidget):
         # Check if any filter values are different from defaults
         default_filters = {
             'lat_min': -90, 'lat_max': 90, 'lon_min': -180, 'lon_max': 180,
-            'fl_min': 0, 'fl_max': 500, 'exclude_airspace': [], 'aircraft_types': [],
+            'fl_min': 0, 'fl_max': 500, 'include_airspace': [], 'aircraft_types': [],
             'time_start': None, 'time_end': None
         }
         
@@ -4615,7 +4818,7 @@ class RLTab(QWidget):
                 nsig = widgets['nsig'].value()
                 
                 print(f"Phase {phase}: enabled, dist={dist}, dt={dt_max}s, "
-                      f"dlat={dlat_max}°, dlon={dlon_max}°, dfl={dfl_max}ft, nsig={nsig}")
+                      f"dlat={dlat_max}deg, dlon={dlon_max}deg, dfl={dfl_max}ft, nsig={nsig}")
                 
                 # Send to backend using correct command signature (enabled, dt, dlat, dlon, dfl)
                 SATG.SATG_RL_PHASE_CONFIG(phase, "on", dt_max, dlat_max, dlon_max, dfl_max)
@@ -4699,8 +4902,9 @@ class RLTab(QWidget):
                 if self.eurocontrol_filters.get('aircraft_types'):
                     filters['aircraft_types'] = self.eurocontrol_filters['aircraft_types']
                 
-                if self.eurocontrol_filters.get('exclude_airspace'):
-                    filters['exclude_airspace'] = self.eurocontrol_filters['exclude_airspace']
+                # Add airspace filter if configured
+                if self.eurocontrol_filters.get('include_airspace'):
+                    filters['include_airspace'] = self.eurocontrol_filters['include_airspace']
                 
                 if filters:
                     import json
@@ -4754,6 +4958,24 @@ class RLTab(QWidget):
             # Import TraffixGen functions directly
             from . import traffixgen
             
+            # Check if we can use cached summary data (only recalculate if file paths changed)
+            current_file_paths = (
+                getattr(self, '_flights_file', ''),
+                getattr(self, '_filed_file', ''), 
+                getattr(self, '_actual_file', ''),
+                getattr(self, '_fir_file', '')
+            )
+            
+            # Use cached data if file paths haven't changed
+            if (hasattr(self, '_cached_file_paths') and 
+                hasattr(self, '_cached_summary_data') and
+                self._cached_file_paths == current_file_paths and
+                self._cached_summary_data):
+                print("DEBUG: Using cached data for Realistic Replay filter dialog...")
+                return self._cached_summary_data
+            else:
+                print("DEBUG: File paths changed or no cache - refreshing data for Realistic Replay filter dialog...")
+            
             # Step 1: Load Eurocontrol data via TraffixGen
             fir_file = self._fir_file if self._fir_file else ""
             
@@ -4776,6 +4998,10 @@ class RLTab(QWidget):
                 QMessageBox.critical(self, "Data Loading Error", 
                                    f"Failed to load data summary: {summary['error']}")
                 return None
+            
+            # Cache the summary data and file paths for next time
+            self._cached_file_paths = current_file_paths
+            self._cached_summary_data = summary
             
             return summary
             
@@ -4983,14 +5209,8 @@ class EurocontrolFilterDialog(QDialog):
         # If Enter/Return is pressed, don't call the parent's keyPressEvent
         # which would trigger the default button behavior
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            # Check if the focus is on the polygon name input
-            focused_widget = self.focusWidget()
-            if hasattr(self, 'polygon_name_input') and focused_widget == self.polygon_name_input:
-                # Let the polygon name input handle the Enter key (calls returnPressed signal)
-                super().keyPressEvent(event)
-            else:
-                # Ignore Enter key for all other widgets to prevent dialog closure
-                event.ignore()
+            # Ignore Enter key for all widgets to prevent dialog closure
+            event.ignore()
         else:
             # For all other keys, use normal behavior
             super().keyPressEvent(event)
@@ -5024,10 +5244,6 @@ class EurocontrolFilterDialog(QDialog):
         # Aircraft filters tab
         aircraft_tab = self._create_aircraft_tab()
         tabs.addTab(aircraft_tab, "Aircraft")
-        
-        # Polygon filters tab
-        polygon_tab = self._create_polygon_tab()
-        tabs.addTab(polygon_tab, "Polygon")
         
         # Add tabs to left side of layout
         main_layout.addWidget(tabs, 2)  # Takes 2/3 of the space
@@ -5168,7 +5384,7 @@ class EurocontrolFilterDialog(QDialog):
         layout = QVBoxLayout(tab)
         
         # Instructions
-        instructions = QLabel("Select airspace regions to exclude from processing:")
+        instructions = QLabel("Select airspace regions to include in processing (leave empty to include all):")
         instructions.setStyleSheet("color: #666; font-style: italic;")
         layout.addWidget(instructions)
         
@@ -5217,6 +5433,31 @@ class EurocontrolFilterDialog(QDialog):
         # Connect checkbox
         self.time_enabled.toggled.connect(self.time_start.setEnabled)
         self.time_enabled.toggled.connect(self.time_end.setEnabled)
+        
+        # Date range filtering
+        layout.addRow(QLabel(""))  # Spacer
+        self.date_enabled = QCheckBox("Enable date range filtering")
+        layout.addRow(self.date_enabled)
+        
+        # Start date
+        self.date_start = QDateEdit()
+        self.date_start.setDisplayFormat("dd-MM-yyyy")
+        self.date_start.setDate(QDate(2021, 12, 1))  # Default to December 2021
+        self.date_start.setCalendarPopup(True)
+        self.date_start.setEnabled(False)
+        layout.addRow("Start date:", self.date_start)
+        
+        # End date
+        self.date_end = QDateEdit()
+        self.date_end.setDisplayFormat("dd-MM-yyyy")
+        self.date_end.setDate(QDate(2021, 12, 31))  # Default to December 2021
+        self.date_end.setCalendarPopup(True)
+        self.date_end.setEnabled(False)
+        layout.addRow("End date:", self.date_end)
+        
+        # Connect date checkbox
+        self.date_enabled.toggled.connect(self.date_start.setEnabled)
+        self.date_enabled.toggled.connect(self.date_end.setEnabled)
         
         # Add reset button for this tab
         reset_btn = QPushButton("Reset Time Filters")
@@ -5267,49 +5508,7 @@ class EurocontrolFilterDialog(QDialog):
         
         return tab
 
-    def _create_polygon_tab(self):
-        """Create polygon filtering tab"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Instructions
-        instructions = QLabel("Define a polygon filter to include only flights within the specified area:")
-        instructions.setStyleSheet("color: #666; font-style: italic;")
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
-        
-        # Polygon name input
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Polygon Name:"))
-        self.polygon_name_input = QLineEdit()
-        self.polygon_name_input.setPlaceholderText("Enter polygon name and press Enter (e.g., 'EUROCONTROL_FILTER')")
-        self.polygon_name_input.setToolTip("Enter polygon name and press Enter to start drawing on the radar screen")
-        self.polygon_name_input.returnPressed.connect(self._start_polygon_filter_creation)
-        name_layout.addWidget(self.polygon_name_input)
-        layout.addLayout(name_layout)
-        
-        # Instructions for drawing polygon
-        instructions2 = QLabel(
-            "To create a polygon:\n"
-            "1. Enter polygon name above and press ENTER\n"
-            "2. Click points on the radar screen to define vertices\n"
-            "3. Press ENTER on the radar to finish the polygon\n"
-            "4. The polygon filter will be applied automatically if a name is entered"
-        )
-        instructions2.setStyleSheet("color: #555; font-size: 10px; background-color: #f9f9f9; padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
-        instructions2.setWordWrap(True)
-        layout.addWidget(instructions2)
-        
-        # Reset button for this tab
-        reset_btn = QPushButton("Reset Polygon Filter")
-        reset_btn.setToolTip("Reset polygon filter settings to default values")
-        reset_btn.clicked.connect(self._reset_polygon_filter)
-        reset_btn.setAutoDefault(False)
-        layout.addWidget(reset_btn)
-        
-        layout.addStretch()  # Push everything to the top
-        
-        return tab
+
 
     def _create_summary_panel(self):
         """Create data summary panel"""
@@ -5333,9 +5532,19 @@ class EurocontrolFilterDialog(QDialog):
                 
                 f"<b>Flight Levels:</b><br>"
                 f"- Range: FL{self.summary_data['fl_bounds']['min']:.0f} to FL{self.summary_data['fl_bounds']['max']:.0f}<br><br>"
-                
-                f"<b>Aircraft Types:</b> {len(self.summary_data['aircraft_types'])} different types<br>"
             )
+            
+            # Add time bounds if available
+            if 'time_bounds' in self.summary_data:
+                time_bounds = self.summary_data['time_bounds']
+                summary_text += f"<b>Time Range:</b><br>- {time_bounds['min']} to {time_bounds['max']}<br><br>"
+            
+            # Add date bounds if available
+            if 'date_bounds' in self.summary_data:
+                date_bounds = self.summary_data['date_bounds']
+                summary_text += f"<b>Date Range:</b><br>- {date_bounds['min']} to {date_bounds['max']}<br><br>"
+            
+            summary_text += f"<b>Aircraft Types:</b> {len(self.summary_data['aircraft_types'])} different types<br>"
             
             # Add top aircraft types if available
             if self.summary_data.get('aircraft_types'):
@@ -5445,6 +5654,39 @@ class EurocontrolFilterDialog(QDialog):
             except (ValueError, IndexError):
                 # If parsing fails, keep default times
                 pass
+        
+        # Set date bounds based on data
+        if 'date_bounds' in self.summary_data:
+            date_min = self.summary_data['date_bounds']['min']
+            date_max = self.summary_data['date_bounds']['max']
+            
+            # Parse date strings to QDate objects
+            try:
+                # Handle DD-MM-YYYY format
+                if '-' in date_min and '-' in date_max:
+                    start_parts = date_min.split('-')
+                    end_parts = date_max.split('-')
+                    
+                    if len(start_parts) >= 3 and len(end_parts) >= 3:
+                        start_date = QDate(int(start_parts[2]), int(start_parts[1]), int(start_parts[0]))
+                        end_date = QDate(int(end_parts[2]), int(end_parts[1]), int(end_parts[0]))
+                        
+                        if start_date.isValid() and end_date.isValid():
+                            # Set ranges to constrain to actual data bounds (same behavior as other filters)
+                            print(f"DEBUG: Realistic Replay - Setting date constraints: {start_date.toString('dd-MM-yyyy')} to {end_date.toString('dd-MM-yyyy')}")
+                            
+                            # Use setMinimumDate/setMaximumDate for proper constraint (like setRange for spinboxes)
+                            self.date_start.setMinimumDate(start_date)
+                            self.date_start.setMaximumDate(end_date)
+                            self.date_end.setMinimumDate(start_date)
+                            self.date_end.setMaximumDate(end_date)
+                            
+                            # Set default values to actual data bounds
+                            self.date_start.setDate(start_date)
+                            self.date_end.setDate(end_date)
+            except (ValueError, IndexError):
+                # If parsing fails, keep default dates
+                pass
                 
         # Populate aircraft types from actual data
         if 'aircraft_types' in self.summary_data:
@@ -5505,11 +5747,7 @@ class EurocontrolFilterDialog(QDialog):
                 # Fallback for items without UserRole data
                 item.setCheckState(Qt.CheckState.Checked)
         
-        # Polygon filter
-        polygon_filter = filters.get('polygon_filter')
-        if polygon_filter and isinstance(polygon_filter, dict):
-            polygon_name = polygon_filter.get('polygon_name', '')
-            self.polygon_name_input.setText(polygon_name)
+
 
     def _load_airspace_options(self):
         """Load available airspace options from FIR file"""
@@ -5534,11 +5772,11 @@ class EurocontrolFilterDialog(QDialog):
                     self.airspace_status.setText(f"Loaded {len(airspace_ids)} airspace regions")
                     self.airspace_status.setStyleSheet("color: #007ACC;")
                     
-                    # Select currently excluded airspace
-                    excluded = set(self.current_filters['exclude_airspace'])
+                    # Select currently included airspace
+                    included = set(self.current_filters.get('include_airspace', []))
                     for i in range(self.airspace_list.count()):
                         item = self.airspace_list.item(i)
-                        if item.text() in excluded:
+                        if item.text() in included:
                             item.setCheckState(Qt.CheckState.Checked)
                 else:
                     self.airspace_status.setText("FIR file does not contain 'Airspace ID' column")
@@ -5559,7 +5797,6 @@ class EurocontrolFilterDialog(QDialog):
         self._reset_time_filters()
         self._reset_airspace_filters()
         self._reset_aircraft_filters()
-        self._reset_polygon_filter()
 
     def _reset_geographic_filters(self):
         """Reset only geographic filters to data-driven bounds"""
@@ -5638,27 +5875,16 @@ class EurocontrolFilterDialog(QDialog):
         for i in range(self.aircraft_list.count()):
             self.aircraft_list.item(i).setCheckState(Qt.CheckState.Unchecked)
 
-    def _reset_polygon_filter(self):
-        """Reset polygon filter to default values"""
-        self.polygon_name_input.clear()
 
-    def _start_polygon_filter_creation(self):
-        """Start polygon creation by pre-filling the command line with POLY command."""
-        polygon_name = self.polygon_name_input.text().strip()
-        if polygon_name:
-            # Clear any existing text and pre-fill the command line with "POLY polygonname " (note the trailing space)
-            _clear_and_set_cmdline(f"POLY {polygon_name} ")
-        else:
-            _emit("ECHO Please enter a polygon name first")
 
     def get_filter_settings(self):
         """Get the current filter settings as a dictionary"""
-        # Collect excluded airspace
-        excluded_airspace = []
+        # Collect included airspace (changed from exclude to include logic)
+        included_airspace = []
         for i in range(self.airspace_list.count()):
             item = self.airspace_list.item(i)
             if item.checkState() == Qt.CheckState.Checked:
-                excluded_airspace.append(item.text())
+                included_airspace.append(item.text())
         
         # Collect selected aircraft types
         selected_aircraft = []
@@ -5681,11 +5907,12 @@ class EurocontrolFilterDialog(QDialog):
             'lon_max': self.lon_max_spin.value(),
             'fl_min': self.fl_min_spin.value(),
             'fl_max': self.fl_max_spin.value(),
-            'exclude_airspace': excluded_airspace,
+            'include_airspace': included_airspace,
             'aircraft_types': selected_aircraft,
             'time_start': self.time_start.time().toString("hh:mm:ss") if self.time_enabled.isChecked() else None,
             'time_end': self.time_end.time().toString("hh:mm:ss") if self.time_enabled.isChecked() else None,
-            'polygon_filter': self._get_polygon_filter_settings()
+            'date_start': self.date_start.date().toString("dd-MM-yyyy") if self.date_enabled.isChecked() else None,
+            'date_end': self.date_end.date().toString("dd-MM-yyyy") if self.date_enabled.isChecked() else None
         }
         
         return filters
@@ -5715,16 +5942,7 @@ class EurocontrolFilterDialog(QDialog):
             print(f"Error applying filters: {e}")
             QMessageBox.warning(self, "Filter Error", f"Error applying filters: {e}")
 
-    def _get_polygon_filter_settings(self):
-        """Get polygon filter settings"""
-        polygon_name = self.polygon_name_input.text().strip()
-        if not polygon_name:
-            return None
-        
-        return {
-            'enabled': True,
-            'polygon_name': polygon_name
-        }
+
 
 
 class PhaseAltitudeConfigDialog(QDialog):
@@ -5793,8 +6011,9 @@ class PhaseAltitudeConfigDialog(QDialog):
             if filters['fl_min'] != 0 or filters['fl_max'] != 500:
                 collection.set_fl_bounds(fl_min=filters['fl_min'], fl_max=filters['fl_max'])
             
-            if filters['exclude_airspace']:
-                collection.exclude_airspace(filters['exclude_airspace'])
+            # Apply airspace include filtering
+            if 'include_airspace' in filters and filters['include_airspace']:
+                collection.include_airspace(filters['include_airspace'])
             
             # Get processed flight data
             flight_collection = collection.get_flights_data()
@@ -7090,7 +7309,7 @@ class HistoricSamplingTab(QWidget):
             'lat_min': -90, 'lat_max': 90,
             'lon_min': -180, 'lon_max': 180,
             'fl_min': 0, 'fl_max': 500,
-            'exclude_airspace': [],
+            'include_airspace': [],
             'time_start': None, 'time_end': None,
             'aircraft_types': []
         }
@@ -7352,6 +7571,8 @@ class HistoricSamplingTab(QWidget):
             self._flights_file = path
             self.flights_file_label.setText(os.path.basename(path))
             self.flights_file_label.setStyleSheet("color: black;")
+            # Clear cached filter data when file paths change
+            self._clear_filter_cache()
             # Invalidate models when data changes
             self._invalidate_models()
             # Load data sample for filter bounds
@@ -7361,6 +7582,8 @@ class HistoricSamplingTab(QWidget):
         self._flights_file = ""
         self.flights_file_label.setText("No file selected")
         self.flights_file_label.setStyleSheet("color: #999; font-style: italic;")
+        # Clear cached filter data when file paths change
+        self._clear_filter_cache()
         # Clear data sample
         self.historic_data = None
     
@@ -7388,6 +7611,8 @@ class HistoricSamplingTab(QWidget):
             self._filed_file = path
             self.filed_file_label.setText(os.path.basename(path))
             self.filed_file_label.setStyleSheet("color: black;")
+            # Clear cached filter data when file paths change
+            self._clear_filter_cache()
             # Invalidate models when data changes
             self._invalidate_models()
     
@@ -7395,6 +7620,8 @@ class HistoricSamplingTab(QWidget):
         self._filed_file = ""
         self.filed_file_label.setText("No file selected")
         self.filed_file_label.setStyleSheet("color: #999; font-style: italic;")
+        # Clear cached filter data when file paths change
+        self._clear_filter_cache()
     
     def _browse_actual_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -7404,6 +7631,8 @@ class HistoricSamplingTab(QWidget):
             self._actual_file = path
             self.actual_file_label.setText(os.path.basename(path))
             self.actual_file_label.setStyleSheet("color: black;")
+            # Clear cached filter data when file paths change
+            self._clear_filter_cache()
             # Invalidate models when data changes
             self._invalidate_models()
     
@@ -7411,6 +7640,8 @@ class HistoricSamplingTab(QWidget):
         self._actual_file = ""
         self.actual_file_label.setText("No file selected")
         self.actual_file_label.setStyleSheet("color: #999; font-style: italic;")
+        # Clear cached filter data when file paths change
+        self._clear_filter_cache()
     
     def _browse_fir_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -7420,11 +7651,15 @@ class HistoricSamplingTab(QWidget):
             self._fir_file = path
             self.fir_file_label.setText(os.path.basename(path))
             self.fir_file_label.setStyleSheet("color: black;")
+            # Clear cached filter data when file paths change
+            self._clear_filter_cache()
     
     def _clear_fir_file(self):
         self._fir_file = ""
         self.fir_file_label.setText("No file selected")
         self.fir_file_label.setStyleSheet("color: #999; font-style: italic;")
+        # Clear cached filter data when file paths change
+        self._clear_filter_cache()
     
     def _on_model_type_changed(self, model_type):
         """Handle model type selection changes."""
@@ -7725,13 +7960,42 @@ class HistoricSamplingTab(QWidget):
                                  traffixgen._dataset_collection is not None)
             
             if not data_already_loaded:
-                # Load data using the same approach as Configure Filters dialog
+                # Load data using optimized approach with enhanced progress feedback
                 fir_file = getattr(self, '_fir_file', '') or ''
+                
+                def progress_callback(message):
+                    if progress_dialog:
+                        # Enhanced progress display with better formatting
+                        lines = message.split('\n')
+                        if len(lines) > 1:
+                            # Multi-line message - show as structured info
+                            main_msg = lines[0]
+                            details = '\n'.join(lines[1:])
+                            progress_dialog.setLabelText(f"{main_msg}\n\n{details}")
+                        else:
+                            # Single line message
+                            progress_dialog.setLabelText(f"Loading data: {message}")
+                        
+                        # Extract percentage if available for progress bar
+                        if "Progress: " in message and "%" in message:
+                            try:
+                                pct_start = message.find("Progress: ") + 10
+                                pct_end = message.find("%", pct_start)
+                                pct_value = float(message[pct_start:pct_end])
+                                # Scale to current progress range (15-25% for data loading)
+                                scaled_progress = int(15 + (pct_value / 100) * 10)
+                                progress_dialog.setValue(scaled_progress)
+                            except:
+                                pass  # Ignore parsing errors
+                        
+                        QApplication.processEvents()
+                
                 load_success = traffixgen.traffixgen_load_eurocontrol(
                     self._flights_file,
                     self._filed_file,
                     self._actual_file,
-                    fir_file
+                    fir_file,
+                    progress_callback=progress_callback
                 )
                 
                 if not load_success:
@@ -8014,38 +8278,91 @@ class HistoricSamplingTab(QWidget):
             'lat_min': -90, 'lat_max': 90,
             'lon_min': -180, 'lon_max': 180,
             'fl_min': 0, 'fl_max': 500,
-            'exclude_airspace': [],
+            'include_airspace': [],
             'time_start': None, 'time_end': None,
             'aircraft_types': []
         })
         
-        # ALWAYS refresh data and bounds every time dialog is opened
-        print("DEBUG: Refreshing data for filter dialog...")
+        # Check if we can use cached summary data (only recalculate if file paths changed)
+        current_file_paths = {
+            'flights_file': getattr(self, '_flights_file', ''),
+            'filed_file': getattr(self, '_filed_file', ''),
+            'actual_file': getattr(self, '_actual_file', ''),
+            'fir_file': getattr(self, '_fir_file', '')
+        }
+        
+        cached_paths = getattr(self, '_cached_filter_file_paths', {})
+        cached_summary = getattr(self, '_cached_filter_summary_data', None)
+        
+        # Only refresh data if file paths have changed or no cached data exists
+        if current_file_paths != cached_paths or cached_summary is None:
+            print("DEBUG: File paths changed or no cache - refreshing data for filter dialog...")
+            needs_refresh = True
+        else:
+            print("DEBUG: File paths unchanged - using cached data for filter dialog...")
+            needs_refresh = False
         
         # Show progress dialog for data loading/caching
         from PyQt6.QtWidgets import QProgressDialog
         from PyQt6.QtCore import Qt
         
-        progress = QProgressDialog("Loading data for filter configuration...", "Cancel", 0, 100, self)
-        progress.setWindowTitle("Loading Data")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)  # Show immediately
-        progress.setValue(10)
-        progress.setLabelText("Checking data files...")
+        if needs_refresh:
+            progress = QProgressDialog("Loading data for filter configuration...", "Cancel", 0, 100, self)
+            progress.setWindowTitle("Loading Data")
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)  # Show immediately
+            progress.setMinimumSize(400, 120)  # Ensure proper sizing
+            progress.show()  # Explicitly show the dialog
+            progress.setValue(10)
+            progress.setLabelText("Checking data files...")
+            QApplication.processEvents()  # Update UI
+            
+            fir_file = getattr(self, '_fir_file', None)
+            
+            # Update progress
+            progress.setValue(30)
+            progress.setLabelText("Loading flight data...")  # Shorter text to prevent clipping
+            QApplication.processEvents()  # Update UI
+            
+            # Force reload summary data to get fresh bounds with progress callback
+            def update_progress(message):
+                if progress and not progress.wasCanceled():
+                    progress.setLabelText(message)
+                    QApplication.processEvents()
+            
+            summary_data = self._load_and_get_summary_for_historic(progress_callback=update_progress)
+            if summary_data and 'date_bounds' in summary_data:
+                print(f">> Date bounds loaded: {summary_data['date_bounds']['min']} to {summary_data['date_bounds']['max']}")
+                # Cache the successful data and file paths
+                self._cached_filter_file_paths = current_file_paths.copy()
+                self._cached_filter_summary_data = summary_data
+            else:
+                print("WARNING: Date bounds missing - checking data processing...")
+                # Force a call to get_flight_summary to see what's happening
+                try:
+                    from . import traffixgen
+                    direct_summary = traffixgen.get_flight_summary()
+                    if 'date_bounds' in direct_summary:
+                        print(f">> Date bounds found in direct call: {direct_summary['date_bounds']['min']} to {direct_summary['date_bounds']['max']}")
+                        summary_data = direct_summary
+                        # Cache the successful data and file paths
+                        self._cached_filter_file_paths = current_file_paths.copy()
+                        self._cached_filter_summary_data = summary_data
+                    else:
+                        print("WARNING: Date bounds missing in direct call too")
+                except Exception as e:
+                    print(f"WARNING: Error getting summary: {e}")
+            
+            # Update progress  
+            progress.setValue(80)
+            progress.setLabelText("Calculating data bounds...")
+            QApplication.processEvents()  # Update UI
+        else:
+            # Use cached data - much faster
+            summary_data = cached_summary
+            print(f">> Using cached date bounds: {summary_data.get('date_bounds', {}).get('min', 'N/A')} to {summary_data.get('date_bounds', {}).get('max', 'N/A')}")
         
         fir_file = getattr(self, '_fir_file', None)
-        
-        # Update progress
-        progress.setValue(30)
-        progress.setLabelText("Loading and caching flight data (this may take a moment for large files)...")
-        
-        # Force reload summary data to get fresh bounds
-        summary_data = self._load_and_get_summary_for_historic()
-        print(f"DEBUG: Refreshed summary data: {summary_data}")
-        
-        # Update progress  
-        progress.setValue(80)
-        progress.setLabelText("Calculating data bounds...")
         
         # Create filter dialog with same interface as EurocontrolFilterDialog
         self.historic_filter_dialog = HistoricSamplingFilterDialog(
@@ -8055,18 +8372,25 @@ class HistoricSamplingTab(QWidget):
             parent=self
         )
         
-        # Always try to set fresh data context and bounds
+        # Always try to set data context and bounds
         if summary_data and 'error' not in summary_data:
-            print(f"DEBUG: Setting fresh bounds from updated summary data")
+            if needs_refresh:
+                print(f"DEBUG: Setting fresh bounds from updated summary data: {list(summary_data.keys())}")
+            else:
+                print(f"DEBUG: Setting cached bounds from summary data: {list(summary_data.keys())}")
             self.historic_filter_dialog.summary_data = summary_data
             self.historic_filter_dialog._set_bounds_from_data()
+            # Force a filter summary update after bounds are set
+            self.historic_filter_dialog._update_filter_summary()
         else:
             print("DEBUG: No valid summary data available for filter bounds")
         
-        # Complete progress
-        progress.setValue(100)
-        progress.setLabelText("Ready!")
-        progress.close()
+        # Complete progress (only if we showed it)
+        if needs_refresh:
+            progress.setValue(100)
+            progress.setLabelText("Ready!")
+            QApplication.processEvents()  # Update UI
+            progress.close()
         
         result = self.historic_filter_dialog.exec()
         if result == QDialog.DialogCode.Accepted:
@@ -8079,7 +8403,7 @@ class HistoricSamplingTab(QWidget):
             if old_filters != filters:
                 self._invalidate_models()
 
-    def _load_and_get_summary_for_historic(self):
+    def _load_and_get_summary_for_historic(self, progress_callback=None):
         """Load and get summary for historic data - mimics realistic replay approach."""
         try:
             # Method 1: Try to get summary from existing TraffixGen data (best approach)
@@ -8087,38 +8411,70 @@ class HistoricSamplingTab(QWidget):
             
             # Check if TraffixGen has loaded data we can use
             if hasattr(traffixgen, '_dataset_collection') and traffixgen._dataset_collection is not None:
-                print("DEBUG: Found existing TraffixGen dataset, getting summary...")
-                summary = traffixgen.get_flight_summary()
-                if 'error' not in summary:
-                    print("DEBUG: Successfully got TraffixGen summary")
-                    return summary
-                else:
-                    print(f"DEBUG: TraffixGen summary had error: {summary}")
+                # Check if the existing data has a Date column with valid data
+                try:
+                    points_df = traffixgen._dataset_collection.flights_points.data
+                    if 'Date' not in points_df.columns:
+                        print(">> Cached data missing Date column, reloading...")
+                        traffixgen._dataset_collection = None
+                    else:
+                        # Check if Date column has valid data
+                        date_data = points_df['Date'].dropna()
+                        date_data = date_data[date_data.str.len() > 0] if hasattr(date_data, 'str') else date_data
+                        
+                        if len(date_data) == 0:
+                            print(">> Cached data has empty Date column, clearing cache and reloading...")
+                            traffixgen._dataset_collection = None
+                            # Clear parquet cache files to force fresh processing
+                            if self.parent() and hasattr(self.parent(), '_clear_traffixgen_cache'):
+                                self.parent()._clear_traffixgen_cache()
+                        else:
+                            print(f"OK: Using cached data with Date column ({len(date_data):,} valid dates)")
+                            summary = traffixgen.get_flight_summary()
+                            if 'error' not in summary and 'date_bounds' in summary:
+                                return summary
+                            else:
+                                print(f">> Summary missing date bounds, clearing cache and reloading...")
+                                traffixgen._dataset_collection = None
+                                # Clear parquet cache files to force fresh processing
+                                if self.parent() and hasattr(self.parent(), '_clear_traffixgen_cache'):
+                                    self.parent()._clear_traffixgen_cache()
+                except Exception as e:
+                    print(f">> Forcing data reload: {e}")
+                    traffixgen._dataset_collection = None
             
             # Method 2: Load data specifically for historic sampling if we have file paths
             if hasattr(self, '_flights_file') and self._flights_file:
-                print(f"DEBUG: Loading historic data from files...")
+                print(">> Loading EUROCONTROL data...")
                 
                 # Try to load via TraffixGen (same as realistic replay)
                 fir_file = getattr(self, '_fir_file', '') or ''
                 
-                # Load the data using TraffixGen
+                # Load the data using TraffixGen with progress callback
+                if progress_callback:
+                    progress_callback("Loading EUROCONTROL flight data...")
+                
                 result = traffixgen.traffixgen_load_eurocontrol(
                     self._flights_file,
                     getattr(self, '_filed_file', ''),
                     getattr(self, '_actual_file', ''),
-                    fir_file
+                    fir_file,
+                    progress_callback=progress_callback
                 )
                 
                 if result:
-                    print("DEBUG: Successfully loaded data via TraffixGen")
                     summary = traffixgen.get_flight_summary()
                     if 'error' not in summary:
+                        # Check if we got date bounds this time
+                        if 'date_bounds' not in summary:
+                            print("WARNING: Data loaded but still missing date bounds, clearing cache for next time...")
+                            if self.parent() and hasattr(self.parent(), '_clear_traffixgen_cache'):
+                                self.parent()._clear_traffixgen_cache()
                         return summary
                     else:
-                        print(f"DEBUG: Error in summary: {summary}")
+                        print(f"ERROR: Summary error: {summary}")
                 else:
-                    print("DEBUG: Failed to load data via TraffixGen")
+                    print("ERROR: Failed to load EUROCONTROL data")
             
             # Method 3: Fallback to direct DataFrame analysis
             print("DEBUG: Falling back to direct data analysis...")
@@ -8281,7 +8637,7 @@ class HistoricSamplingFilterDialog(QDialog):
             'lat_min': -90, 'lat_max': 90,
             'lon_min': -180, 'lon_max': 180,
             'fl_min': 0, 'fl_max': 500,
-            'exclude_airspace': [],
+            'include_airspace': [],
             'time_start': None, 'time_end': None,
             'aircraft_types': []
         }
@@ -8493,7 +8849,7 @@ class HistoricSamplingFilterDialog(QDialog):
         layout = QVBoxLayout(tab)
         
         # Instructions
-        instructions = QLabel("Select airspace sectors to EXCLUDE from the dataset:")
+        instructions = QLabel("Select airspace sectors to INCLUDE in the dataset:")
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
         
@@ -8542,6 +8898,31 @@ class HistoricSamplingFilterDialog(QDialog):
         # Connect checkbox to enable/disable time inputs
         self.time_enabled.toggled.connect(self.time_start.setEnabled)
         self.time_enabled.toggled.connect(self.time_end.setEnabled)
+        
+        # Date range filtering
+        layout.addRow(QLabel(""))  # Spacer
+        self.date_enabled = QCheckBox("Enable date range filtering")
+        layout.addRow(self.date_enabled)
+        
+        # Start date
+        self.date_start = QDateEdit()
+        self.date_start.setDisplayFormat("dd-MM-yyyy")
+        self.date_start.setDate(QDate(2021, 12, 1))  # Default to December 2021
+        self.date_start.setCalendarPopup(True)
+        self.date_start.setEnabled(False)
+        layout.addRow("Start date:", self.date_start)
+        
+        # End date
+        self.date_end = QDateEdit()
+        self.date_end.setDisplayFormat("dd-MM-yyyy")
+        self.date_end.setDate(QDate(2021, 12, 31))  # Default to December 2021
+        self.date_end.setCalendarPopup(True)
+        self.date_end.setEnabled(False)
+        layout.addRow("End date:", self.date_end)
+        
+        # Connect date checkbox
+        self.date_enabled.toggled.connect(self.date_start.setEnabled)
+        self.date_enabled.toggled.connect(self.date_end.setEnabled)
         
         # Add reset button for this tab
         reset_btn = QPushButton("Reset Time Filters")
@@ -8635,6 +9016,12 @@ class HistoricSamplingFilterDialog(QDialog):
             self.time_start.timeChanged.connect(self._update_filter_summary)
             self.time_end.timeChanged.connect(self._update_filter_summary)
         
+        # Date filter changes
+        if hasattr(self, 'date_enabled'):
+            self.date_enabled.toggled.connect(self._update_filter_summary)
+            self.date_start.dateChanged.connect(self._update_filter_summary)
+            self.date_end.dateChanged.connect(self._update_filter_summary)
+        
         # Aircraft list changes
         if hasattr(self, 'aircraft_list'):
             self.aircraft_list.itemSelectionChanged.connect(self._update_filter_summary)
@@ -8655,6 +9042,15 @@ class HistoricSamplingFilterDialog(QDialog):
             if 'fl_bounds' in self.summary_data:
                 fl_bounds = self.summary_data['fl_bounds']
                 data_parts.append(f"FL: {fl_bounds['min']} to {fl_bounds['max']}")
+            if 'time_bounds' in self.summary_data:
+                time_bounds = self.summary_data['time_bounds']
+                data_parts.append(f"Time: {time_bounds['min']} to {time_bounds['max']}")
+            if 'date_bounds' in self.summary_data:
+                date_bounds = self.summary_data['date_bounds']
+                data_parts.append(f"Date: {date_bounds['min']} to {date_bounds['max']}")
+                print(f"✓ Date range found: {date_bounds['min']} to {date_bounds['max']}")
+            else:
+                print("✗ No date range found in data")
             if 'aircraft_types' in self.summary_data:
                 ac_count = len(self.summary_data['aircraft_types'])
                 data_parts.append(f"Aircraft types: {ac_count}")
@@ -8682,6 +9078,15 @@ class HistoricSamplingFilterDialog(QDialog):
             else:
                 summary_parts.append(f"<b>Time Filter:</b><br>Disabled")
         
+        # Date filters
+        if hasattr(self, 'date_enabled'):
+            if self.date_enabled.isChecked():
+                start = self.date_start.date().toString("dd-MM-yyyy")
+                end = self.date_end.date().toString("dd-MM-yyyy")
+                summary_parts.append(f"<b>Date Filter:</b><br>{start} to {end}")
+            else:
+                summary_parts.append(f"<b>Date Filter:</b><br>Disabled")
+        
         # Aircraft filters
         if hasattr(self, 'aircraft_list') and self.aircraft_list.count() > 0:
             selected_count = len([item for item in [self.aircraft_list.item(i) for i in range(self.aircraft_list.count())] 
@@ -8694,10 +9099,10 @@ class HistoricSamplingFilterDialog(QDialog):
         
         # Airspace filters (if any selected)
         if hasattr(self, 'airspace_list') and self.airspace_list.count() > 0:
-            excluded_count = len([item for item in [self.airspace_list.item(i) for i in range(self.airspace_list.count())] 
+            included_count = len([item for item in [self.airspace_list.item(i) for i in range(self.airspace_list.count())] 
                                 if item.checkState() == Qt.CheckState.Checked])
-            if excluded_count > 0:
-                summary_parts.append(f"<b>Airspace Filter:</b><br>{excluded_count} regions excluded")
+            if included_count > 0:
+                summary_parts.append(f"<b>Airspace Filter:</b><br>{included_count} regions included")
         
         # Update the label
         if summary_parts:
@@ -8712,7 +9117,7 @@ class HistoricSamplingFilterDialog(QDialog):
                 airspace_text = ", ".join(selected_airspace[:3])
                 if len(selected_airspace) > 3:
                     airspace_text += f"<br>(+{len(selected_airspace)-3} more)"
-                summary_parts.append(f"<b>Excluded Airspace:</b><br>{airspace_text}")
+                summary_parts.append(f"<b>Included Airspace:</b><br>{airspace_text}")
         
         # Update display
         if summary_parts:
@@ -8800,6 +9205,40 @@ class HistoricSamplingFilterDialog(QDialog):
             self.time_enabled.setChecked(False)
             self.time_start.setTime(QTime(0, 0, 0))
             self.time_end.setTime(QTime(23, 59, 59))
+        
+        # Set date bounds based on data (identical to realistic replay)
+        if self.summary_data and 'date_bounds' in self.summary_data:
+            date_min = self.summary_data['date_bounds']['min']
+            date_max = self.summary_data['date_bounds']['max']
+            
+            # Parse date strings to QDate objects
+            try:
+                # Handle DD-MM-YYYY format
+                if '-' in date_min and '-' in date_max:
+                    start_parts = date_min.split('-')
+                    end_parts = date_max.split('-')
+                    
+                    if len(start_parts) >= 3 and len(end_parts) >= 3:
+                        start_date = QDate(int(start_parts[2]), int(start_parts[1]), int(start_parts[0]))
+                        end_date = QDate(int(end_parts[2]), int(end_parts[1]), int(end_parts[0]))
+                        
+                        if start_date.isValid() and end_date.isValid():
+                            # Set ranges to constrain to actual data bounds (same behavior as other filters)
+                            self.date_start.setDateRange(start_date, end_date)
+                            self.date_end.setDateRange(start_date, end_date)
+                            
+                            # Set default values to actual data bounds
+                            self.date_start.setDate(start_date)
+                            self.date_end.setDate(end_date)
+                
+                # Enable date filtering when resetting to data bounds
+                self.date_enabled.setChecked(True)
+            except (ValueError, IndexError):
+                # If parsing fails, keep default dates but disable
+                self.date_enabled.setChecked(False)
+        else:
+            # Fallback to disabled if no data available
+            self.date_enabled.setChecked(False)
 
     def _reset_aircraft_filters(self):
         """Reset only aircraft filters to default values - same as realistic replay"""
@@ -8822,7 +9261,6 @@ class HistoricSamplingFilterDialog(QDialog):
             print("DEBUG: No summary data available for setting bounds")
             return
             
-        print(f"DEBUG: Setting data-driven bounds from: {self.summary_data}")
         bounds_set = []
             
         # Set geographic bounds based on data
@@ -8842,7 +9280,6 @@ class HistoricSamplingFilterDialog(QDialog):
             self.lat_min_spin.setValue(lat_min)
             self.lat_max_spin.setValue(lat_max)
             bounds_set.append(f"Latitude: {lat_min:.2f} to {lat_max:.2f}")
-            print(f"DEBUG: Set latitude bounds to {lat_min:.2f} - {lat_max:.2f}")
             
         if 'lon_bounds' in self.summary_data and hasattr(self, 'lon_min_spin'):
             lon_min = self.summary_data['lon_bounds']['min']
@@ -8860,7 +9297,6 @@ class HistoricSamplingFilterDialog(QDialog):
             self.lon_min_spin.setValue(lon_min)
             self.lon_max_spin.setValue(lon_max)
             bounds_set.append(f"Longitude: {lon_min:.2f} to {lon_max:.2f}")
-            print(f"DEBUG: Set longitude bounds to {lon_min:.2f} - {lon_max:.2f}")
             
         # Set flight level bounds based on data
         if 'fl_bounds' in self.summary_data and hasattr(self, 'fl_min_spin'):
@@ -8879,7 +9315,6 @@ class HistoricSamplingFilterDialog(QDialog):
             self.fl_min_spin.setValue(fl_min)
             self.fl_max_spin.setValue(fl_max)
             bounds_set.append(f"Flight Level: FL{fl_min} to FL{fl_max}")
-            print(f"DEBUG: Set flight level bounds to FL{fl_min} - FL{fl_max}")
             
         # Set time bounds based on data
         if 'time_bounds' in self.summary_data and hasattr(self, 'time_enabled'):
@@ -8915,6 +9350,47 @@ class HistoricSamplingFilterDialog(QDialog):
                 # If parsing fails, disable time filtering
                 self.time_enabled.setChecked(False)
         
+        # Set date bounds based on data (same as realistic replay)
+        if 'date_bounds' in self.summary_data and hasattr(self, 'date_enabled'):
+            date_min = self.summary_data['date_bounds']['min']
+            date_max = self.summary_data['date_bounds']['max']
+            
+            # Parse date strings to QDate objects
+            try:
+                # Handle DD-MM-YYYY format
+                if '-' in date_min and '-' in date_max:
+                    start_parts = date_min.split('-')
+                    end_parts = date_max.split('-')
+                    
+                    if len(start_parts) >= 3 and len(end_parts) >= 3:
+                        start_date = QDate(int(start_parts[2]), int(start_parts[1]), int(start_parts[0]))
+                        end_date = QDate(int(end_parts[2]), int(end_parts[1]), int(end_parts[0]))
+                        
+                        if start_date.isValid() and end_date.isValid():
+                            # Set ranges to constrain to actual data bounds (same behavior as other filters)
+
+                            
+                            # Use setMinimumDate/setMaximumDate for proper constraint (like setRange for spinboxes)
+                            self.date_start.setMinimumDate(start_date)
+                            self.date_start.setMaximumDate(end_date)
+                            self.date_end.setMinimumDate(start_date)
+                            self.date_end.setMaximumDate(end_date)
+                            
+                            # Set default values to actual data bounds
+                            self.date_start.setDate(start_date)
+                            self.date_end.setDate(end_date)
+
+                
+                # Enable date filtering when bounds are available
+                self.date_enabled.setChecked(True)
+                bounds_set.append(f"Date range: {date_min} to {date_max}")
+                print(f"✓ Date range constraints applied: {date_min} to {date_max}")
+                    
+            except (ValueError, IndexError) as e:
+                print(f"Could not parse date bounds: {e}")
+                # If parsing fails, disable date filtering
+                self.date_enabled.setChecked(False)
+        
         # Populate aircraft types from actual data (same as realistic replay)
         if 'aircraft_types' in self.summary_data and hasattr(self, 'aircraft_list'):
             # Clear existing items
@@ -8932,7 +9408,6 @@ class HistoricSamplingFilterDialog(QDialog):
                     item.setData(Qt.ItemDataRole.UserRole, ac_type)  # Store the actual type
                     self.aircraft_list.addItem(item)
                 bounds_set.append(f"Aircraft Types: {len(aircraft_types)} types loaded")
-                print(f"DEBUG: Loaded {len(aircraft_types)} aircraft types from data")
             elif isinstance(aircraft_types, list):
                 # If it's a list, just show the types
                 for ac_type in sorted(aircraft_types):
@@ -8942,13 +9417,12 @@ class HistoricSamplingFilterDialog(QDialog):
                     item.setData(Qt.ItemDataRole.UserRole, ac_type)
                     self.aircraft_list.addItem(item)
                 bounds_set.append(f"Aircraft Types: {len(aircraft_types)} types loaded")
-                print(f"DEBUG: Loaded {len(aircraft_types)} aircraft types from data")
         
         # Summary of what was set
         if bounds_set:
-            print(f"DEBUG: Successfully set data-driven bounds: {', '.join(bounds_set)}")
+            print(f"✓ Data bounds configured: {len(bounds_set)} filters")
         else:
-            print("DEBUG: No bounds were set from data")
+            print("✗ No data bounds were configured")
         
         # Update the filter summary display
         self._update_filter_summary()
@@ -8998,12 +9472,12 @@ class HistoricSamplingFilterDialog(QDialog):
                 else:
                     item.setCheckState(Qt.CheckState.Unchecked)
         
-        # Airspace exclusions
+        # Airspace inclusions
         if hasattr(self, 'airspace_list'):
-            excluded_airspace = set(filters.get('exclude_airspace', []))
+            included_airspace = set(filters.get('include_airspace', []))
             for i in range(self.airspace_list.count()):
                 item = self.airspace_list.item(i)
-                if item.text() in excluded_airspace:
+                if item.text() in included_airspace:
                     item.setCheckState(Qt.CheckState.Checked)
                 else:
                     item.setCheckState(Qt.CheckState.Unchecked)
@@ -9033,11 +9507,11 @@ class HistoricSamplingFilterDialog(QDialog):
                     self.airspace_status.setText(f"Loaded {len(airspace_ids)} airspace regions")
                     self.airspace_status.setStyleSheet("color: #007ACC;")
                     
-                    # Select currently excluded airspace
-                    excluded = set(self.current_filters['exclude_airspace'])
+                    # Select currently included airspace
+                    included = set(self.current_filters.get('include_airspace', []))
                     for i in range(self.airspace_list.count()):
                         item = self.airspace_list.item(i)
-                        if item.text() in excluded:
+                        if item.text() in included:
                             item.setCheckState(Qt.CheckState.Checked)
                 else:
                     self.airspace_status.setText("FIR file does not contain 'Airspace ID' column")
@@ -9089,20 +9563,20 @@ class HistoricSamplingFilterDialog(QDialog):
                         selected_types.append(item.text())
             self.current_filters['aircraft_types'] = selected_types
         
-        # Airspace exclusions - get checked items only (same as realistic replay)
+        # Airspace inclusions - get checked items only (changed from exclude to include logic)
         if hasattr(self, 'airspace_list'):
-            excluded_airspace = []
+            included_airspace = []
             for i in range(self.airspace_list.count()):
                 item = self.airspace_list.item(i)
                 if item.checkState() == Qt.CheckState.Checked:
                     # Get the actual airspace name from UserRole data
                     airspace_name = item.data(Qt.ItemDataRole.UserRole)
                     if airspace_name:
-                        excluded_airspace.append(airspace_name)
+                        included_airspace.append(airspace_name)
                     else:
                         # Fallback to item text if no UserRole data
-                        excluded_airspace.append(item.text())
-            self.current_filters['exclude_airspace'] = excluded_airspace
+                        included_airspace.append(item.text())
+            self.current_filters['include_airspace'] = included_airspace
         
         # Close dialog with accepted result
         self.accept()
@@ -9144,14 +9618,14 @@ class HistoricSamplingFilterDialog(QDialog):
                         selected_types.append(item.text())
             self.current_filters['aircraft_types'] = selected_types
         
-        # Airspace exclusions - get checked items only (same as realistic replay)
+        # Airspace inclusions - get checked items only (changed from exclude to include logic)
         if hasattr(self, 'airspace_list'):
-            excluded_airspace = []
+            included_airspace = []
             for i in range(self.airspace_list.count()):
                 item = self.airspace_list.item(i)
                 if item.checkState() == Qt.CheckState.Checked:
-                    excluded_airspace.append(item.text())
-            self.current_filters['exclude_airspace'] = excluded_airspace
+                    included_airspace.append(item.text())
+            self.current_filters['include_airspace'] = included_airspace
         
         self.accept()
 
@@ -13194,6 +13668,45 @@ class SATGWindow(QWidget):
             hasattr(self.rc_tab, 'show_circle_cb') and 
             self.rc_tab.show_circle_cb.isChecked()):
             self.rc_tab._show_circle()
+    
+    def _clear_traffixgen_cache(self):
+        """Clear TraffixGen parquet cache files to force fresh data processing."""
+        try:
+            import os
+            import glob
+            
+            # Look for TraffixGen cache files in current directory
+            cache_patterns = [
+                'traffixgen_*.parquet',
+                'traffixgen_*.pkl'
+            ]
+            
+            deleted_count = 0
+            for pattern in cache_patterns:
+                cache_files = glob.glob(pattern)
+                for cache_file in cache_files:
+                    try:
+                        os.remove(cache_file)
+                        deleted_count += 1
+                        print(f">> Cleared cache: {os.path.basename(cache_file)}")
+                    except Exception as e:
+                        print(f"WARNING: Could not delete {cache_file}: {e}")
+            
+            if deleted_count > 0:
+                print(f">> Cleared {deleted_count} cache files to force fresh data processing")
+            else:
+                print("INFO: No cache files found to clear")
+                
+        except Exception as e:
+            print(f"WARNING: Error clearing cache: {e}")
+    
+    def _clear_filter_cache(self):
+        """Clear the cached filter configuration data when file paths change."""
+        if hasattr(self, '_cached_filter_file_paths'):
+            delattr(self, '_cached_filter_file_paths')
+        if hasattr(self, '_cached_filter_summary_data'):
+            delattr(self, '_cached_filter_summary_data')
+        print("DEBUG: Cleared filter configuration cache due to file path changes")
 
 # single instance + lazy creation
 _window = None

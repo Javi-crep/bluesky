@@ -550,7 +550,6 @@ def _unregister_star_proc(path: str):
 # ---------------- RL I/O ---------------- #
 _EXPECT_FLIGHTS = {'ECTRL ID','ADEP','ADES','AC Type'}
 _EXPECT_POINTS  = {'ECTRL ID','Sequence Number','Time Over','Flight Level','Latitude','Longitude',
-                   'Delay Time Over','Dev Latitude','Dev Longitude','Dev Flight Level',
                    'ground_speed','vertical_speed','heading','pitch'}
 
 def _read_csv_auto(path: str) -> Tuple[str, List[dict]]:
@@ -802,14 +801,65 @@ def _load_files(files_arg: str) -> Tuple[bool, str]:
             paths = parts
     if not paths: return False, "No CSV files found."
 
-    flights_rows: List[dict] = []; points_rows: List[dict] = []
-    found_flights = found_points = False
-    for p in paths:
-        kind, rows = _read_csv_auto(p)
-        if kind == 'flights': flights_rows.extend(rows); found_flights = True
-        elif kind == 'points': points_rows.extend(rows); found_points = True
-    if not (found_flights and found_points):
-        return False, "Missing required files: need both flights and flights_points (by headers)."
+    # Use optimized TraffixGen loading system for large files
+    try:
+        from . import traffixgen
+        
+        # Find flights and points files
+        flights_file = None
+        points_files = []
+        
+        for p in paths:
+            # Check headers to determine file type
+            kind, _ = _read_csv_auto(p)
+            if kind == 'flights':
+                flights_file = p
+            elif kind == 'points':
+                points_files.append(p)
+        
+        if not flights_file:
+            return False, "No flights CSV file found (must have ECTRL ID, ADEP, ADES, AC Type columns)."
+        if not points_files:
+            return False, "No flight points CSV file found (must have ECTRL ID, Time Over, Latitude, Longitude columns)."
+        
+        # Use TraffixGen optimized loading (supports all our optimizations)
+        print("Using optimized loading system for Realistic Replay...")
+        success = traffixgen.traffixgen_load_eurocontrol(
+            flights_file, 
+            points_files[0],  # Filed points 
+            points_files[1] if len(points_files) > 1 else points_files[0],  # Actual points
+            ""  # No FIR file
+        )
+        
+        if not success:
+            return False, "Failed to load data using optimized system."
+        
+        # Convert loaded data to SATG format  
+        success_export = traffixgen.traffixgen_export_to_satg()
+        if success_export:
+            return True, f"Loaded data using optimized system with all performance improvements."
+        else:
+            # Fallback to old method if export fails
+            flights_rows: List[dict] = []; points_rows: List[dict] = []
+            found_flights = found_points = False
+            for p in paths:
+                kind, rows = _read_csv_auto(p)
+                if kind == 'flights': flights_rows.extend(rows); found_flights = True
+                elif kind == 'points': points_rows.extend(rows); found_points = True
+            if not (found_flights and found_points):
+                return False, "Missing required files: need both flights and flights_points (by headers)."
+                
+    except Exception as e:
+        print(f"Optimized loading failed: {e}, falling back to original method...")
+        # Fallback to original method
+        flights_rows: List[dict] = []; points_rows: List[dict] = []
+        found_flights = found_points = False
+        for p in paths:
+            kind, rows = _read_csv_auto(p)
+            if kind == 'flights': flights_rows.extend(rows); found_flights = True
+            elif kind == 'points': points_rows.extend(rows); found_points = True
+        if not (found_flights and found_points):
+            return False, "Missing required files: need both flights and flights_points (by headers)."
 
     STATE.base_points = _build_base_points(points_rows)
     fl: Dict[str, Dict[str,str]] = {}

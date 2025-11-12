@@ -1684,9 +1684,9 @@ class TraffixGenPlugin(bs.core.Entity):
                 if filters['time_start'] and filters['time_end']:
                     self.dataset_collection.apply_time_filter(filters['time_start'], filters['time_end'])
             
-            # Apply airspace exclusion (if implemented)
-            if 'exclude_airspace' in filters and filters['exclude_airspace']:
-                self.dataset_collection.apply_airspace_exclusion(filters['exclude_airspace'])
+            # Apply airspace inclusion filtering
+            if 'include_airspace' in filters and filters['include_airspace']:
+                self.dataset_collection.include_airspace(filters['include_airspace'])
             
             print("Filters applied successfully!")
             return True
@@ -2267,21 +2267,377 @@ class DatasetCollection:
             raise ValueError("FIR data is not loaded")
         return self._FIR
     
+    def _load_csv_optimized(self, filepath: str, required_cols: list, chunk_size: int = 50000, progress_callback=None) -> pd.DataFrame:
+        """Memory-efficient CSV loading for large files with intelligent caching."""
+        import os
+        import hashlib
+        
+        # Immediate progress feedback
+        if progress_callback:
+            progress_callback(f"Validating file: {os.path.basename(filepath)}")
+        
+        # Validate file exists and get info for caching decisions
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"File not found: {filepath}")
+        
+        try:
+            file_size = os.path.getsize(filepath)
+            file_size_mb = file_size / (1024 * 1024)
+            file_mtime = os.path.getmtime(filepath)
+        except (OSError, IOError) as e:
+            raise IOError(f"Cannot access file {filepath}: {e}")
+        
+        print(f"Loading file: {os.path.basename(filepath)} ({file_size_mb:.1f} MB)")
+        
+        if progress_callback:
+            progress_callback(f"File validated: {os.path.basename(filepath)} ({file_size_mb:.1f} MB)")
+        
+        # Generate cache key based on filepath, columns, and modification time
+        cache_key = hashlib.md5(
+            f"{filepath}_{sorted(required_cols)}_{file_mtime}".encode()
+        ).hexdigest()
+        
+        # Cache directory (use BlueSky's existing cache directory)
+        cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Cache paths
+        parquet_cache = os.path.join(cache_dir, f"traffixgen_{cache_key}.parquet")
+        pickle_cache = os.path.join(cache_dir, f"traffixgen_{cache_key}.pkl")
+        
+        # Try loading from cache first (for files > 100MB)
+        if file_size_mb > 100:
+            if progress_callback:
+                progress_callback(f"Checking cache for large file: {os.path.basename(filepath)}")
+            
+            try:
+                if os.path.exists(parquet_cache):
+                    if progress_callback:
+                        progress_callback(f"Loading from parquet cache: {os.path.basename(parquet_cache)}")
+                    print("Loading from parquet cache...")
+                    df = pd.read_parquet(parquet_cache)
+                    print(f"Loaded {len(df):,} rows from parquet cache")
+                    
+
+                    
+                    if progress_callback:
+                        progress_callback(f"Cache loaded: {len(df):,} rows from {os.path.basename(filepath)}")
+                    return df
+                elif os.path.exists(pickle_cache):
+                    if progress_callback:
+                        progress_callback(f"Loading from pickle cache: {os.path.basename(pickle_cache)}")
+                    print("Loading from pickle cache...")
+                    df = pd.read_pickle(pickle_cache)
+                    print(f"Loaded {len(df):,} rows from pickle cache")
+                    if progress_callback:
+                        progress_callback(f"Cache loaded: {len(df):,} rows from {os.path.basename(filepath)}")
+                    return df
+            except Exception as e:
+                print(f"Cache loading failed, proceeding with CSV: {e}")
+        
+        # Define optimized dtypes to reduce memory usage
+        dtype_map = {
+            'ECTRL ID': 'category',
+            'ADEP': 'category', 
+            'ADES': 'category',
+            'AC Type': 'category',
+            'AC Operator': 'category',
+            'Airspace ID': 'category',
+            'Sequence Number': 'int32',
+            # 'Time Over': Leave as object initially, will convert after loading
+            'Flight Level': 'float32',  # Reduced precision sufficient
+            'Latitude': 'float64',   # Keep full precision for coordinates
+            'Longitude': 'float64',  # Keep full precision for coordinates
+            'Min Flight Level': 'int16',
+            'Max Flight Level': 'int16'
+        }
+        
+        try:
+            # First, peek at columns to determine what's available
+            if progress_callback:
+                progress_callback(f"Reading file headers: {os.path.basename(filepath)}")
+            print(f"Reading headers from {os.path.basename(filepath)}...")
+            
+            sample_df = pd.read_csv(filepath, nrows=0)  # Just headers
+            available_cols = [col for col in required_cols if col in sample_df.columns]
+            
+            if progress_callback:
+                progress_callback(f"Headers validated: {len(available_cols)} columns found")
+            
+            if not available_cols:
+                raise ValueError(f"No required columns found in {filepath}")
+            
+            # Build dtype dict for available columns only, but exclude problematic columns
+            optimized_dtypes = {}
+            for col in available_cols:
+                if col in dtype_map:
+                    optimized_dtypes[col] = dtype_map[col]
+                # Let pandas auto-detect dtype for Time Over and other potentially problematic columns
+            
+            print(f"Loading columns: {available_cols}")
+            print(f"Using optimized dtypes: {optimized_dtypes}")
+            
+            # For smaller files (<500MB), load normally but with optimizations
+            if file_size_mb < 500:
+                print("Using optimized single-pass loading...")
+                try:
+                    df = pd.read_csv(
+                        filepath,
+                        usecols=available_cols,  # Only load required columns
+                        dtype=optimized_dtypes,  # Use memory-efficient dtypes
+                        low_memory=False         # Consistent dtype inference
+                    )
+                    print(f"Loaded {len(df)} rows in single pass")
+                except (ValueError, TypeError) as e:
+                    print(f"Dtype optimization failed ({e}), loading with auto-detection...")
+                    # Fallback to auto-detection
+                    df = pd.read_csv(
+                        filepath,
+                        usecols=available_cols,
+                        low_memory=False
+                    )
+                    print(f"Loaded {len(df)} rows with auto-detected dtypes")
+            else:
+                # For large files (>500MB), use chunked loading
+                print(f"Using chunked loading (chunk size: {chunk_size:,} rows)...")
+                chunks = []
+                total_rows = 0
+                
+                # Use iterator for chunked reading with fallback
+                try:
+                    chunk_iter = pd.read_csv(
+                        filepath,
+                        usecols=available_cols,
+                        dtype=optimized_dtypes,
+                        chunksize=chunk_size,
+                        low_memory=False
+                    )
+                except (ValueError, TypeError) as e:
+                    print(f"Dtype optimization failed ({e}), using auto-detection for chunked loading...")
+                    chunk_iter = pd.read_csv(
+                        filepath,
+                        usecols=available_cols,
+                        chunksize=chunk_size,
+                        low_memory=False
+                    )
+                
+                for i, chunk in enumerate(chunk_iter):
+                    chunks.append(chunk)
+                    total_rows += len(chunk)
+                    
+                    # Enhanced progress feedback
+                    if progress_callback:
+                        # Calculate progress percentage (estimate based on file size)
+                        estimated_total_rows = (file_size_mb * 1024 * 1024) // 200  # Rough estimate: ~200 bytes per row
+                        progress_pct = min(95, (total_rows / estimated_total_rows) * 100) if estimated_total_rows > 0 else 0
+                        
+                        filename = os.path.basename(filepath)
+                        progress_callback(
+                            f"Loading {filename}\n"
+                            f"Progress: {progress_pct:.1f}% • Chunk {i+1} • {total_rows:,} rows\n"
+                            f"Memory: {file_size_mb:.1f}MB file • {len(chunks)} chunks processed"
+                        )
+                    else:
+                        if (i + 1) % 10 == 0:  # Every 10 chunks
+                            print(f"Loaded {i+1} chunks ({total_rows:,} rows so far...)")
+                
+                # Concatenate all chunks efficiently
+                if progress_callback:
+                    progress_callback(f"Consolidating {len(chunks)} chunks into single dataset...")
+                print(f"Concatenating {len(chunks)} chunks...")
+                df = pd.concat(chunks, ignore_index=True, copy=False)
+                print(f"Successfully loaded {len(df):,} rows from large file")
+            
+            # Post-process Time Over column if it exists
+            if 'Time Over' in df.columns:
+                if progress_callback:
+                    progress_callback(f"Processing timestamps...\nExtracting time from {len(df):,} values")
+                print("Post-processing Time Over column...")
+                try:
+                    # Optimize timestamp processing - SATG only needs HH:MM:SS format, not full datetime
+                    if df['Time Over'].dtype == 'object':
+                        # Check if it looks like datetime strings
+                        sample_value = str(df['Time Over'].iloc[0]) if len(df) > 0 else ""
+                        if '-' in sample_value and ':' in sample_value:
+                            # Smart datetime splitting: preserve both date and time for filtering
+                            print("Splitting datetime into separate Date and Time fields...")
+                            
+                            time_strings = df['Time Over'].astype(str)
+                            
+                            # Initialize Date column
+                            df['Date'] = ''
+                            
+                            # Debug: Check sample values to understand format
+                            if len(time_strings) > 0:
+                                sample_values = time_strings.head(10).tolist()
+                                print(f"📊 Sample Time Over values: {sample_values[:3]}")  # Show first 3
+                            
+                            # Process datetime strings that contain spaces (date + time format)
+                            space_mask = time_strings.str.contains(' ', na=False)
+                            
+                            if space_mask.any():
+                                # Split on space: date and time parts
+                                datetime_parts = time_strings[space_mask].str.split(' ', n=1, expand=True)
+                                
+                                # Extract date part (before space) for filtering
+                                df.loc[space_mask, 'Date'] = datetime_parts[0]
+                                
+                                # Extract time part (after space) - this is what SATG needs
+                                df.loc[space_mask, 'Time Over'] = datetime_parts[1]
+                                
+                                print(f"📅 Extracted {space_mask.sum():,} datetime records with spaces")
+                            
+                            # For entries without space, try to detect if it's date or time
+                            no_space_mask = ~space_mask
+                            if no_space_mask.any():
+                                # If it contains colons, assume it's time-only
+                                time_only_mask = no_space_mask & time_strings.str.contains(':', na=False)
+                                if time_only_mask.any():
+                                    df.loc[time_only_mask, 'Date'] = ''  # No date info
+                                    print(f"⏰ Found {time_only_mask.sum():,} time-only records")
+                                
+                                # If it looks like a date (contains dashes/slashes), assume it's date-only  
+                                date_pattern = time_strings.str.contains(r'[-/]', na=False)
+                                date_only_mask = no_space_mask & date_pattern
+                                if date_only_mask.any():
+                                    df.loc[date_only_mask, 'Date'] = time_strings[date_only_mask]
+                                    df.loc[date_only_mask, 'Time Over'] = '00:00:00'  # Default time
+                                    print(f"📅 Found {date_only_mask.sum():,} date-only records")
+                            
+                            # Clean up and validate results
+                            df['Date'] = df['Date'].fillna('').astype(str)
+                            df['Time Over'] = df['Time Over'].fillna('').astype(str)
+                            
+                            # Validate results
+                            valid_times = df['Time Over'].str.match(r'^\d{1,2}:\d{2}:\d{2}', na=False).sum()
+                            valid_dates = (df['Date'].str.len() > 0).sum()  # Count non-empty dates
+                            total_count = len(df)
+                            
+                            print(f"Date/Time extraction: {valid_dates:,} dates, {valid_times:,} times from {total_count:,} records")
+                            
+                            if progress_callback:
+                                progress_callback(f"Date/Time extraction complete\nDates: {valid_dates:,} • Times: {valid_times:,}")
+                            
+                            # Add Date column to available columns for filtering
+                            print(f"Added 'Date' column for date range filtering")
+                            
+                            if valid_times < total_count * 0.95:
+                                print(f"Warning: {total_count - valid_times:,} invalid time formats detected")
+                        else:
+                            # Try direct conversion to numeric
+                            df['Time Over'] = pd.to_numeric(df['Time Over'], errors='coerce')
+                            print("Converted Time Over to numeric")
+                            if progress_callback:
+                                progress_callback(f"Converted Time Over to numeric format")
+                except Exception as e:
+                    print(f"Warning: Could not optimize Time Over column: {e}")
+                    if progress_callback:
+                        progress_callback(f"Time Over processing failed: {e}")
+                    # Leave as-is if conversion fails
+            
+            # Cache the fully processed result for large files (>100MB)
+            if file_size_mb > 100:
+                try:
+                    # Try parquet first (fastest and most compact)
+                    if progress_callback:
+                        progress_callback(f"Caching processed data for future loads...\nCreating parquet cache ({len(df):,} rows)")
+                    print("Caching fully processed data as parquet for future loads...")
+                    df.to_parquet(parquet_cache, compression='snappy', index=False)
+                    print(f"✓ Processed data cached to: {os.path.basename(parquet_cache)}")
+                except Exception as e:
+                    print(f"Parquet caching failed, trying pickle: {e}")
+                    try:
+                        # Fallback to pickle
+                        if progress_callback:
+                            progress_callback(f"Creating pickle cache as fallback...")
+                        print("Caching processed data as pickle for future loads...")
+                        df.to_pickle(pickle_cache)
+                        print(f"✓ Processed data cached to: {os.path.basename(pickle_cache)}")
+                    except Exception as e2:
+                        print(f"Pickle caching also failed: {e2}")
+            
+            return df
+            
+        except Exception as e:
+            raise ValueError(f"Error loading CSV file {filepath}: {e}")
+    
+    def clear_cache(self):
+        """Clear TraffixGen cache files."""
+        import os
+        import glob
+        
+        try:
+            cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache')
+            if os.path.exists(cache_dir):
+                # Remove TraffixGen cache files
+                cache_files = glob.glob(os.path.join(cache_dir, 'traffixgen_*.parquet'))
+                cache_files.extend(glob.glob(os.path.join(cache_dir, 'traffixgen_*.pkl')))
+                
+                if cache_files:
+                    for cache_file in cache_files:
+                        os.remove(cache_file)
+                        print(f"Removed cache: {os.path.basename(cache_file)}")
+                    print(f"Cleared {len(cache_files)} TraffixGen cache files")
+                else:
+                    print("No TraffixGen cache files found")
+            else:
+                print("Cache directory not found")
+                
+        except Exception as e:
+            print(f"Error clearing cache: {e}")
+    
+
+    def get_cache_info(self):
+        """Get information about TraffixGen cache files."""
+        import os
+        import glob
+        
+        try:
+            cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache')
+            if not os.path.exists(cache_dir):
+                return {"cache_files": [], "total_size_mb": 0}
+            
+            # Find TraffixGen cache files
+            cache_files = glob.glob(os.path.join(cache_dir, 'traffixgen_*.parquet'))
+            cache_files.extend(glob.glob(os.path.join(cache_dir, 'traffixgen_*.pkl')))
+            
+            cache_info = []
+            total_size = 0
+            
+            for cache_file in cache_files:
+                size = os.path.getsize(cache_file)
+                mtime = os.path.getmtime(cache_file)
+                
+                cache_info.append({
+                    'file': os.path.basename(cache_file),
+                    'size_mb': size / (1024 * 1024),
+                    'modified': mtime,
+                    'type': 'parquet' if cache_file.endswith('.parquet') else 'pickle'
+                })
+                total_size += size
+            
+            return {
+                'cache_files': cache_info,
+                'total_size_mb': total_size / (1024 * 1024),
+                'count': len(cache_info)
+            }
+            
+        except Exception as e:
+            print(f"Error getting cache info: {e}")
+            return {"cache_files": [], "total_size_mb": 0, "error": str(e)}
+    
     def set_flight_data(self, filepath: str):
         """Load flight data following original TraffixGen logic."""
         try:
             # Load with original column filtering - include AC Operator for callsign generation
             required_cols = ["ECTRL ID", "ADEP", "ADES", "AC Type", "AC Operator"]
-            df = pd.read_csv(filepath)
             
-            # Filter to only required columns that exist
-            available_cols = [col for col in required_cols if col in df.columns]
-            if not available_cols:
-                raise ValueError(f"No required columns found in {filepath}")
-                
-            filtered_df = df[available_cols].copy()
-            self._flights = Dataset(filtered_df)
-            print(f"Loaded flights data: {len(filtered_df)} flights with columns {available_cols}")
+            # Use optimized loading for large files with progress callback
+            progress_callback = getattr(self, '_progress_callback', None)
+            df = self._load_csv_optimized(filepath, required_cols, progress_callback=progress_callback)
+            
+            self._flights = Dataset(df)
+            print(f"Loaded flights data: {len(df)} flights with columns {df.columns.tolist()}")
             
         except Exception as e:
             raise ValueError(f"Error loading flight data from {filepath}: {e}")
@@ -2291,23 +2647,29 @@ class DatasetCollection:
         try:
             filed_path, actual_path = filepaths
             
-            # Load filed points (original columns)
+            # Load filed and actual points with optimized loading and progress feedback
             required_cols = ["ECTRL ID", "Sequence Number", "Time Over", "Flight Level", "Latitude", "Longitude"]
-            filed_df = pd.read_csv(filed_path)
-            actual_df = pd.read_csv(actual_path)
+            progress_callback = getattr(self, '_progress_callback', None)
             
-            # Filter to required columns
-            filed_cols = [col for col in required_cols if col in filed_df.columns]
-            actual_cols = [col for col in required_cols if col in actual_df.columns]
+            print("Loading filed flight points...")
+            filed_df = self._load_csv_optimized(filed_path, required_cols, progress_callback=progress_callback)
             
-            filed_filtered = filed_df[filed_cols].copy()
-            actual_filtered = actual_df[actual_cols].copy()
+            print("Loading actual flight points...")
+            actual_df = self._load_csv_optimized(actual_path, required_cols, progress_callback=progress_callback)
             
-            # Calculate delays and deviations (original TraffixGen postprocessing)
-            processed_df = self._calculate_deviations_and_delays(filed_filtered, actual_filtered)
+            # Skip expensive processing during initial loading - motion features calculated when needed for SATG export
+            if progress_callback:
+                progress_callback("Skipping processing - motion features calculated during SATG export...")
             
-            # Compute motion features (original TraffixGen postprocessing)
-            processed_df = self._compute_motion_features(processed_df)
+            processed_df = filed_df.copy()
+            print("Skipping motion calculations - only needed during SATG export phase")
+            
+            # Add empty motion feature columns for compatibility (will be calculated later when needed)
+            if 'ground_speed' not in processed_df.columns:
+                processed_df['ground_speed'] = 0.0
+                processed_df['vertical_speed'] = 0.0
+                processed_df['heading'] = 0.0
+                processed_df['pitch'] = 0.0
             
             self._flights_points = Dataset(processed_df)
             print(f"Loaded flight points data: {len(processed_df)} points with calculated deviations and motion features")
@@ -2318,59 +2680,23 @@ class DatasetCollection:
     def set_FIR_data(self, filepath: str):
         """Load FIR data following original TraffixGen logic."""
         try:
-            # Load with original column filtering
+            # Load with optimized loading
             required_cols = ["Airspace ID", "Min Flight Level", "Max Flight Level", "Sequence Number", "Latitude", "Longitude"]
-            df = pd.read_csv(filepath)
             
-            # Filter to only required columns that exist
-            available_cols = [col for col in required_cols if col in df.columns]
-            if available_cols:
-                filtered_df = df[available_cols].copy()
-                self._FIR = Dataset(filtered_df)
-                print(f"Loaded FIR data: {len(filtered_df)} points with columns {available_cols}")
+            df = self._load_csv_optimized(filepath, required_cols)
             
+            if len(df) > 0:
+                self._FIR = Dataset(df)
+                print(f"Loaded FIR data: {len(df)} points with columns {df.columns.tolist()}")
+            else:
+                print(f"Warning: No data found in {filepath}")
+                self._FIR = None
+                
         except Exception as e:
             print(f"Warning: Could not load FIR data from {filepath}: {e}")
+            self._FIR = None
     
-    def _calculate_deviations_and_delays(self, filed_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate delays and deviations following original TraffixGen logic."""
-        # Use filed as base and add actual data for comparison
-        result_df = filed_df.copy()
-        
-        # Add delay and deviation columns with default values
-        result_df['Delay Time Over'] = 0.0
-        result_df['Dev Latitude'] = 0.0
-        result_df['Dev Longitude'] = 0.0  
-        result_df['Dev Flight Level'] = 0.0
-        
-        # Try to calculate actual deviations if both datasets have matching flights
-        try:
-            for flight_id in filed_df['ECTRL ID'].unique():
-                filed_flight = filed_df[filed_df['ECTRL ID'] == flight_id]
-                actual_flight = actual_df[actual_df['ECTRL ID'] == flight_id]
-                
-                if not actual_flight.empty and len(filed_flight) == len(actual_flight):
-                    # Calculate deviations for matching sequences
-                    for idx, filed_row in filed_flight.iterrows():
-                        seq_num = filed_row['Sequence Number']
-                        actual_row = actual_flight[actual_flight['Sequence Number'] == seq_num]
-                        
-                        if not actual_row.empty:
-                            actual_row = actual_row.iloc[0]
-                            
-                            # Update the result dataframe with deviations
-                            result_idx = result_df[(result_df['ECTRL ID'] == flight_id) & 
-                                                 (result_df['Sequence Number'] == seq_num)].index
-                            
-                            if len(result_idx) > 0:
-                                idx = result_idx[0]
-                                result_df.loc[idx, 'Dev Latitude'] = actual_row['Latitude'] - filed_row['Latitude']
-                                result_df.loc[idx, 'Dev Longitude'] = actual_row['Longitude'] - filed_row['Longitude']
-                                result_df.loc[idx, 'Dev Flight Level'] = actual_row['Flight Level'] - filed_row['Flight Level']
-        except Exception as e:
-            print(f"Warning: Could not calculate all deviations: {e}")
-        
-        return result_df
+
     
     def _compute_motion_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute motion features using realistic aircraft performance and actual time differences."""
@@ -2386,7 +2712,18 @@ class DatasetCollection:
             from datetime import datetime, timedelta
             import pandas as pd
             
-            for flight_id in df['ECTRL ID'].unique():
+            progress_callback = getattr(self, '_progress_callback', None)
+            unique_flights = df['ECTRL ID'].unique()
+            total_flights = len(unique_flights)
+            
+            if progress_callback:
+                progress_callback(f"Computing motion features for {total_flights:,} flights...")
+            
+            for i, flight_id in enumerate(unique_flights):
+                if progress_callback and i % 1000 == 0:  # Update every 1000 flights
+                    progress = (i / total_flights) * 100
+                    progress_callback(f"Motion features: {progress:.1f}% ({i:,}/{total_flights:,} flights)")
+                
                 flight_points = df[df['ECTRL ID'] == flight_id].sort_values('Sequence Number')
                 
                 if len(flight_points) > 1:
@@ -2523,13 +2860,173 @@ class DatasetCollection:
                 dataset.data = filtered
                 print(f"Applied flight level filter to {dataset_attr}: {len(filtered)} points remaining")
     
-    def exclude_airspace(self, airspace_ids: List[str]):
-        """Exclude airspaces following original TraffixGen logic."""
-        if self._FIR is not None and 'Airspace ID' in self._FIR.data.columns:
-            df = self._FIR.data
-            filtered = df[~df['Airspace ID'].isin(airspace_ids)]
-            self._FIR.data = filtered
-            print(f"Excluded airspaces {airspace_ids}: {len(filtered)} FIR points remaining")
+
+
+    def include_airspace(self, airspace_ids: List[str]):
+        """Include only flight points within specified airspaces."""
+        if not airspace_ids:
+            print("No airspace filter specified - keeping all flight points")
+            return
+            
+        if self._FIR is None or 'Airspace ID' not in self._FIR.data.columns:
+            print("WARNING: No FIR data available for airspace filtering")
+            return
+            
+        if self.flights_points is None or self.flights_points.data.empty:
+            print("WARNING: No flight points data available for airspace filtering") 
+            return
+            
+        print(f"Filtering flight points to include airspaces: {airspace_ids}")
+        
+        # Get airspace boundaries for selected airspaces
+        fir_df = self._FIR.data
+        selected_boundaries = {}
+        
+        for airspace_id in airspace_ids:
+            airspace_points = fir_df[fir_df['Airspace ID'] == airspace_id]
+            if not airspace_points.empty:
+                # Store boundary points for this airspace
+                boundary_coords = airspace_points[['Latitude', 'Longitude']].values
+                if len(boundary_coords) >= 3:  # Need at least 3 points for a polygon
+                    selected_boundaries[airspace_id] = boundary_coords
+                    
+        if not selected_boundaries:
+            print("WARNING: No valid airspace boundaries found for selected airspaces")
+            return
+            
+        # Pre-compute bounding boxes for optimization
+        airspace_bboxes = {}
+        for airspace_id, boundary_points in selected_boundaries.items():
+            lats = boundary_points[:, 0]
+            lons = boundary_points[:, 1]
+            airspace_bboxes[airspace_id] = {
+                'min_lat': lats.min(), 'max_lat': lats.max(),
+                'min_lon': lons.min(), 'max_lon': lons.max(),
+                'boundary': boundary_points
+            }
+        
+        # Filter flight points to keep only those within selected airspaces
+        original_points = len(self.flights_points.data)
+        
+        print(f"Filtering {original_points:,} flight points for {len(selected_boundaries)} airspace regions...")
+        
+        # Try vectorized approach first for better performance
+        points_to_keep = self._filter_points_vectorized(self.flights_points.data, airspace_bboxes)
+        
+        if points_to_keep is None:
+            # Fallback to iterative method
+            print("Using iterative filtering method...")
+            points_to_keep = []
+            batch_size = max(1000, original_points // 100)  # Report progress every 1%
+            processed = 0
+            
+            for idx, point in self.flights_points.data.iterrows():
+                point_lat, point_lon = point['Latitude'], point['Longitude']
+                keep_point = False
+                
+                # Check if point falls within any selected airspace
+                for airspace_id, bbox in airspace_bboxes.items():
+                    # Quick bounding box check first
+                    if (bbox['min_lat'] <= point_lat <= bbox['max_lat'] and 
+                        bbox['min_lon'] <= point_lon <= bbox['max_lon']):
+                        # Point is within bounding box, do precise polygon check
+                        if self._point_in_polygon_fast(point_lat, point_lon, bbox['boundary']):
+                            keep_point = True
+                            break
+                            
+                if keep_point:
+                    points_to_keep.append(idx)
+                    
+                processed += 1
+                if processed % batch_size == 0:
+                    progress = (processed / original_points) * 100
+                    print(f"Progress: {progress:.0f}% ({processed:,}/{original_points:,} points)")
+            
+            if processed % batch_size != 0:  # Final progress update
+                print(f"Progress: 100% ({processed:,}/{original_points:,} points)")
+        else:
+            print("Used optimized vectorized filtering")
+        
+        # Filter the flight points data
+        if points_to_keep:
+            self.flights_points.data = self.flights_points.data.loc[points_to_keep]
+            
+            # Also filter flights to only include those with remaining points
+            remaining_flight_ids = self.flights_points.data['ECTRL ID'].unique()
+            if self.flights is not None:
+                original_flights = len(self.flights.data)
+                self.flights.data = self.flights.data[
+                    self.flights.data['ECTRL ID'].isin(remaining_flight_ids)
+                ]
+                print(f"Airspace filtering: {original_points:,} -> {len(self.flights_points.data):,} points, "
+                      f"{original_flights} -> {len(self.flights.data)} flights remaining")
+            else:
+                print(f"Airspace filtering: {original_points:,} -> {len(self.flights_points.data):,} points remaining")
+        else:
+            # No points remain in selected airspaces
+            self.flights_points.data = self.flights_points.data.iloc[0:0]
+            if self.flights is not None:
+                self.flights.data = self.flights.data.iloc[0:0]
+            print(f"Airspace filtering: No flight points found within selected airspaces - all data removed")
+        
+        # Also filter FIR boundaries to selected airspaces for consistency
+        filtered_fir = fir_df[fir_df['Airspace ID'].isin(airspace_ids)]
+        self._FIR.data = filtered_fir
+    
+    def _point_in_polygon_fast(self, lat: float, lon: float, polygon_points) -> bool:
+        """Fast ray casting algorithm for point-in-polygon test."""
+        x, y = lon, lat
+        n = len(polygon_points)
+        inside = False
+        
+        p1x, p1y = polygon_points[0][1], polygon_points[0][0]  # lon, lat
+        for i in range(1, n + 1):
+            p2x, p2y = polygon_points[i % n][1], polygon_points[i % n][0]  # lon, lat
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+            
+        return inside
+    
+    def _filter_points_vectorized(self, flight_points_df, airspace_bboxes):
+        """Vectorized filtering for better performance on large datasets."""
+        try:
+            import numpy as np
+            
+            # Convert to numpy arrays for vectorized operations
+            points_lat = flight_points_df['Latitude'].values
+            points_lon = flight_points_df['Longitude'].values
+            n_points = len(points_lat)
+            
+            # Initialize as False - only mark True if point is in a selected airspace
+            keep_mask = np.zeros(n_points, dtype=bool)
+            
+            for airspace_id, bbox in airspace_bboxes.items():
+                # Vectorized bounding box check
+                in_bbox = ((points_lat >= bbox['min_lat']) & 
+                          (points_lat <= bbox['max_lat']) &
+                          (points_lon >= bbox['min_lon']) & 
+                          (points_lon <= bbox['max_lon']))
+                
+                # Only check polygon for points within bounding box
+                bbox_indices = np.where(in_bbox)[0]
+                
+                if len(bbox_indices) > 0:
+                    # Check polygon for points within bounding box
+                    for idx in bbox_indices:
+                        if self._point_in_polygon_fast(points_lat[idx], points_lon[idx], bbox['boundary']):
+                            keep_mask[idx] = True  # Mark as keep
+                
+            return flight_points_df.index[keep_mask].tolist()
+            
+        except ImportError:
+            # Fallback to non-vectorized method if numpy not available
+            return None
 
 # Global instance for data storage
 _dataset_collection = None
@@ -2652,6 +3149,90 @@ def get_flight_summary():
                         except Exception as e:
                             print(f"Warning: Could not calculate time bounds: {e}")
                             # Don't add time_bounds if calculation fails
+                
+                # Add date bounds if Date column exists (from smart date/time separation)
+                if 'Date' in points_df.columns and not points_df.empty:
+                    print(f"✓ Date column found with {len(points_df)} rows")
+                    date_data = points_df['Date'].dropna()
+                    # Filter out empty dates
+                    date_data = date_data[date_data.str.len() > 0]
+                    if len(date_data) > 0:
+                        try:
+                            # Parse date strings - handle multiple formats
+                            valid_dates = []
+                            sample_dates = date_data.head(5).tolist()
+                            print(f"📊 Sample date values: {sample_dates}")
+                            
+                            for date_str in date_data:
+                                if isinstance(date_str, str) and len(date_str.strip()) > 0:
+                                    date_str = date_str.strip()
+                                    
+                                    # Try multiple date formats
+                                    parsed_date = None
+                                    
+                                    # Format 1: YYYY-MM-DD (most common in data files)
+                                    if '-' in date_str and len(date_str) >= 8:
+                                        parts = date_str.split('-')
+                                        if len(parts) >= 3:
+                                            try:
+                                                if len(parts[0]) == 4:  # YYYY-MM-DD
+                                                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                                                    if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                                                        parsed_date = f"{day:02d}-{month:02d}-{year}"
+                                                else:  # DD-MM-YYYY
+                                                    day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+                                                    if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                                                        parsed_date = date_str
+                                            except ValueError:
+                                                pass
+                                    
+                                    # Format 2: DD/MM/YYYY or MM/DD/YYYY
+                                    elif '/' in date_str:
+                                        parts = date_str.split('/')
+                                        if len(parts) >= 3:
+                                            try:
+                                                if len(parts[2]) == 4:  # DD/MM/YYYY or MM/DD/YYYY
+                                                    part1, part2, year = int(parts[0]), int(parts[1]), int(parts[2])
+                                                    # Try DD/MM/YYYY first
+                                                    if 1 <= part1 <= 31 and 1 <= part2 <= 12 and year > 1900:
+                                                        parsed_date = f"{part1:02d}-{part2:02d}-{year}"
+                                                    # Try MM/DD/YYYY if first fails
+                                                    elif 1 <= part2 <= 31 and 1 <= part1 <= 12 and year > 1900:
+                                                        parsed_date = f"{part2:02d}-{part1:02d}-{year}"
+                                            except ValueError:
+                                                pass
+                                    
+                                    if parsed_date:
+                                        valid_dates.append(parsed_date)
+                            
+                            if valid_dates:
+                                # Convert to datetime objects for proper sorting, then back to strings
+                                from datetime import datetime
+                                date_objects = []
+                                for date_str in valid_dates:
+                                    try:
+                                        parts = date_str.split('-')
+                                        day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+                                        date_obj = datetime(year, month, day)
+                                        date_objects.append((date_obj, date_str))
+                                    except (ValueError, IndexError):
+                                        pass
+                                
+                                if date_objects:
+                                    # Sort by datetime object, then extract the string
+                                    date_objects.sort(key=lambda x: x[0])
+                                    summary['date_bounds'] = {
+                                        'min': date_objects[0][1],  # First date string
+                                        'max': date_objects[-1][1]  # Last date string
+                                    }
+                                    print(f"✓ Date bounds calculated: {summary['date_bounds']['min']} to {summary['date_bounds']['max']}")
+                                else:
+                                    print("✗ Could not parse dates for sorting")
+                            else:
+                                print("✗ No valid dates found for date bounds calculation")
+                        except Exception as e:
+                            print(f"Warning: Could not calculate date bounds: {e}")
+                            # Don't add date_bounds if calculation fails
         
         # Store in shared data for access from other plugins
         _shared_data['last_summary'] = summary
@@ -2758,31 +3339,46 @@ def get_filtered_tracks():
         return error_tracks
 
 @stack.command
-def traffixgen_load_eurocontrol(flights_file: str, filed_file: str, actual_file: str, fir_file: str = ""):
+def traffixgen_load_eurocontrol(flights_file: str, filed_file: str, actual_file: str, fir_file: str = "", progress_callback=None):
     """Load Eurocontrol CSV files for processing using original TraffixGen logic."""
     global _dataset_collection
     
     try:
         print("Loading Eurocontrol data files...")
         
+        # Immediate progress feedback
+        if progress_callback:
+            progress_callback("Initializing data loading system...")
+        
         # Import TraffixGen components following original structure
         # Initialize dataset collection using internal implementation
         _dataset_collection = DatasetCollection()
         
+        # Store progress callback in the dataset collection for use during loading
+        _dataset_collection._progress_callback = progress_callback
+        
         # Load flights data (follows original set_flight_data method)
+        if progress_callback:
+            progress_callback("Starting flights data loading...")
         print(f"Loading flights data from: {flights_file}")
         _dataset_collection.set_flight_data(filepath=flights_file)
         
         # Load flight points data (follows original set_flights_points_data method)
         # This takes both filed and actual points files as a tuple
+        if progress_callback:
+            progress_callback("Starting flight points data loading...")
         print(f"Loading flight points from: {filed_file}, {actual_file}")
         _dataset_collection.set_flights_points_data(filepaths=(filed_file, actual_file))
         
         # Load FIR data if provided (follows original set_FIR_data method)
         if fir_file and os.path.exists(fir_file):
+            if progress_callback:
+                progress_callback("Loading FIR boundary data...")
             print(f"Loading FIR data from: {fir_file}")
             _dataset_collection.set_FIR_data(filepath=fir_file)
         
+        if progress_callback:
+            progress_callback("Data loading complete! Ready for model training and scenario generation.")
         print("Eurocontrol data loaded successfully using original TraffixGen logic!")
         return True
         
@@ -2821,73 +3417,10 @@ def traffixgen_apply_filters(filters_dict):
                 fl_max=filters_dict['fl_max']
             )
         
-        # Apply airspace exclusion using original exclude_airspace method
-        if 'exclude_airspace' in filters_dict and filters_dict['exclude_airspace']:
-            print(f"Excluding airspaces: {filters_dict['exclude_airspace']}")
-            
-            # First, get the excluded airspace boundaries for point-in-polygon checking
-            excluded_boundaries = {}
-            if _dataset_collection._FIR is not None and 'Airspace ID' in _dataset_collection._FIR.data.columns:
-                fir_df = _dataset_collection._FIR.data
-                for airspace_id in filters_dict['exclude_airspace']:
-                    airspace_points = fir_df[fir_df['Airspace ID'] == airspace_id]
-                    if not airspace_points.empty:
-                        # Store boundary points for this airspace
-                        excluded_boundaries[airspace_id] = airspace_points[['Latitude', 'Longitude']].values
-            
-            # Filter flight points that fall within excluded airspaces
-            if _dataset_collection.flights_points is not None and excluded_boundaries:
-                original_points = len(_dataset_collection.flights_points.data)
-                points_to_keep = []
-                
-                for idx, point in _dataset_collection.flights_points.data.iterrows():
-                    point_lat, point_lon = point['Latitude'], point['Longitude']
-                    keep_point = True
-                    
-                    # Check if point falls within any excluded airspace
-                    for airspace_id, boundary_points in excluded_boundaries.items():
-                        if len(boundary_points) >= 3:  # Need at least 3 points for a polygon
-                            # Use BlueSky's existing polygon check approach (same as used in ASAS/SSD)
-                            try:
-                                import pyclipper
-                                # Convert boundary points to pyclipper format
-                                polygon = [(float(pt[1]), float(pt[0])) for pt in boundary_points]  # lon, lat for pyclipper
-                                point = (float(point_lon), float(point_lat))  # lon, lat
-                                
-                                if pyclipper.PointInPolygon(pyclipper.scale_to_clipper(point), 
-                                                          pyclipper.scale_to_clipper(polygon)):
-                                    keep_point = False
-                                    break
-                            except ImportError:
-                                # Fallback to custom ray casting if pyclipper not available
-                                if _point_in_polygon(point_lat, point_lon, boundary_points):
-                                    keep_point = False
-                                    break
-                    
-                    if keep_point:
-                        points_to_keep.append(idx)
-                
-                # Filter the flight points data
-                _dataset_collection.flights_points.data = _dataset_collection.flights_points.data.loc[points_to_keep]
-                
-                # Filter flights to only include those with remaining points
-                if len(_dataset_collection.flights_points.data) > 0:
-                    remaining_flight_ids = _dataset_collection.flights_points.data['ECTRL ID'].unique()
-                    if _dataset_collection.flights is not None:
-                        original_flights = len(_dataset_collection.flights.data)
-                        _dataset_collection.flights.data = _dataset_collection.flights.data[
-                            _dataset_collection.flights.data['ECTRL ID'].isin(remaining_flight_ids)
-                        ]
-                        print(f"Airspace exclusion: {original_points} -> {len(_dataset_collection.flights_points.data)} points, "
-                              f"{original_flights} -> {len(_dataset_collection.flights.data)} flights remaining")
-                else:
-                    # No points remain, clear flights too
-                    if _dataset_collection.flights is not None:
-                        _dataset_collection.flights.data = _dataset_collection.flights.data.iloc[0:0]
-                    print(f"Airspace exclusion: All flight points removed")
-            
-            # Finally, exclude the airspace boundaries themselves
-            _dataset_collection.exclude_airspace(filters_dict['exclude_airspace'])
+        # Apply airspace include filtering
+        if 'include_airspace' in filters_dict and filters_dict['include_airspace']:
+            print(f"Including airspaces: {filters_dict['include_airspace']}")
+            _dataset_collection.include_airspace(filters_dict['include_airspace'])
         
         # Apply aircraft type filtering (custom implementation)
         if 'aircraft_types' in filters_dict and filters_dict['aircraft_types']:
@@ -2919,6 +3452,32 @@ def traffixgen_apply_filters(filters_dict):
                     if _dataset_collection.flights_points is not None:
                         _dataset_collection.flights_points.data = _dataset_collection.flights_points.data.iloc[0:0]
                     print(f"Aircraft filter: No flights match criteria")
+        
+        # Apply date filtering (using new Date column)
+        if 'date_start' in filters_dict and 'date_end' in filters_dict:
+            if filters_dict['date_start'] and filters_dict['date_end']:
+                date_start = filters_dict['date_start']
+                date_end = filters_dict['date_end'] 
+                print(f"Filtering date range: {date_start} to {date_end}")
+                
+                # Filter flight points based on date
+                if _dataset_collection.flights_points is not None and 'Date' in _dataset_collection.flights_points.data.columns:
+                    original_points = len(_dataset_collection.flights_points.data)
+                    
+                    # Filter by date range (DD-MM-YYYY format)
+                    mask = (_dataset_collection.flights_points.data['Date'] >= date_start) & \
+                           (_dataset_collection.flights_points.data['Date'] <= date_end)
+                    _dataset_collection.flights_points.data = _dataset_collection.flights_points.data[mask]
+                    
+                    # Update flights data to match remaining points
+                    remaining_flight_ids = _dataset_collection.flights_points.data['ECTRL ID'].unique()
+                    if _dataset_collection.flights is not None:
+                        _dataset_collection.flights.data = _dataset_collection.flights.data[
+                            _dataset_collection.flights.data['ECTRL ID'].isin(remaining_flight_ids)
+                        ]
+                    
+                    filtered_points = len(_dataset_collection.flights_points.data)
+                    print(f"Date filter: {original_points} -> {filtered_points} points remaining")
         
         # Apply time filtering (custom implementation)
         if 'time_start' in filters_dict and 'time_end' in filters_dict:
@@ -3130,38 +3689,43 @@ def traffixgen_export_to_satg():
             flights_data.append(flight)
             print(f"[DEBUG] Exported flight: ECTRL_ID={ectrl_id}, Callsign={callsign}, AC_Operator={ac_operator}")
         
+        # Calculate motion features on-demand for export (only if not already calculated)
+        if 'ground_speed' not in points_df.columns or points_df['ground_speed'].sum() == 0:
+            print("Calculating motion features for SATG export...")
+            points_df = _dataset_collection._compute_motion_features(points_df)
+        
         # NORMALIZE TIMES: Find earliest time and make it time 0 for scenario
         from datetime import datetime, timedelta
         import pandas as pd
         
-        # Convert all Time Over values to datetime objects for comparison
+        # Parse time-only values (HH:MM:SS format) - much faster without datetime conversion
         valid_times = []
         for _, row in points_df.iterrows():
             time_over_str = str(row.get('Time Over', ''))
             try:
-                if time_over_str and time_over_str != 'nan':
-                    # Parse time - handle different formats
-                    if ' ' in time_over_str:
-                        # Format like "01-03-2015 05:30:00"
-                        dt = pd.to_datetime(time_over_str)
-                    else:
-                        # Format like "05:30:00" - treat as time only
-                        if ':' in time_over_str:
-                            dt = pd.to_datetime(f"2000-01-01 {time_over_str}")
-                        else:
-                            # Just hour number
-                            dt = pd.to_datetime(f"2000-01-01 {time_over_str}:00:00")
-                    valid_times.append(dt)
+                if time_over_str and time_over_str != 'nan' and ':' in time_over_str:
+                    # Parse HH:MM:SS format directly
+                    time_parts = time_over_str.split(':')
+                    if len(time_parts) >= 2:
+                        hours = int(time_parts[0])
+                        minutes = int(time_parts[1])
+                        seconds = float(time_parts[2]) if len(time_parts) > 2 else 0
+                        
+                        # Convert to total seconds for comparison
+                        total_seconds = hours * 3600 + minutes * 60 + seconds
+                        valid_times.append(total_seconds)
             except:
                 continue
         
         if not valid_times:
             print("Warning: No valid times found in data")
-            earliest_time = pd.to_datetime("2000-01-01 00:00:00")
+            earliest_seconds = 0
         else:
-            earliest_time = min(valid_times)
-        
-        print(f"Normalizing times: earliest time {earliest_time.strftime('%H:%M:%S')} becomes 00:00:00 in scenario")
+            earliest_seconds = min(valid_times)
+            earliest_hours = int(earliest_seconds // 3600)
+            earliest_minutes = int((earliest_seconds % 3600) // 60) 
+            earliest_secs = int(earliest_seconds % 60)
+            print(f"Normalizing times: earliest time {earliest_hours:02d}:{earliest_minutes:02d}:{earliest_secs:02d} becomes 00:00:00 in scenario")
         
         points_data = []
         for _, row in points_df.iterrows():
@@ -3189,29 +3753,32 @@ def traffixgen_export_to_satg():
             time_over_str = str(row.get('Time Over', ''))
             
             try:
-                if time_over_str and time_over_str != 'nan':
-                    # Parse the time
-                    if ' ' in time_over_str:
-                        # Format like "01-03-2015 05:30:00"
-                        dt = pd.to_datetime(time_over_str)
+                if time_over_str and time_over_str != 'nan' and ':' in time_over_str:
+                    # Parse HH:MM:SS format directly - much faster
+                    time_parts = time_over_str.split(':')
+                    if len(time_parts) >= 2:
+                        hours = int(time_parts[0])
+                        minutes = int(time_parts[1])
+                        seconds = float(time_parts[2]) if len(time_parts) > 2 else 0
+                        
+                        # Convert to total seconds
+                        current_seconds = hours * 3600 + minutes * 60 + seconds
+                        
+                        # Calculate offset from earliest time
+                        offset_seconds = int(current_seconds - earliest_seconds)
+                        
+                        # Ensure non-negative time (earliest becomes 00:00:00)
+                        if offset_seconds < 0:
+                            offset_seconds = 0
+                        
+                        # Convert back to HH:MM:SS format
+                        norm_hours = offset_seconds // 3600
+                        norm_minutes = (offset_seconds % 3600) // 60
+                        norm_secs = offset_seconds % 60
+                        
+                        time_over_formatted = f"{norm_hours:02d}:{norm_minutes:02d}:{norm_secs:02d}"
                     else:
-                        # Format like "05:30:00" - treat as time only
-                        if ':' in time_over_str:
-                            dt = pd.to_datetime(f"2000-01-01 {time_over_str}")
-                        else:
-                            # Just hour number
-                            dt = pd.to_datetime(f"2000-01-01 {time_over_str}:00:00")
-                    
-                    # Calculate time difference from earliest time
-                    time_diff = dt - earliest_time
-                    total_seconds = int(time_diff.total_seconds())
-                    
-                    # Convert to HH:MM:SS format starting from 00:00:00
-                    hours = total_seconds // 3600
-                    minutes = (total_seconds % 3600) // 60
-                    seconds = total_seconds % 60
-                    
-                    time_over_formatted = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                        time_over_formatted = "00:00:00"
                 else:
                     time_over_formatted = "00:00:00"
             except Exception as e:
@@ -3226,10 +3793,6 @@ def traffixgen_export_to_satg():
                 'Flight Level': float(row.get('Flight Level', 0)),
                 'Latitude': float(row.get('Latitude', 0)),
                 'Longitude': float(row.get('Longitude', 0)),
-                'Delay Time Over': float(row.get('Delay Time Over', 0)),
-                'Dev Latitude': float(row.get('Dev Latitude', 0)),
-                'Dev Longitude': float(row.get('Dev Longitude', 0)),
-                'Dev Flight Level': float(row.get('Dev Flight Level', 0)),
                 'ground_speed': float(row.get('ground_speed', 0)),
                 'vertical_speed': float(row.get('vertical_speed', 0)),
                 'heading': float(row.get('heading', 0)),
@@ -3313,17 +3876,26 @@ def traffixgen_train_synthetic_models(flights_file: str, filed_file: str, actual
     global _enhanced_sampler
     
     try:
-        print("Loading historical data for model training...")
+        print("Using filtered data from TraffixGen instance for model training...")
         
-        # Load data files
-        flights_df = pd.read_csv(flights_file)
-        filed_df = pd.read_csv(filed_file) if filed_file else pd.DataFrame()
-        actual_df = pd.read_csv(actual_file)
+        # Use the already-filtered data from the global TraffixGen instance
+        if _dataset_collection is None or not hasattr(_dataset_collection, 'flights') or _dataset_collection.flights is None:
+            raise ValueError("No filtered data available in TraffixGen instance. Please apply filters first.")
         
-        # Use actual route points for training (more accurate than filed)
-        route_df = actual_df
+        # Get filtered data from the TraffixGen instance
+        flights_df = _dataset_collection.flights.data.copy()
+        route_df = _dataset_collection.flights_points.data.copy()
         
-        print(f"Loaded {len(flights_df)} flights and {len(route_df)} route points")
+        print(f"Using filtered data: {len(flights_df)} flights and {len(route_df)} route points")
+        
+        # Convert categorical columns to strings for model training compatibility
+        print("Converting categorical columns to strings for training...")
+        for col in flights_df.columns:
+            if flights_df[col].dtype.name == 'category':
+                flights_df[col] = flights_df[col].astype(str)
+        for col in route_df.columns:
+            if route_df[col].dtype.name == 'category':
+                route_df[col] = route_df[col].astype(str)
         
         # Validate required columns
         required_flight_cols = ['ECTRL ID', 'ADEP', 'ADES', 'AC Type']
@@ -3882,3 +4454,79 @@ def _apply_generation_filters(sampler: EnhancedFlightTrajectorySampler, gen_para
     except Exception as e:
         print(f"Error applying filters: {e}")
         return sampler  # Return original on error
+
+def traffixgen_clear_cache():
+    """Clear TraffixGen cache files to free up disk space."""
+    global _dataset_collection
+    
+    if _dataset_collection is None:
+        _dataset_collection = DatasetCollection()
+    
+    _dataset_collection.clear_cache()
+
+def traffixgen_cache_info():
+    """Show information about TraffixGen cache files."""
+    global _dataset_collection
+    
+    if _dataset_collection is None:
+        _dataset_collection = DatasetCollection()
+    
+    cache_info = _dataset_collection.get_cache_info()
+    
+    if cache_info['count'] == 0:
+        print("No TraffixGen cache files found")
+    else:
+        print(f"TraffixGen Cache Summary:")
+        print(f"  Files: {cache_info['count']}")
+        print(f"  Total size: {cache_info['total_size_mb']:.1f} MB")
+        print("\nCache files:")
+        
+        for cache_file in cache_info['cache_files']:
+            file_type = cache_file['type'].upper()
+            print(f"  {cache_file['file']} ({file_type}, {cache_file['size_mb']:.1f} MB)")
+    
+    return cache_info
+
+def get_cache_info():
+    """Get cache information for GUI display."""
+    global _dataset_collection
+    
+    if _dataset_collection is None:
+        _dataset_collection = DatasetCollection()
+    
+    return _dataset_collection.get_cache_info()
+
+def clear_cache():
+    """Clear all cache files."""
+    global _dataset_collection
+    
+    try:
+        if _dataset_collection is None:
+            _dataset_collection = DatasetCollection()
+        
+        _dataset_collection.clear_cache()
+        return {'success': True}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+def delete_cache_file(filename):
+    """Delete a specific cache file."""
+    import os
+    import glob
+    
+    try:
+        cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache')
+        if not os.path.exists(cache_dir):
+            return {'success': False, 'error': 'Cache directory not found'}
+        
+        # Find the specific file
+        cache_files = glob.glob(os.path.join(cache_dir, filename))
+        if not cache_files:
+            return {'success': False, 'error': f'Cache file {filename} not found'}
+        
+        # Delete the file
+        os.remove(cache_files[0])
+        return {'success': True}
+        
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
