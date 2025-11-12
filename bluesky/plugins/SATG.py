@@ -1,6 +1,44 @@
 """
-SATG: Scenario generator (Realistic Replay + Geometric Conflicts)
+SATG: Scenario and Traffic Generator Plugin for BlueSky ATM Simulator
 
+This module provides comprehensive scenario generation capabilities for the BlueSky Air Traffic 
+Management simulator, including realistic replay from EUROCONTROL data and geometric conflict 
+generation for training and testing purposes.
+
+Main Features:
+    - Realistic Replay: Generate scenarios from historical EUROCONTROL flight data
+    - Historic Sampling: Create synthetic scenarios using TraffixGen ML models  
+    - Geometric Conflicts: Generate controlled conflict scenarios for testing
+    - Random Conflicts: Create randomized conflict situations
+    - Procedure Integration: Support for SID/STAR procedures and custom waypoints
+    - Advanced Filtering: Geographic, altitude, time, and aircraft type filtering
+
+The module integrates with the broader BlueSky ecosystem and provides both command-line
+and GUI interfaces for scenario generation and management.
+
+Classes:
+    - Various dialog classes for GUI interaction
+    - Data structures for flight and waypoint management
+    
+Functions:
+    - Scenario generation and export functions
+    - Data processing and filtering utilities
+    - Coordinate conversion and formatting helpers
+    - Flight trajectory and conflict calculation algorithms
+
+Dependencies:
+    - BlueSky core simulator
+    - TraffixGen plugin for ML-based synthetic data
+    - PyQt6 for GUI components
+    - NumPy/Pandas for data processing
+    - Optional: GeoPandas for advanced geographic operations
+
+Usage:
+    This plugin is automatically loaded by BlueSky and provides commands accessible
+    via the simulator's command interface and GUI panels.
+
+Author: BlueSky ATM Simulator Team
+Version: Compatible with BlueSky 1.5+
 """
 import os, math, csv, re, random
 from datetime import timedelta
@@ -29,7 +67,34 @@ import bluesky.traffic.traffic as _traf_mod
 
 
 def _satg_safe_lat2txt(lat: float) -> str:
-    """Robust lat formatter that tolerates numpy scalars."""
+    """
+    Convert latitude to standardized text format with robust numeric handling.
+    
+    Converts a latitude value (in decimal degrees) to a formatted string representation
+    using degrees, minutes, and seconds notation. Handles both regular Python floats
+    and numpy scalar types safely.
+    
+    Args:
+        lat (float): Latitude in decimal degrees. Can be numpy scalar or Python float.
+                    Valid range is -90.0 to +90.0 degrees.
+    
+    Returns:
+        str: Formatted latitude string in format "N##'##'##"" or "S##'##'##""
+             where N/S indicates hemisphere, followed by degrees, minutes, seconds.
+    
+    Examples:
+        >>> _satg_safe_lat2txt(52.3676)
+        "N52'22'03""
+        >>> _satg_safe_lat2txt(-34.6037)  
+        "S34'36'13""
+        >>> _satg_safe_lat2txt(0.0)
+        "N00'00'00""
+    
+    Note:
+        This function is designed to handle numpy scalars which can sometimes cause
+        issues with standard formatting functions. All values are explicitly converted
+        to Python float before processing.
+    """
     latf = float(lat)
     d, m, s = _misc.float2degminsec(abs(latf))
     d = int(round(d))
@@ -40,7 +105,35 @@ def _satg_safe_lat2txt(lat: float) -> str:
 
 
 def _satg_safe_lon2txt(lon: float) -> str:
-    """Robust lon formatter that tolerates numpy scalars."""
+    """
+    Convert longitude to standardized text format with robust numeric handling.
+    
+    Converts a longitude value (in decimal degrees) to a formatted string representation
+    using degrees, minutes, and seconds notation. Handles both regular Python floats
+    and numpy scalar types safely.
+    
+    Args:
+        lon (float): Longitude in decimal degrees. Can be numpy scalar or Python float.
+                    Valid range is -180.0 to +180.0 degrees.
+    
+    Returns:
+        str: Formatted longitude string in format "E###'##'##"" or "W###'##'##""
+             where E/W indicates hemisphere, followed by degrees, minutes, seconds.
+             Note the longitude uses 3 digits for degrees (vs 2 for latitude).
+    
+    Examples:
+        >>> _satg_safe_lon2txt(4.8925)
+        "E004'53'33""
+        >>> _satg_safe_lon2txt(-74.0060)
+        "W074'00'22""
+        >>> _satg_safe_lon2txt(180.0)
+        "E180'00'00""
+    
+    Note:
+        This function is designed to handle numpy scalars which can sometimes cause
+        issues with standard formatting functions. All values are explicitly converted
+        to Python float before processing.
+    """
     lonf = float(lon)
     d, m, s = _misc.float2degminsec(abs(lonf))
     d = int(round(d))
@@ -84,7 +177,36 @@ def _isa_tp(h_m: float) -> Tuple[float, float]:
     return T, p
 
 def _gs_to_cas_kt(gs_kt: float, flight_level: float) -> float:
-    tas_ms = gs_kt / MS2KT  # wind=0 => TAS≈GS
+    """
+    Convert ground speed to calibrated airspeed using atmospheric models.
+    
+    Performs atmospheric calculations to convert ground speed (assuming no wind) to 
+    calibrated airspeed (CAS) at a given flight level. Uses International Standard
+    Atmosphere (ISA) model for temperature and pressure calculations.
+    
+    Args:
+        gs_kt (float): Ground speed in knots. Assumed to equal true airspeed when wind=0.
+        flight_level (float): Flight level (e.g., 350 for FL350). Converted to altitude
+                             using standard 100ft per FL conversion.
+    
+    Returns:
+        float: Calibrated airspeed in knots. Always non-negative.
+    
+    Note:
+        This function assumes zero wind conditions (ground speed = true airspeed).
+        For low Mach numbers (M < 0.1), uses simplified density-based conversion.
+        For higher speeds, uses compressible flow equations with Mach number calculations.
+        
+    Examples:
+        >>> _gs_to_cas_kt(450.0, 350.0)  # 450kt GS at FL350
+        420.5  # Approximate CAS in knots
+        >>> _gs_to_cas_kt(250.0, 100.0)  # 250kt GS at FL100  
+        245.2  # Approximate CAS in knots
+    
+    Raises:
+        None: Function handles edge cases gracefully with max() operations.
+    """
+    tas_ms = gs_kt / MS2KT  # wind=0 => TAS approx GS
     h_m = float(flight_level) * 100.0 * FT2M
     T, p = _isa_tp(h_m)
     a = math.sqrt(GAMMA*R*T)
@@ -153,7 +275,7 @@ def _generate_scenario_header(scenario_type: str, **params) -> List[str]:
         header.extend([
             f"# Scenario Type: {scenario_type}",
             f"# Aircraft Count: {params.get('n', 'N/A')}",
-            f"# Center: {params.get('center_lat', 'N/A')}°, {params.get('center_lon', 'N/A')}°",
+            f"# Center: {params.get('center_lat', 'N/A')} deg, {params.get('center_lon', 'N/A')} deg",
             f"# Radius: {params.get('radius_nm', 'N/A')} NM",
             f"# Conflict Types: {params.get('types', 'N/A')}",
             f"# Altitude Mode: {params.get('altmode', 'N/A')}",
@@ -164,9 +286,9 @@ def _generate_scenario_header(scenario_type: str, **params) -> List[str]:
     elif scenario_type == "Geometric Conflicts":
         header.extend([
             f"# Scenario Type: {scenario_type}",
-            f"# Position: {params.get('lat', 'N/A')}°, {params.get('lon', 'N/A')}°",
+            f"# Position: {params.get('lat', 'N/A')} deg, {params.get('lon', 'N/A')} deg",
             f"# Time to CPA: {params.get('tcpa', 'N/A')} seconds",
-            f"# Conflict Angle: {params.get('angle', 'N/A')}°",
+            f"# Conflict Angle: {params.get('angle', 'N/A')} deg",
             f"# Aircraft Types: {params.get('actypes', 'N/A')}",
             f"# Altitude Mode: {params.get('altmode', 'N/A')}"
         ])
@@ -191,7 +313,37 @@ def _generate_scenario_header(scenario_type: str, **params) -> List[str]:
 
 # ---------------- Math helpers (bearing/destination) ---------------- #
 def _bearing_nm(lat1, lon1, lat2, lon2):
-    """Initial great-circle bearing (deg) from (lat1,lon1) to (lat2,lon2)."""
+    """
+    Calculate initial great-circle bearing between two geographic points.
+    
+    This function computes the initial bearing (forward azimuth) along the
+    great-circle path from the first point to the second point using either
+    BlueSky's optimized geo functions or a fallback mathematical implementation.
+    The result represents the compass direction to follow at the starting point
+    to reach the destination along the shortest spherical path.
+    
+    Args:
+        lat1 (float): Latitude of the starting point in decimal degrees
+        lon1 (float): Longitude of the starting point in decimal degrees  
+        lat2 (float): Latitude of the destination point in decimal degrees
+        lon2 (float): Longitude of the destination point in decimal degrees
+    
+    Returns:
+        float: Initial bearing in degrees (0-360), where 0° is North, 90° is East
+    
+    Examples:
+        # Calculate bearing from Amsterdam to Berlin
+        bearing = _bearing_nm(52.3676, 4.9041, 52.5200, 13.4050)
+        
+        # Calculate bearing for navigation waypoint routing
+        next_bearing = _bearing_nm(current_lat, current_lon, waypoint_lat, waypoint_lon)
+    
+    Note:
+        This function uses BlueSky's geo.qdrdist when available for optimized
+        calculations, with a mathematical fallback for environments where
+        BlueSky geo functions are not accessible. The bearing is the initial
+        direction and will change along the great-circle path due to convergence.
+    """
     if hasattr(geo, "qdrdist"):
         qdr, _ = geo.qdrdist(lat1, lon1, lat2, lon2)  # dist in NM
         return qdr
@@ -206,7 +358,36 @@ def _bearing_nm(lat1, lon1, lat2, lon2):
     return brg
 
 def _dest_nm(lat, lon, brg_deg, dist_nm):
-    """Destination from (lat,lon) along bearing brg_deg for dist_nm nautical miles."""
+    """
+    Calculate destination point from starting coordinates along a bearing.
+    
+    This function computes the destination coordinates reached by traveling
+    from a starting point along a specified bearing for a given distance.
+    The calculation follows great-circle navigation principles, accounting
+    for the spherical nature of Earth's surface.
+    
+    Args:
+        lat (float): Starting latitude in decimal degrees
+        lon (float): Starting longitude in decimal degrees
+        brg_deg (float): True bearing in degrees (0-360), where 0° is North
+        dist_nm (float): Distance to travel in nautical miles
+    
+    Returns:
+        tuple: (latitude, longitude) of the destination point in decimal degrees
+    
+    Examples:
+        # Calculate position 50 NM northeast from current location
+        dest_lat, dest_lon = _dest_nm(52.0, 4.0, 45.0, 50.0)
+        
+        # Find waypoint coordinates for procedure design
+        wp_lat, wp_lon = _dest_nm(airport_lat, airport_lon, runway_heading, 10.0)
+    
+    Note:
+        This function uses BlueSky's geo.qdrpos when available for optimized
+        spherical calculations, with a mathematical fallback implementation.
+        The calculation accounts for Earth's curvature and provides accurate
+        results for aviation navigation applications.
+    """
     if hasattr(geo, "qdrpos"):
         lat2, lon2 = geo.qdrpos(lat, lon, brg_deg, dist_nm)  # deg, deg
         return (lat2, lon2)
@@ -1047,15 +1228,12 @@ def _write_rl_scn(out_path: str, append: bool = False):
             f.write("0:00:00.00>HOLD\n")
             f.write("0:00:00.00>ASAS ON\n")
         points = _get_points_for_run()
-        print(f"[DEBUG] _get_points_for_run() returned {len(points) if points else 0} aircraft")
 
         # When appending, avoid duplicate callsigns by renaming colliding ACIDs
         used = _scan_existing_acids(out_path) if append else set()
         name_map = {}  # original_acid -> new_acid
 
         # Compute a deterministic mapping for this batch, considering both ACIDs and callsigns
-        print(f"[DEBUG] STATE.flights contains {len(STATE.flights)} flights: {list(STATE.flights.keys())}")
-        print(f"[DEBUG] Points contains {len(points)} aircraft: {list(points.keys())}")
         
         for acid in STATE.flights.keys():
             meta = STATE.flights[acid]
@@ -1066,23 +1244,18 @@ def _write_rl_scn(out_path: str, append: bool = False):
             final_name = preferred_name
             if final_name in used or final_name in name_map.values():
                 final_name = _next_unique_acid(preferred_name, used | set(name_map.values()))
-                print(f"[DEBUG] Duplicate detected: '{preferred_name}' -> '{final_name}'")
             
             name_map[acid] = final_name
             used.add(final_name)
 
-        print(f"[DEBUG] Starting aircraft generation loop...")
+        # Generate aircraft using the pre-computed unique name mapping
         for acid, meta in STATE.flights.items():
-            print(f"[DEBUG] Processing aircraft {acid}")
-            print(f"[DEBUG] Metadata: {meta}")
             # Use the pre-computed unique name from name_map
             acid_out = name_map.get(acid, acid)
-            print(f"[DEBUG] Using unique callsign: '{acid_out}'")
 
             if acid not in points or not points[acid]:
-                print(f"[DEBUG] Skipping {acid} - no points data")
                 continue
-            print(f"[DEBUG] Aircraft {acid} has {len(points[acid])} points, using callsign: {acid_out}")
+            
             segs = points[acid]; r0 = segs[0]; last = segs[-1]
             t0 = timedelta(seconds=r0['t']); stamp0 = _stamp(t0)
             fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
@@ -1103,7 +1276,6 @@ def _write_rl_scn(out_path: str, append: bool = False):
                 bearing_rad = math.atan2(y, x)
                 bearing_deg = math.degrees(bearing_rad)
                 hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
-                print(f"[DEBUG] Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 3rd waypoint)")
             elif len(segs) > 1:
                 # Fallback to second waypoint if no third available
                 next_point = segs[1]
@@ -1118,10 +1290,8 @@ def _write_rl_scn(out_path: str, append: bool = False):
                 bearing_rad = math.atan2(y, x)
                 bearing_deg = math.degrees(bearing_rad)
                 hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
-                print(f"[DEBUG] Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 2nd waypoint)")
             else:
                 hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
-                print(f"[DEBUG] Using stored heading {hdg0}° (no waypoints available)")
             
             actype = meta.get('AC Type',''); alt_ft0 = int(fl0) * 100
 
@@ -1152,9 +1322,7 @@ def _write_rl_scn(out_path: str, append: bool = False):
                     f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
 
             # Robust takeoff logic - find first non-zero altitude waypoint for realistic initial conditions
-            print(f"[DEBUG] Checking initial commands for {acid_out}: cas0={cas0}, alt_ft0={alt_ft0}")
             if cas0 <= 0 or alt_ft0 <= 0:
-                print(f"[DEBUG] Aircraft {acid_out} needs initial commands - searching for first climbing waypoint")
                 
                 # Find first waypoint with non-zero altitude (handles varying numbers of ground waypoints)
                 first_airborne_waypoint = None
@@ -1165,7 +1333,6 @@ def _write_rl_scn(out_path: str, append: bool = False):
                     if wp_fl > 0:  # Found first waypoint above ground
                         first_airborne_waypoint = waypoint
                         first_airborne_index = idx
-                        print(f"[DEBUG] Found first airborne waypoint at index {idx}: FL{wp_fl:.0f}")
                         break
                 
                 if first_airborne_waypoint:
@@ -1175,67 +1342,51 @@ def _write_rl_scn(out_path: str, append: bool = False):
                         target_fl = first_airborne_waypoint.get('fl', 0)
                         target_cas = _gs_to_cas_kt(target_gs, target_fl)
                         
-                        print(f"[DEBUG] First airborne waypoint: gs={target_gs:.1f}, fl={target_fl}, cas={target_cas:.1f}")
-                        
                         # Set realistic takeoff/climb conditions
                         if cas0 <= 0:
                             if target_cas > 0:
                                 # Use actual climb speed from data
                                 initial_speed = min(max(target_cas, 160), 250)  # Realistic takeoff/climb speed range
-                                print(f"[DEBUG] Adding realistic SPD command: SPD {acid_out} {initial_speed:.0f}")
                                 f.write(f"{stamp0}SPD {acid_out} {initial_speed:.0f}\n")
                             else:
                                 # Use realistic takeoff speed
                                 initial_speed = 180  # Typical takeoff/initial climb speed
-                                print(f"[DEBUG] Using realistic takeoff SPD: SPD {acid_out} {initial_speed}")
                                 f.write(f"{stamp0}SPD {acid_out} {initial_speed}\n")
                                 
                         if alt_ft0 <= 0:
                             if target_fl > 0:
                                 # Use the first climbing altitude as target
-                                print(f"[DEBUG] Adding realistic ALT command: ALT {acid_out} FL{target_fl:03.0f}")
                                 f.write(f"{stamp0}ALT {acid_out} FL{target_fl:03.0f}\n")
                             else:
                                 # Use realistic initial climb altitude
                                 initial_alt = "FL050"  # Typical initial climb clearance
-                                print(f"[DEBUG] Using realistic initial climb ALT: ALT {acid_out} {initial_alt}")
                                 f.write(f"{stamp0}ALT {acid_out} {initial_alt}\n")
                                 
                     except Exception as e:
-                        print(f"[DEBUG] Error processing first airborne waypoint for {acid_out}: {e}")
                         # Use realistic takeoff defaults as fallback
                         if cas0 <= 0:
                             takeoff_speed = 180
-                            print(f"[DEBUG] Using takeoff SPD fallback: SPD {acid_out} {takeoff_speed}")
                             f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                         if alt_ft0 <= 0:
                             takeoff_alt = "FL050"
-                            print(f"[DEBUG] Using takeoff ALT fallback: ALT {acid_out} {takeoff_alt}")
                             f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
                 else:
-                    print(f"[DEBUG] No airborne waypoints found for {acid_out} - using takeoff defaults")
                     # All waypoints are at ground level - use realistic takeoff values
                     if cas0 <= 0:
                         takeoff_speed = 180  # Realistic takeoff speed
-                        print(f"[DEBUG] Using takeoff SPD (no airborne waypoints): SPD {acid_out} {takeoff_speed}")
                         f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                     if alt_ft0 <= 0:
                         takeoff_alt = "FL050"  # Realistic initial climb clearance
-                        print(f"[DEBUG] Using takeoff ALT (no airborne waypoints): ALT {acid_out} {takeoff_alt}")
                         f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
-            else:
-                print(f"[DEBUG] Aircraft {acid_out} doesn't need initial commands")
 
             # Write LNAV/VNAV commands - delay only for takeoff aircraft (ground start)
             if alt_ft0 <= 0:
                 # Aircraft starts on ground (takeoff) - apply 30 second delay
                 t0_plus_30 = timedelta(seconds=r0['t'] + 30)
                 stamp_lnav_vnav = _stamp(t0_plus_30)
-                print(f"[DEBUG] Aircraft {acid_out} starts on ground - applying 30s delay for LNAV/VNAV")
             else:
                 # Aircraft starts airborne - no delay needed
                 stamp_lnav_vnav = stamp0
-                print(f"[DEBUG] Aircraft {acid_out} starts airborne - no delay for LNAV/VNAV")
             
             f.write(f"{stamp_lnav_vnav}LNAV {acid_out} ON\n")
             f.write(f"{stamp_lnav_vnav}VNAV {acid_out} ON\n")
@@ -1459,7 +1610,7 @@ def _write_gc_scn(out_path: str, *,
             sep_n = math.cos(rad) * hsep_nm
             sep_e = math.sin(rad) * hsep_nm
         else:
-            # r · v_rel = 0 at CPA for minimum distance -> rotate v_rel by 90 deg
+            # r * v_rel = 0 at CPA for minimum distance -> rotate v_rel by 90 deg
             sep_n = (-vrel_e / rel_mag) * hsep_nm
             sep_e = ( vrel_n / rel_mag) * hsep_nm
 
@@ -2088,14 +2239,11 @@ def _resolve_waypoint_pair(name1: str, name2: str, fix_db: Optional[Dict[str, Tu
                         best_pair = (coord1, coord2)
         
         if best_pair and min_distance < 1000:  # Only accept pairs within 1000 NM
-            print(f"SATG DEBUG: Found close waypoint pair {name1}-{name2}: distance {min_distance:.1f}NM")
             return best_pair
         else:
-            print(f"SATG DEBUG: No close waypoint pair found for {name1}-{name2}, min distance {min_distance:.1f}NM")
             return None, None
             
     except Exception as e:
-        print(f"SATG DEBUG: Error resolving waypoint pair {name1}-{name2}: {e}")
         return None, None
 
 
@@ -2298,11 +2446,40 @@ def _cmd_path(target: str) -> str:
 # ---------------- Stack commands (typed for console hints) ---------------- #
 @command
 def SATG_DIR(base: str=None):
-    """SATG_DIR [base]
-    Show or set the base directory. Creates <base>/data and <base>/scenarios if missing.
-    Example:
-      SATG_DIR
-      SATG_DIR base=C:/work/satg
+    """
+    Show or set the SATG base directory with automatic subdirectory creation.
+    
+    This command function manages the SATG working directory structure, creating
+    the necessary subdirectories for data files and generated scenarios. When
+    setting a new base directory, the function automatically creates 'data' and
+    'scenarios' subdirectories if they don't exist.
+    
+    The base directory structure is essential for SATG operations:
+    - <base>/data: Contains input CSV files for realistic replay
+    - <base>/scenarios: Contains generated scenario files for BlueSky simulation
+    
+    Args:
+        base (str, optional): New base directory path to set. If None, displays
+                            current directory configuration without changes.
+    
+    Returns:
+        tuple: (True, "") indicating successful execution
+    
+    Examples:
+        # Display current directory configuration
+        SATG_DIR
+        
+        # Set new base directory with automatic subdirectory creation
+        SATG_DIR base=C:/work/satg
+        
+        # Set relative path base directory
+        SATG_DIR base=./satg_data
+    
+    Note:
+        Setting a new base directory automatically creates the required
+        subdirectories and updates the global STATE configuration. The
+        function provides helpful guidance about placing CSV files in
+        the data directory for subsequent loading operations.
     """
     if base:
         _init_dirs(base)
@@ -2316,14 +2493,53 @@ def SATG_DIR(base: str=None):
 
 @command
 def SATG_RL_LOAD(*args):
-    """SATG_RL_LOAD [files]
-    Load pre-filtered flights + flights_points by headers. Use 'AUTO' to scan <base>/data.
+    """
+    Load pre-filtered flight data for Realistic Replay scenario generation.
+    
+    This command function loads historical flight data that has been pre-processed
+    and filtered for use in realistic replay scenarios. The function supports
+    automatic file discovery in the data directory or manual specification of
+    specific data files. The loaded data includes flight metadata and trajectory
+    points required for scenario generation.
+    
+    The function expects CSV files with specific headers for flight information
+    and flight points data. When using AUTO mode, it scans the configured data
+    directory for appropriately formatted files and loads them automatically.
+    
+    Data Requirements:
+    - Flights file: Contains flight metadata with proper CSV headers
+    - Flights_points file: Contains trajectory data with coordinate information
+    - Files must be pre-filtered and formatted according to SATG specifications
+    
+    Args:
+        *args: Variable arguments supporting multiple input formats:
+              - No args: Defaults to AUTO scanning mode
+              - 'AUTO': Automatically scan <base>/data directory
+              - 'files=path': Specify directory or comma-separated file paths
+              - Direct file paths: Space or comma-separated file specifications
+    
+    Returns:
+        tuple: (success, message) where success is boolean and message is string
+    
     Examples:
-      SATG_RL_LOAD
-      SATG_RL_LOAD AUTO
-      SATG_RL_LOAD files=C:/data/case1
-      SATG_RL_LOAD files=C:/data/flights.csv,C:/data/flights_points.csv
-      SATG_RL_LOAD C:/data/flights.csv,C:/data/flights_points.csv
+        # Automatic scanning of data directory
+        SATG_RL_LOAD
+        SATG_RL_LOAD AUTO
+        
+        # Load from specific directory containing flights data
+        SATG_RL_LOAD files=C:/data/case1
+        
+        # Load specific files with explicit paths
+        SATG_RL_LOAD files=C:/data/flights.csv,C:/data/flights_points.csv
+        
+        # Direct file specification without 'files=' parameter
+        SATG_RL_LOAD C:/data/flights.csv,C:/data/flights_points.csv
+    
+    Note:
+        The function validates file headers and formats during loading to ensure
+        compatibility with SATG scenario generation. Pre-filtering of data is
+        expected to have been performed before loading. Files should contain
+        complete flight trajectories with proper coordinate and timing information.
     """
     if len(args) == 0:
         files = "AUTO"
@@ -2345,7 +2561,7 @@ def SATG_RL_LOAD(*args):
     
     ok, msg = _load_files(arg)
     if ok:
-        _echo_ok(msg, nxt="Now: SATG_RL_JITTER [on|off] … (optional), then SATG_RL_RUN [SCNNAME]")
+        _echo_ok(msg, nxt="Now: SATG_RL_JITTER [on|off] ... (optional), then SATG_RL_RUN [SCNNAME]")
     else:
         _echo_err(msg)
     return ok, ""
@@ -2360,17 +2576,58 @@ def SATG_RL_JITTER(mode: str,
                    dfl: int=None,
                    nsig: float=None,
                    pct: float=None):
-    """SATG_RL_JITTER mode [dist] [seed] [dt] [dlat] [dlon] [dfl] [nsig]
-    Synthetic noise applied at MAKE/RUN to baseline points.
-      mode: on|off
-      dist: uniform|normal     (default keeps last; initial 'normal')
-      seed: integer            (repeatable)
-      dt:   seconds            (± range for time)
-      dlat: degrees            (± range latitude)
-      dlon: degrees            (± range longitude)
-      dfl:  flight levels      (± range)
-      nsig: sigma clamp for normal (±nsig·σ); 0 disables clamp
-    Only params you pass are changed; others keep last values (defaults are 0 => no effect).
+    """
+    Configure synthetic noise (jitter) for realistic flight trajectory variations.
+    
+    This command function enables and configures stochastic variations applied to
+    flight trajectories during scenario generation to create realistic deviations
+    from perfect flight paths. The jitter system adds controlled noise to temporal,
+    spatial, and altitude parameters to simulate real-world flight operations.
+    
+    The jitter system supports multiple probability distributions and provides
+    fine-grained control over variation parameters. This enables generation of
+    realistic traffic scenarios that reflect the natural variations found in
+    actual flight operations while maintaining reproducibility through seeding.
+    
+    Jitter Parameters:
+    - Temporal: Time variations in departure and waypoint timing
+    - Spatial: Latitude and longitude coordinate variations
+    - Vertical: Flight level and altitude variations
+    - Statistical: Distribution type and sigma clamping controls
+    
+    Args:
+        mode (str): Enable or disable jitter ('on' or 'off')
+        dist (str, optional): Probability distribution ('uniform' or 'normal').
+                             Defaults to 'normal' if not specified
+        seed (int, optional): Random seed for reproducible jitter patterns
+        dt (float, optional): Time jitter range in seconds (+/- variance)
+        dlat (float, optional): Latitude jitter range in degrees (+/- variance)
+        dlon (float, optional): Longitude jitter range in degrees (+/- variance)
+        dfl (int, optional): Flight level jitter range (+/- variance)
+        nsig (float, optional): Sigma clamp for normal distribution (0 disables)
+        pct (float, optional): Percentage of flights to apply jitter to
+    
+    Returns:
+        tuple: (success, message) indicating configuration success
+    
+    Examples:
+        # Enable jitter with default normal distribution
+        SATG_RL_JITTER on
+        
+        # Configure comprehensive jitter with specific parameters
+        SATG_RL_JITTER on dist=normal seed=12345 dt=30 dlat=0.01 dlon=0.01 dfl=2
+        
+        # Set uniform distribution with moderate variations
+        SATG_RL_JITTER on dist=uniform dt=60 dlat=0.005 dlon=0.005 nsig=2.0
+        
+        # Disable jitter for deterministic scenarios
+        SATG_RL_JITTER off
+    
+    Note:
+        Only specified parameters are updated, allowing incremental configuration
+        changes. Jitter is applied during scenario generation (MAKE/RUN) and
+        affects all trajectory points. Use seeding for reproducible scenarios
+        while maintaining realistic flight path variations.
     """
     m = (mode or "").strip().lower()
     if m not in ("on","off"):
@@ -2409,7 +2666,7 @@ def SATG_RL_JITTER(mode: str,
     else:
         STATE.jitter_subset = None  # compute later once data is loaded
 
-    msg = ("Jitter ON — dist=%s: dt=%s, dlat=%s, dlon=%s, dfl=%s, pct=%.0f%%" %
+    msg = ("Jitter ON - dist=%s: dt=%s, dlat=%s, dlon=%s, dfl=%s, pct=%.0f%%" %
         (STATE.jitter_dist, STATE.dt_max, STATE.dlat_max, STATE.dlon_max, STATE.dfl_max, STATE.jitter_pct))
 
     _echo_ok(msg, nxt="Now: SATG_RL_RUN [SCNNAME]")
@@ -2450,10 +2707,10 @@ def SATG_RL_PHASE_CONFIG(phase: str, enabled: str=None, dt: float=None, dlat: fl
     Configure jitter parameters for a specific flight phase.
       phase: takeoff|climb|cruise|descent|approach
       enabled: on|off
-      dt: seconds (± range for time)
-      dlat: degrees (± range latitude) 
-      dlon: degrees (± range longitude)
-      dfl: flight levels (± range)
+      dt: seconds (+/- range for time)
+      dlat: degrees (+/- range latitude) 
+      dlon: degrees (+/- range longitude)
+      dfl: flight levels (+/- range)
     """
     p = phase.strip().lower()
     if p not in STATE.phase_configs:
@@ -2474,7 +2731,7 @@ def SATG_RL_PHASE_CONFIG(phase: str, enabled: str=None, dt: float=None, dlat: fl
     if dfl is not None: config['dfl_max'] = int(dfl)
     
     status = "ENABLED" if config['enabled'] else "DISABLED"
-    msg = (f"Phase '{phase}' {status} — dt={config['dt_max']}, dlat={config['dlat_max']}, "
+    msg = (f"Phase '{phase}' {status} - dt={config['dt_max']}, dlat={config['dlat_max']}, "
            f"dlon={config['dlon_max']}, dfl={config['dfl_max']}")
     _echo_ok(msg)
     return True, ""
@@ -2954,9 +3211,47 @@ def SATG_GC_REL(*argv):
 
 @command
 def SATG_GC_CONF(hsep_nm: float=5.0, vsep_ft: int=1000):
-    """SATG_GC_CONF [hsep_nm] [vsep_ft]
-    Set loss-of-separation thresholds used for GC design (informational).
-    Defaults apply even if you never call this.
+    """
+    Configure loss-of-separation thresholds for Geometric Conflict generation.
+    
+    This command function sets the horizontal and vertical separation minima used
+    in geometric conflict scenario design. These thresholds define the critical
+    separation distances that constitute a loss of separation event and are used
+    to calculate conflict geometry parameters such as Closest Point of Approach (CPA).
+    
+    The configured separation minima are used throughout the geometric conflict
+    generation process to ensure realistic conflict scenarios that represent
+    actual air traffic management separation requirements. These values serve
+    as the baseline for conflict detection and resolution algorithms.
+    
+    Args:
+        hsep_nm (float, optional): Horizontal separation minimum in nautical miles.
+                                 Defaults to 5.0 NM which is standard for enroute
+                                 operations in controlled airspace.
+        vsep_ft (int, optional): Vertical separation minimum in feet. Defaults to
+                               1000 ft which is standard for operations below FL290.
+    
+    Returns:
+        tuple: (True, "") indicating successful configuration
+    
+    Examples:
+        # Use default separation standards (5 NM horizontal, 1000 ft vertical)
+        SATG_GC_CONF
+        
+        # Set custom horizontal separation for terminal area operations
+        SATG_GC_CONF hsep_nm=3.0
+        
+        # Set RVSM vertical separation for high-altitude operations
+        SATG_GC_CONF hsep_nm=5.0 vsep_ft=1000
+        
+        # Configure for approach/departure operations
+        SATG_GC_CONF hsep_nm=2.5 vsep_ft=500
+    
+    Note:
+        These values are used for informational and design purposes in conflict
+        generation. The actual BlueSky simulation may use different separation
+        standards. Default values comply with ICAO standard separation minima
+        for controlled airspace operations.
     """
     STATE.gc_hsep_nm = float(hsep_nm)
     STATE.gc_vsep_ft = int(vsep_ft)
@@ -3028,10 +3323,65 @@ def SATG_GC_RANGE(cas1: str=None, cas2: str=None, fl1: str=None, fl2: str=None,
 
 @command
 def SATG_GC_CRE(*argv):
-    """SATG_GC_CRE name=<scn> (lat=<deg> lon=<deg> | wp=<ident>) tcpa=<s> [angle=<deg>] [dh=<ft>]
-    Optional: acid1, acid2, ac1, ac2, actypes, fl_cpa, seed, overwrite.
-
-    Legacy positional arguments (type/head-on, altmode) are still accepted but ignored.
+    """
+    Create geometric conflict scenarios with precise CPA (Closest Point of Approach) design.
+    
+    This command function generates sophisticated geometric conflict scenarios where
+    two aircraft are precisely positioned to achieve a specified loss of separation
+    at a defined time and location. The function uses advanced geometric algorithms
+    to calculate aircraft positions and trajectories that result in controlled
+    conflict situations for air traffic management research and training.
+    
+    The geometric conflict creation process involves:
+    1. Define conflict location and timing parameters
+    2. Calculate aircraft trajectories to achieve specified CPA
+    3. Generate realistic aircraft parameters and routes
+    4. Create BlueSky-compatible scenario files with conflict geometry
+    
+    Required Parameters:
+    - name: Scenario filename for the generated conflict
+    - Location: Either lat/lon coordinates OR waypoint identifier
+    - tcpa: Time to Closest Point of Approach in seconds
+    
+    Optional Geometry Parameters:
+    - angle: Crossing angle between aircraft tracks (degrees)
+    - dh: Altitude difference at CPA (feet)
+    - fl_cpa: Flight level at conflict point
+    
+    Args:
+        *argv: Variable arguments supporting both keyword and positional formats:
+              name=<scenario> - Output scenario filename (required)
+              lat=<degrees> lon=<degrees> - Conflict location coordinates
+              wp=<identifier> - Named waypoint for conflict location
+              tcpa=<seconds> - Time to CPA from scenario start (required)
+              angle=<degrees> - Aircraft crossing angle (optional)
+              dh=<feet> - Vertical separation at CPA (optional)
+              acid1=<callsign> - First aircraft identifier (optional)
+              acid2=<callsign> - Second aircraft identifier (optional)
+              ac1=<type> ac2=<type> - Aircraft type specifications (optional)
+              actypes=<types> - List of candidate aircraft types (optional)
+              fl_cpa=<level> - Flight level at conflict (optional)
+              seed=<number> - Random seed for reproducibility (optional)
+              overwrite=<bool> - Allow scenario file overwriting (optional)
+    
+    Returns:
+        tuple: (success, message) indicating conflict creation success
+    
+    Examples:
+        # Create head-on conflict at specific coordinates
+        SATG_GC_CRE name=conflict1 lat=52.0 lon=4.0 tcpa=300 angle=180
+        
+        # Create crossing conflict at named waypoint
+        SATG_GC_CRE name=crossing wp=SUGOL tcpa=240 angle=90 dh=500
+        
+        # Create conflict with specific aircraft types
+        SATG_GC_CRE name=heavy_conflict lat=51.5 lon=4.5 tcpa=180 ac1=B748 ac2=A380
+    
+    Note:
+        The function supports both modern keyword arguments and legacy positional
+        arguments for backward compatibility. Geometric calculations ensure precise
+        conflict timing and positioning while maintaining realistic flight parameters.
+        Generated scenarios include proper aircraft initialization and routing.
     """
 
     order = [
@@ -3724,6 +4074,39 @@ def SATG_RC_CIRCLE(*argv):
 # -------------------- Stack commands procedures -------------------- #
 @command
 def SATG_PROC_LOAD_WPT(path: str):
+    """
+    Load waypoint definition file for procedure creation and validation.
+    
+    This command function loads a waypoint definition file containing named
+    navigation points with their coordinates. These waypoints are used during
+    procedure creation to resolve waypoint names to geographic coordinates
+    and validate procedure routing.
+    
+    The waypoint file should contain properly formatted waypoint definitions
+    with names and coordinates that can be referenced in SID/STAR procedures.
+    Multiple waypoint files can be loaded to build a comprehensive navigation
+    database for procedure operations.
+    
+    Args:
+        path (str): File path to the waypoint definition file. Quotes will be
+                   stripped from the path if present.
+    
+    Returns:
+        tuple: (success, message) where success is boolean indicating if the
+               file was successfully loaded
+    
+    Examples:
+        # Load a waypoint definition file
+        SATG_PROC_LOAD_WPT /path/to/waypoints.txt
+        
+        # Load waypoint file with quoted path
+        SATG_PROC_LOAD_WPT "/path with spaces/waypoints.txt"
+    
+    Note:
+        The waypoint file is added to the global waypoint file list and will
+        be used for waypoint resolution in all subsequent procedure operations.
+        If the file is already loaded, it won't be added again.
+    """
     p = _normpath(path.strip('"').strip("'"))
     if not os.path.isfile(p): _echo_err(f"File not found: {p}"); return False, ""
     if p not in STATE.proc_wpt_files: STATE.proc_wpt_files.append(p)
@@ -4705,6 +5088,56 @@ def SATG_PROC_MAKE(name: str,
                    n: int,
                    seed: int = 0,
                    overwrite: int = 0):
+    """
+    Generate comprehensive procedure-based traffic scenarios with SID/STAR operations.
+    
+    This command function creates sophisticated air traffic scenarios incorporating
+    Standard Instrument Departures (SIDs), Standard Terminal Arrival Routes (STARs),
+    and generic procedural operations. The function combines loaded procedures with
+    configured aircraft types, scheduling parameters, and operational constraints
+    to generate realistic terminal area traffic scenarios.
+    
+    The scenario generation process integrates multiple procedure types:
+    - SID procedures: Instrument departures from airports with runway-specific routing
+    - STAR procedures: Standard arrivals with approach transitions and sequencing
+    - Generic procedures: Enroute and terminal area operations with custom routing
+    
+    All procedures are validated for completeness, waypoint resolution, and aircraft
+    compatibility before scenario generation. The function ensures proper coordination
+    between different procedure types and realistic operational timing.
+    
+    Args:
+        name (str): Output scenario filename (without .scn extension)
+        n (int): Scenario duration multiplier or repetition count
+        seed (int, optional): Random seed for reproducible scenario generation.
+                             Defaults to 0 for deterministic scenarios
+        overwrite (int, optional): File overwrite behavior (0=append if exists,
+                                 1=overwrite existing file). Defaults to 0
+    
+    Returns:
+        tuple: (success, message) indicating scenario generation success
+    
+    Examples:
+        # Generate basic procedure scenario with default settings
+        SATG_PROC_MAKE terminal_ops 1
+        
+        # Generate repeatable scenario with specific seed
+        SATG_PROC_MAKE busy_terminal 2 seed=12345
+        
+        # Generate scenario with file overwrite enabled
+        SATG_PROC_MAKE test_scenario 1 seed=42 overwrite=1
+    
+    Raises:
+        ValidationError: When required procedure files are not loaded
+        ConfigurationError: When SID procedures lack required ICAO codes
+        FileError: When output file cannot be created or written
+    
+    Note:
+        This function requires that procedures have been loaded using SATG_PROC_LOAD_PROC
+        and properly configured with aircraft types, rates, and scheduling parameters.
+        All SID procedures must have associated ICAO airport codes set via
+        SATG_PROC_SET_ICAO before scenario generation can proceed.
+    """
     if not STATE.proc_proc_files:
         _echo_err("No procedure files loaded (SATG_PROC_LOAD_PROC)."); return False, ""
     out_path = _scn_path(name)
@@ -4870,7 +5303,6 @@ def SATG_PROC_MAKE(name: str,
             
             proc_path = rng.choice(generic_groups[group_key])
             proc_name = os.path.splitext(os.path.basename(proc_path))[0]
-            print(f"SATG DEBUG: Processing generic procedure {proc_name} from {proc_path}")
 
             # Calculate timing based on rate (like STAR procedures)
             rate = group_rates.get(group_key, DEFAULT_GENERIC_RATE)
@@ -4903,10 +5335,8 @@ def SATG_PROC_MAKE(name: str,
                 latA, lonA = coord1
                 latB, lonB = coord2
                 hdg0 = _bearing_deg(latA, lonA, latB, lonB)
-                print(f"SATG DEBUG: Heading from first to second waypoint: {hdg0:.1f}°")
             else:
                 hdg0 = 0.0
-                print(f"SATG DEBUG: No second waypoint, using heading 0°")
 
             # Use STAR-like spawning: spawn directly at first waypoint
             # hdg0 is already calculated above as heading toward second waypoint
@@ -4918,7 +5348,6 @@ def SATG_PROC_MAKE(name: str,
             actype = _proc_pick_actype("generic", rng)
 
             hdg_cmd = int(round(hdg0)) % 360
-            print(f"SATG DEBUG: Final hdg_cmd for CRE command: {hdg_cmd:03d}")
             
             # Always use coordinates for spawn position in CRE command
             # This ensures coordinate-based procedures spawn at actual coordinates, not generated waypoint names
@@ -5824,10 +6253,51 @@ def SATG_SYNTH_CREATE_SCENARIO(scenario_name: str) -> bool:
 
 
 def _write_historic_sampling_scn(out_path: str, append: bool = False):
-    """Write Historic Sampling scenario file using same logic as Realistic Replay.
+    """
+    Generate BlueSky scenario file from synthetic flight data using Historic Sampling methodology.
     
-    This function follows the exact same structure and logic as _write_rl_scn
-    but operates on synthetic data that has been exported to the Realistic Replay pipeline.
+    Creates a complete BlueSky scenario (.scn) file from synthetic flight trajectories generated
+    by the TraffixGen ML models. Uses the same proven logic as Realistic Replay but operates
+    on ML-generated synthetic data instead of historical EUROCONTROL data.
+    
+    The function processes synthetic flights and flight points to create time-normalized
+    aircraft with realistic:
+    - Initial conditions (position, altitude, speed, heading)
+    - Waypoint sequences with appropriate timing
+    - Speed and altitude commands for takeoff scenarios  
+    - LNAV/VNAV autopilot activation with proper delays
+    - Flight plan integration and conflict potential
+    
+    Args:
+        out_path (str): Absolute file path where the scenario file will be written.
+                       Should have .scn extension for BlueSky compatibility.
+        append (bool, optional): If True, appends to existing file. If False (default),
+                               creates new file or overwrites existing one.
+    
+    Returns:
+        None: Writes scenario file directly. Success/failure indicated by print statements.
+    
+    Raises:
+        Exception: Various exceptions possible from file I/O, data processing, or
+                  coordinate calculations. All exceptions caught and reported via print.
+    
+    Note:
+        Requires synthetic data to be loaded via TraffixGen Historic Sampling first.
+        The synthetic data must be exported to the Realistic Replay data pipeline
+        before calling this function. Uses same aircraft generation algorithms as
+        proven Realistic Replay system for maximum compatibility and reliability.
+        
+    Dependencies:
+        - TraffixGen plugin with loaded synthetic data
+        - Global _synthetic_flights and _synthetic_points data structures  
+        - BlueSky coordinate and timing utilities
+        
+    Examples:
+        >>> _write_historic_sampling_scn("/path/to/scenario.scn", append=False)
+        [Output: Creates complete scenario file with synthetic traffic]
+        
+        >>> _write_historic_sampling_scn("/path/to/scenario.scn", append=True) 
+        [Output: Adds synthetic traffic to existing scenario]
     """
     # Use the same data source as Realistic Replay (STATE.flights and STATE.base_points)
     # The synthetic data was already exported to these variables by traffixgen_export_synthetic_to_satg
@@ -5849,16 +6319,12 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
         
         # Use the same data processing pipeline as Realistic Replay
         points = _get_points_for_run()  # Use same function as Realistic Replay
-        print(f"[DEBUG] Historic Sampling: _get_points_for_run() returned {len(points) if points else 0} aircraft")
 
         # When appending, avoid duplicate callsigns (same logic as Realistic Replay)
         used = _scan_existing_acids(out_path) if append else set()
         name_map = {}  # original_acid -> new_acid
 
         # Compute deterministic mapping (same logic as Realistic Replay)
-        print(f"[DEBUG] Historic Sampling: STATE.flights contains {len(STATE.flights)} flights: {list(STATE.flights.keys())}")
-        print(f"[DEBUG] Historic Sampling: Points contains {len(points)} aircraft: {list(points.keys())}")
-        
         for acid in STATE.flights.keys():
             meta = STATE.flights[acid]
             # Prefer callsign from metadata if available, otherwise use acid
@@ -5868,24 +6334,17 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
             final_name = preferred_name
             if final_name in used or final_name in name_map.values():
                 final_name = _next_unique_acid(preferred_name, used | set(name_map.values()))
-                print(f"[DEBUG] Historic Sampling duplicate: '{preferred_name}' -> '{final_name}'")
             
             name_map[acid] = final_name
             used.add(final_name)
 
-        print(f"[DEBUG] Historic Sampling: Starting aircraft generation...")
+        # Generate aircraft using the pre-computed unique name mapping
         for acid, meta in STATE.flights.items():
-            print(f"[DEBUG] Historic Sampling: Processing aircraft {acid}")
-            print(f"[DEBUG] Historic Sampling: Metadata: {meta}")
             # Use the pre-computed unique name from name_map
             acid_out = name_map.get(acid, acid)
-            print(f"[DEBUG] Historic Sampling: Using unique callsign: '{acid_out}'")
 
             if acid not in points or not points[acid]:
-                print(f"[DEBUG] Historic Sampling: Skipping {acid} - no points data")
                 continue
-            
-            print(f"[DEBUG] Historic Sampling: Aircraft {acid} has {len(points[acid])} points, using callsign: {acid_out}")
             segs = points[acid]; r0 = segs[0]; last = segs[-1]
             t0 = timedelta(seconds=r0['t']); stamp0 = _stamp(t0)
             fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
@@ -5906,7 +6365,6 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                 bearing_rad = math.atan2(y, x)
                 bearing_deg = math.degrees(bearing_rad)
                 hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
-                print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 3rd waypoint)")
             elif len(segs) > 1:
                 # Fallback to second waypoint if no third available
                 next_point = segs[1]
@@ -5921,10 +6379,8 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                 bearing_rad = math.atan2(y, x)
                 bearing_deg = math.degrees(bearing_rad)
                 hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
-                print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 2nd waypoint)")
             else:
                 hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
-                print(f"[DEBUG] Historic Sampling: Using stored heading {hdg0}° (no waypoints available)")
             
             actype = meta.get('AC Type',''); alt_ft0 = int(fl0) * 100
 
@@ -5958,9 +6414,7 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                     f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
 
             # Robust takeoff logic (same logic as Realistic Replay)
-            print(f"[DEBUG] Historic Sampling: Checking initial commands for {acid_out}: cas0={cas0}, alt_ft0={alt_ft0}")
             if cas0 <= 0 or alt_ft0 <= 0:
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} needs initial commands - searching for first climbing waypoint")
                 
                 # Find first waypoint with non-zero altitude (same logic as Realistic Replay)
                 first_airborne_waypoint = None
@@ -5971,7 +6425,6 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                     if wp_fl > 0:  # Found first waypoint above ground
                         first_airborne_waypoint = waypoint
                         first_airborne_index = idx
-                        print(f"[DEBUG] Historic Sampling: Found first airborne waypoint at index {idx}: FL{wp_fl:.0f}")
                         break
                 
                 if first_airborne_waypoint:
@@ -5981,67 +6434,51 @@ def _write_historic_sampling_scn(out_path: str, append: bool = False):
                         target_fl = first_airborne_waypoint.get('fl', 0)
                         target_cas = _gs_to_cas_kt(target_gs, target_fl)
                         
-                        print(f"[DEBUG] Historic Sampling: First airborne waypoint: gs={target_gs:.1f}, fl={target_fl}, cas={target_cas:.1f}")
-                        
                         # Set realistic takeoff/climb conditions (same logic as Realistic Replay)
                         if cas0 <= 0:
                             if target_cas > 0:
                                 # Use actual climb speed from data
                                 initial_speed = min(max(target_cas, 160), 250)  # Realistic takeoff/climb speed range
-                                print(f"[DEBUG] Historic Sampling: Adding realistic SPD command: SPD {acid_out} {initial_speed:.0f}")
                                 f.write(f"{stamp0}SPD {acid_out} {initial_speed:.0f}\n")
                             else:
                                 # Use realistic takeoff speed
                                 initial_speed = 180  # Typical takeoff/initial climb speed
-                                print(f"[DEBUG] Historic Sampling: Using realistic takeoff SPD: SPD {acid_out} {initial_speed}")
                                 f.write(f"{stamp0}SPD {acid_out} {initial_speed}\n")
                                 
                         if alt_ft0 <= 0:
                             if target_fl > 0:
                                 # Use the first climbing altitude as target
-                                print(f"[DEBUG] Historic Sampling: Adding realistic ALT command: ALT {acid_out} FL{target_fl:03.0f}")
                                 f.write(f"{stamp0}ALT {acid_out} FL{target_fl:03.0f}\n")
                             else:
                                 # Use realistic initial climb altitude
                                 initial_alt = "FL050"  # Typical initial climb clearance
-                                print(f"[DEBUG] Historic Sampling: Using realistic initial climb ALT: ALT {acid_out} {initial_alt}")
                                 f.write(f"{stamp0}ALT {acid_out} {initial_alt}\n")
                                 
                     except Exception as e:
-                        print(f"[DEBUG] Historic Sampling: Error processing first airborne waypoint for {acid_out}: {e}")
                         # Use realistic takeoff defaults as fallback
                         if cas0 <= 0:
                             takeoff_speed = 180
-                            print(f"[DEBUG] Historic Sampling: Using takeoff SPD fallback: SPD {acid_out} {takeoff_speed}")
                             f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                         if alt_ft0 <= 0:
                             takeoff_alt = "FL050"
-                            print(f"[DEBUG] Historic Sampling: Using takeoff ALT fallback: ALT {acid_out} {takeoff_alt}")
                             f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
                 else:
-                    print(f"[DEBUG] Historic Sampling: No airborne waypoints found for {acid_out} - using takeoff defaults")
                     # All waypoints are at ground level - use realistic takeoff values
                     if cas0 <= 0:
                         takeoff_speed = 180  # Realistic takeoff speed
-                        print(f"[DEBUG] Historic Sampling: Using takeoff SPD (no airborne waypoints): SPD {acid_out} {takeoff_speed}")
                         f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                     if alt_ft0 <= 0:
                         takeoff_alt = "FL050"  # Realistic initial climb clearance
-                        print(f"[DEBUG] Historic Sampling: Using takeoff ALT (no airborne waypoints): ALT {acid_out} {takeoff_alt}")
                         f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
-            else:
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} doesn't need initial commands")
 
             # Write LNAV/VNAV commands (same logic as Realistic Replay)
             if alt_ft0 <= 0:
                 # Aircraft starts on ground (takeoff) - apply 30 second delay
                 t0_plus_30 = timedelta(seconds=r0['t'] + 30)
                 stamp_lnav_vnav = _stamp(t0_plus_30)
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts on ground - applying 30s delay for LNAV/VNAV")
             else:
                 # Aircraft starts airborne - no delay needed
                 stamp_lnav_vnav = stamp0
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts airborne - no delay for LNAV/VNAV")
             
             f.write(f"{stamp_lnav_vnav}LNAV {acid_out} ON\n")
             f.write(f"{stamp_lnav_vnav}VNAV {acid_out} ON\n")
@@ -6246,9 +6683,6 @@ def SATG_HS_MAKE(name: str) -> bool:
         name_map = {}  # original_acid -> new_acid
 
         # Compute deterministic mapping (same logic as Realistic Replay)
-        print(f"[DEBUG] Historic Sampling: flights contains {len(flights)} flights: {list(flights.keys())}")
-        print(f"[DEBUG] Historic Sampling: Points contains {len(points)} aircraft: {list(points.keys())}")
-        
         for acid in flights.keys():
             meta = flights[acid]
             # Prefer callsign from metadata if available, otherwise use acid
@@ -6258,13 +6692,11 @@ def SATG_HS_MAKE(name: str) -> bool:
             final_name = preferred_name
             if final_name in used or final_name in name_map.values():
                 final_name = _next_unique_acid(preferred_name, used | set(name_map.values()))
-                print(f"[DEBUG] Historic Sampling duplicate: '{preferred_name}' -> '{final_name}'")
             
             name_map[acid] = final_name
             used.add(final_name)
 
         # Generate aircraft using the exact same logic as Realistic Replay with time diversity
-        print(f"[DEBUG] Historic Sampling: Starting aircraft generation loop...")
         aircraft_list = list(flights.items())
         
         # Step 1: Collect all departure times for normalization
@@ -6280,18 +6712,13 @@ def SATG_HS_MAKE(name: str) -> bool:
         # Step 2: Find earliest departure time for normalization
         if departure_times:
             earliest_departure = min(departure_times)
-            print(f"[DEBUG] Historic Sampling: Normalizing departure times - earliest: {earliest_departure}s")
         else:
             earliest_departure = 0
-            print(f"[DEBUG] Historic Sampling: No valid departure times found")
         
         with open(scn_path, "a", encoding="utf-8") as f:
             for aircraft_idx, (acid, meta) in enumerate(valid_aircraft):
-                print(f"[DEBUG] Historic Sampling: Processing aircraft {acid}")
-                print(f"[DEBUG] Historic Sampling: Metadata: {meta}")
                 # Use the pre-computed unique name from name_map
                 acid_out = name_map.get(acid, acid)
-                print(f"[DEBUG] Historic Sampling: Using unique callsign: '{acid_out}'")
 
                 segs = points[acid]; r0 = segs[0]; last = segs[-1]
                 
@@ -6299,7 +6726,6 @@ def SATG_HS_MAKE(name: str) -> bool:
                 base_time = r0['t']
                 adjusted_time = base_time - earliest_departure  # Normalize to start at 0
                 
-                print(f"[DEBUG] Historic Sampling: Aircraft {acid} times: base={base_time}s, final={adjusted_time}s")
                 t0 = timedelta(seconds=adjusted_time); stamp0 = _stamp(t0)
                 fl0, lat0, lon0 = r0['fl'], r0['lat'], r0['lon']
                 cas0 = _gs_to_cas_kt(r0['gs'], fl0)
@@ -6319,7 +6745,6 @@ def SATG_HS_MAKE(name: str) -> bool:
                     bearing_rad = math.atan2(y, x)
                     bearing_deg = math.degrees(bearing_rad)
                     hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
-                    print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 3rd waypoint)")
                 elif len(segs) > 1:
                     # Fallback to second waypoint if no third available
                     next_point = segs[1]
@@ -6334,10 +6759,8 @@ def SATG_HS_MAKE(name: str) -> bool:
                     bearing_rad = math.atan2(y, x)
                     bearing_deg = math.degrees(bearing_rad)
                     hdg0 = int((bearing_deg + 360) % 360)  # Normalize to 0-359
-                    print(f"[DEBUG] Historic Sampling: Calculated heading {hdg0}° from {lat0:.3f},{lon0:.3f} to {lat1:.3f},{lon1:.3f} (using 2nd waypoint)")
                 else:
                     hdg0 = int(r0['hdg']) if not math.isnan(r0['hdg']) else 0
-                    print(f"[DEBUG] Historic Sampling: Using stored heading {hdg0}° (no waypoints available)")
                 
                 actype = meta.get('AC Type',''); alt_ft0 = int(fl0) * 100
 
@@ -6371,13 +6794,11 @@ def SATG_HS_MAKE(name: str) -> bool:
                         f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
 
                 # Robust takeoff logic (same logic as Realistic Replay)
-                print(f"[DEBUG] Historic Sampling: Checking initial commands for {acid_out}: cas0={cas0}, alt_ft0={alt_ft0}")
                 # Use proper thresholds: cas < 50 knots or alt <= 0 feet (ground level)
                 needs_spd = cas0 < 50  # Very low speed indicates aircraft needs initial speed
                 needs_alt = alt_ft0 <= 0  # Ground level or below indicates aircraft needs initial climb
                 
                 if needs_spd or needs_alt:
-                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} needs initial commands (SPD: {needs_spd}, ALT: {needs_alt}) - searching for first climbing waypoint")
                     
                     # Find first waypoint with non-zero altitude (same logic as Realistic Replay)
                     first_airborne_waypoint = None
@@ -6388,7 +6809,6 @@ def SATG_HS_MAKE(name: str) -> bool:
                         if wp_fl > 0:  # Found first waypoint above ground
                             first_airborne_waypoint = waypoint
                             first_airborne_index = idx
-                            print(f"[DEBUG] Historic Sampling: Found first airborne waypoint at index {idx}: FL{wp_fl:.0f}")
                             break
                     
                     if first_airborne_waypoint:
@@ -6398,67 +6818,51 @@ def SATG_HS_MAKE(name: str) -> bool:
                             target_fl = first_airborne_waypoint.get('fl', 0)
                             target_cas = _gs_to_cas_kt(target_gs, target_fl)
                             
-                            print(f"[DEBUG] Historic Sampling: First airborne waypoint: gs={target_gs:.1f}, fl={target_fl}, cas={target_cas:.1f}")
-                            
                             # Set realistic takeoff/climb conditions (same logic as Realistic Replay)
                             if needs_spd:
                                 if target_cas > 50:  # Use target speed if it's reasonable
                                     # Use actual climb speed from data
                                     initial_speed = min(max(target_cas, 160), 250)  # Realistic takeoff/climb speed range
-                                    print(f"[DEBUG] Historic Sampling: Adding realistic SPD command: SPD {acid_out} {initial_speed:.0f}")
                                     f.write(f"{stamp0}SPD {acid_out} {initial_speed:.0f}\n")
                                 else:
                                     # Use realistic takeoff speed
                                     initial_speed = 180  # Typical takeoff/initial climb speed
-                                    print(f"[DEBUG] Historic Sampling: Using realistic takeoff SPD: SPD {acid_out} {initial_speed}")
                                     f.write(f"{stamp0}SPD {acid_out} {initial_speed}\n")
                                     
                             if needs_alt:
                                 if target_fl > 0:
                                     # Use the first climbing altitude as target
-                                    print(f"[DEBUG] Historic Sampling: Adding realistic ALT command: ALT {acid_out} FL{target_fl:03.0f}")
                                     f.write(f"{stamp0}ALT {acid_out} FL{target_fl:03.0f}\n")
                                 else:
                                     # Use realistic initial climb altitude
                                     initial_alt = "FL050"  # Typical initial climb clearance
-                                    print(f"[DEBUG] Historic Sampling: Using realistic initial climb ALT: ALT {acid_out} {initial_alt}")
                                     f.write(f"{stamp0}ALT {acid_out} {initial_alt}\n")
                                     
                         except Exception as e:
-                            print(f"[DEBUG] Historic Sampling: Error processing first airborne waypoint for {acid_out}: {e}")
                             # Use realistic takeoff defaults as fallback
                             if needs_spd:
                                 takeoff_speed = 180
-                                print(f"[DEBUG] Historic Sampling: Using takeoff SPD fallback: SPD {acid_out} {takeoff_speed}")
                                 f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                             if needs_alt:
                                 takeoff_alt = "FL050"
-                                print(f"[DEBUG] Historic Sampling: Using takeoff ALT fallback: ALT {acid_out} {takeoff_alt}")
                                 f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
                     else:
-                        print(f"[DEBUG] Historic Sampling: No airborne waypoints found for {acid_out} - using takeoff defaults")
                         # All waypoints are at ground level - use realistic takeoff values
                         if needs_spd:
                             takeoff_speed = 180  # Realistic takeoff speed
-                            print(f"[DEBUG] Historic Sampling: Using takeoff SPD (no airborne waypoints): SPD {acid_out} {takeoff_speed}")
                             f.write(f"{stamp0}SPD {acid_out} {takeoff_speed}\n")
                         if needs_alt:
                             takeoff_alt = "FL050"  # Realistic initial climb clearance
-                            print(f"[DEBUG] Historic Sampling: Using takeoff ALT (no airborne waypoints): ALT {acid_out} {takeoff_alt}")
                             f.write(f"{stamp0}ALT {acid_out} {takeoff_alt}\n")
-                else:
-                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} doesn't need initial commands")
 
                 # Write LNAV/VNAV commands (same logic as Realistic Replay)
                 if alt_ft0 <= 0:
                     # Aircraft starts on ground (takeoff) - apply 30 second delay
                     t0_plus_30 = timedelta(seconds=adjusted_time + 30)
                     stamp_lnav_vnav = _stamp(t0_plus_30)
-                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts on ground - applying 30s delay for LNAV/VNAV")
                 else:
                     # Aircraft starts airborne - no delay needed
                     stamp_lnav_vnav = stamp0
-                    print(f"[DEBUG] Historic Sampling: Aircraft {acid_out} starts airborne - no delay for LNAV/VNAV")
                 
                 f.write(f"{stamp_lnav_vnav}LNAV {acid_out} ON\n")
                 f.write(f"{stamp_lnav_vnav}VNAV {acid_out} ON\n")

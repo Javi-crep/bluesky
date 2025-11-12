@@ -1,6 +1,80 @@
-# SATGgui.py -- BlueSky GUI plugin for SATG command front-end (no GUI echo log)
-# Place in: bluesky/plugins/
-#
+"""
+SATGgui.py - BlueSky GUI Plugin for Synthetic Air Traffic Generation
+
+This comprehensive PyQt6-based GUI plugin provides a sophisticated interface for 
+synthetic air traffic generation, historic sampling, and conflict simulation in 
+the BlueSky Air Traffic Management simulator. The plugin features intelligent 
+caching systems, performance optimizations, and full feature parity between 
+Historic Sampling and Realistic Replay modes.
+
+Core Features:
+    * Historic Sampling Tab: ML-based aircraft generation from EUROCONTROL data
+    * Realistic Replay Tab: Scenario-based aircraft generation with conflict simulation
+    * Geometric Conflicts Tab: Advanced conflict detection and resolution algorithms
+    * Random Conflicts Tab: Stochastic conflict generation and analysis
+    * Procedure Management: SID/STAR procedure creation and editing
+    * Configuration Management: Save/load system with backward compatibility
+    * Cache Management: Intelligent caching with file path validation
+    * Filter Systems: Advanced airspace and flight point filtering
+
+GUI Architecture:
+    * Lazy window creation to avoid QApplication race conditions
+    * Tab-based interface with consistent styling and behavior
+    * Progress dialogs with proper UI thread updates
+    * Comprehensive configuration persistence system
+    * Performance optimizations including file path caching
+
+Key Classes:
+    * SATGWindow: Main application window with tab management
+    * HistoricSamplingTab: ML-based aircraft generation interface
+    * RLTab: Realistic Replay scenario generation interface
+    * GCTab: Geometric conflict detection and resolution
+    * RCTab: Random conflict generation and analysis
+    * ProcTab: Procedure creation and management
+    * EurocontrolFilterDialog: Advanced filtering with flight point processing
+    * ConfigManagerDialog: Configuration save/load management
+    * CacheManagerDialog: Cache validation and management
+
+Performance Features:
+    * File path caching for Configure Filters dialog
+    * Intelligent cache validation using file modification times
+    * Vectorized flight point filtering with numpy optimization
+    * Bounding box pre-filtering for geometric calculations
+    * Progress dialog updates with proper threading
+
+Dependencies:
+    * PyQt6: Modern Qt6 GUI framework
+    * NumPy: Vectorized calculations and data processing
+    * Pandas: Flight data manipulation and analysis
+    * GeoPandas: Geometric airspace calculations
+    * Shapely: Point-in-polygon calculations for filtering
+    * BlueSky: Core ATM simulator integration
+    * TraffixGen: EUROCONTROL data processing backend
+
+Usage:
+    The plugin is activated through the BlueSky console command 'SATGGUI'.
+    All configuration is persistent through the save/load system with full
+    backward compatibility for legacy configuration formats.
+
+Examples:
+    # Activate the GUI from BlueSky console
+    SATGGUI
+    
+    # The GUI provides complete functionality for:
+    # - Historic sampling with date range selection and filtering
+    # - Realistic replay with scenario generation and conflict simulation
+    # - Geometric conflict detection with customizable parameters
+    # - Random conflict generation with statistical analysis
+    # - Procedure creation with waypoint validation
+    # - Configuration management with automatic backup
+
+Note:
+    This plugin requires a GUI-enabled BlueSky environment and uses lazy
+    initialization to ensure QApplication is available before window creation.
+    All caching and filtering operations are optimized for performance while
+    maintaining accuracy in flight point processing for model training.
+"""
+
 # PyQt6; lazy window creation to avoid QApplication race.
 
 from typing import Dict, List, Optional, Tuple
@@ -156,6 +230,55 @@ _SID_FILE_RE = re.compile(r'^SID-([0-9]{2,3}[LRC]?)-([-A-Za-z0-9_]+)\.scn$', re.
 DEFAULT_STAR_RATE = 20
 
 class SIDSchedDialog(QDialog):
+    """
+    Dialog for configuring SID (Standard Instrument Departure) runway scheduling.
+    
+    This dialog provides a comprehensive interface for configuring departure schedules
+    for different runways, including time windows and capacity constraints. The dialog
+    supports multiple runways with individual scheduling parameters and allows users
+    to set departure rates and time slots for realistic traffic generation.
+    
+    The dialog features a time-based scheduling system where users can configure:
+    - Start and end times for departure operations
+    - Departure capacity (aircraft per hour) for different time periods
+    - Visual slider interface for intuitive schedule configuration
+    - Per-runway configuration with easy switching between runways
+    
+    Key Features:
+    - Multi-runway support with individual configuration
+    - Time slot-based scheduling with 15-minute granularity
+    - Departure capacity sliders for rate configuration
+    - Real-time preview of schedule settings
+    - Validation of time windows and capacity limits
+    
+    Attributes:
+        SLOT_MINUTES (int): Time slot granularity in minutes (15-minute slots)
+        runways (List[str]): List of available runway identifiers
+        data (Dict[str, Dict]): Per-runway scheduling configuration data
+        current_runway (str): Currently selected runway for editing
+        sliders (List[QSlider]): Capacity configuration sliders for time slots
+    
+    Args:
+        runways (List[str]): List of runway identifiers to configure
+        existing (Dict[str, Dict[str, object]]): Existing schedule configuration
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Examples:
+        # Create dialog for multiple runways with existing configuration
+        runways = ['09L', '09R', '27L', '27R']
+        existing_config = {'09L': {'start': 6.0, 'end': 22.0, 'caps': [12, 16, 20]}}
+        dialog = SIDSchedDialog(runways, existing_config, parent=self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            schedule_config = dialog.get_schedule_data()
+    
+    Note:
+        The dialog uses 15-minute time slots for schedule granularity and provides
+        intuitive slider controls for setting departure capacities. Configuration
+        is applied per runway and supports complex scheduling scenarios with
+        varying capacity throughout operational hours.
+    """
+    
     SLOT_MINUTES = 15
 
     def __init__(self, runways: List[str], existing: Dict[str, Dict[str, object]], parent=None):
@@ -1149,8 +1272,8 @@ class ProcedureEditorDialog(QDialog):
                             # Show warning dialog
                             reply = QMessageBox.warning(self, "Waypoint Name Conflict", 
                                                        warning_msg + "\n\nDo you want to:\n" +
-                                                       "• YES: Use this name as a named waypoint (will use nav database coordinates)\n" +
-                                                       "• NO: Choose a different name for your coordinate waypoint", 
+                                                       "* YES: Use this name as a named waypoint (will use nav database coordinates)\n" +
+                                                       "* NO: Choose a different name for your coordinate waypoint", 
                                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                             
                             if reply == QMessageBox.StandardButton.No:
@@ -1195,8 +1318,8 @@ class ProcedureEditorDialog(QDialog):
                                         self, 
                                         "Waypoint Name Conflict", 
                                         warning_msg + "\n\nDo you want to:\n"
-                                        "• YES: Keep this name (will use navaid coordinates)\n"
-                                        "• NO: Change to a different name",
+                                        "* YES: Keep this name (will use navaid coordinates)\n"
+                                        "* NO: Change to a different name",
                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                         QMessageBox.StandardButton.No
                                     )
@@ -1392,11 +1515,9 @@ class ProcedureEditorDialog(QDialog):
                 
                 # Step 1: Unload the old version
                 stack.stack(_join_tokens("SATG_PROC_UNLOAD_PROC", _qpath(self.filepath)))
-                print(f"[DEBUG] Unloaded old version: {self.filepath}")
                 
                 # Step 2: Reload the new version
                 stack.stack(_join_tokens("SATG_PROC_LOAD_PROC", _qpath(self.filepath)))
-                print(f"[DEBUG] Reloaded updated version: {self.filepath}")
                 
                 # Update the procedure widget's waypoint information with new sequence
                 if self.parent() and hasattr(self.parent(), '_proc_widgets'):
@@ -1410,7 +1531,6 @@ class ProcedureEditorDialog(QDialog):
                             # Update the stored waypoint information
                             self.parent()._proc_widgets[self.filepath]["initial_fix"] = initial_fix
                             self.parent()._proc_widgets[self.filepath]["final_fix"] = final_fix
-                            print(f"[DEBUG] Updated waypoints: initial={initial_fix}, final={final_fix}")
                 
                 # Update batch options using comprehensive refresh
                 if self.parent():
@@ -1435,14 +1555,10 @@ class ProcedureEditorDialog(QDialog):
                     if hasattr(self.parent(), '_on_star_basis_changed') and hasattr(self.parent(), '_star_basis_index'):
                         current_star_basis = self.parent()._star_basis_index
                         self.parent()._on_star_basis_changed(current_star_basis)
-                        print(f"[DEBUG] Forced STAR rate basis refresh")
                     
                     if hasattr(self.parent(), '_on_generic_basis_changed') and hasattr(self.parent(), '_generic_basis_index'):
                         current_generic_basis = self.parent()._generic_basis_index
                         self.parent()._on_generic_basis_changed(current_generic_basis)
-                        print(f"[DEBUG] Forced Generic rate basis refresh")
-                    
-                    print(f"[DEBUG] Updated batch options after procedure reload")
                 
                 self.status_label.setText("Procedure saved and reloaded successfully!")
                 
@@ -1539,7 +1655,6 @@ class ProcedureEditorDialog(QDialog):
                             final_fix = fixes[-1] if fixes else ""
                             procedures_tab._proc_widgets[self.filepath]["initial_fix"] = initial_fix
                             procedures_tab._proc_widgets[self.filepath]["final_fix"] = final_fix
-                            print(f"[DEBUG] Extracted waypoints for newly created procedure: initial={initial_fix}, final={final_fix}")
                         
                         # Refresh all related GUI components
                         procedures_tab._refresh_sid_runway_rows()
@@ -1553,18 +1668,14 @@ class ProcedureEditorDialog(QDialog):
                         if is_star and hasattr(procedures_tab, '_on_star_basis_changed') and hasattr(procedures_tab, '_star_basis_index'):
                             current_star_basis = procedures_tab._star_basis_index
                             procedures_tab._on_star_basis_changed(current_star_basis)
-                            print(f"[DEBUG] Forced STAR rate basis refresh for newly created procedure")
                         
                         if is_generic and hasattr(procedures_tab, '_on_generic_basis_changed') and hasattr(procedures_tab, '_generic_basis_index'):
                             current_generic_basis = procedures_tab._generic_basis_index
                             procedures_tab._on_generic_basis_changed(current_generic_basis)
-                            print(f"[DEBUG] Forced Generic rate basis refresh for newly created procedure")
                         
-                        print(f"[DEBUG] Added newly created procedure to GUI: {self.filepath}")
                         self.status_label.setText("Procedure saved, reloaded, and added to procedures list!")
                         
                     except Exception as e:
-                        print(f"[DEBUG] Error adding procedure to GUI: {e}")
                         import traceback
                         traceback.print_exc()
                         self.status_label.setText("Procedure saved and reloaded, but couldn't add to GUI automatically. Use 'Add Proc Files' to load it manually.")
@@ -3091,6 +3202,12 @@ class TopStrip(QWidget):
             # Apply filter configuration (NEW - Restore historic filter settings)
             if 'historic_filters' in config_data:
                 tab_widget.historic_filters = config_data['historic_filters'].copy()
+                
+                # Backward compatibility: convert old exclude_airspace to include_airspace
+                if 'exclude_airspace' in tab_widget.historic_filters and 'include_airspace' not in tab_widget.historic_filters:
+                    tab_widget.historic_filters['include_airspace'] = tab_widget.historic_filters.pop('exclude_airspace')
+                    print("Updated old config: converted exclude_airspace to include_airspace")
+                
                 print(f"Restored historic filters: {tab_widget.historic_filters}")
             
             # Note: We don't restore the training state or synthetic data as these are runtime states
@@ -3208,6 +3325,11 @@ class TopStrip(QWidget):
             if 'eurocontrol_filters' in config_data:
                 if config_data['eurocontrol_filters']:  # Only set if not empty
                     tab_widget.eurocontrol_filters = config_data['eurocontrol_filters'].copy()
+                    
+                    # Backward compatibility: convert old exclude_airspace to include_airspace
+                    if 'exclude_airspace' in tab_widget.eurocontrol_filters and 'include_airspace' not in tab_widget.eurocontrol_filters:
+                        tab_widget.eurocontrol_filters['include_airspace'] = tab_widget.eurocontrol_filters.pop('exclude_airspace')
+                        print("Updated old RL config: converted exclude_airspace to include_airspace")
                 else:
                     # Clear filters if empty in config
                     tab_widget.eurocontrol_filters = {}
@@ -3678,7 +3800,79 @@ class TopStrip(QWidget):
 
 # Config Manager Dialog Class
 class ConfigManagerDialog(QDialog):
-    """Dialog for managing saved configurations."""
+    """
+    Dialog for comprehensive management of saved SATG configurations.
+    
+    This dialog provides a centralized interface for managing all saved SATG
+    configurations including creation, loading, deletion, and organization of
+    configuration files. The dialog supports both legacy and modern configuration
+    formats with automatic backward compatibility conversion.
+    
+    The Configuration Manager handles the complete lifecycle of configuration
+    persistence, ensuring users can save their complex filter settings, model
+    parameters, and interface configurations for reuse across sessions. All
+    configurations are stored as JSON files with human-readable formatting.
+    
+    Key Features:
+    - List all available saved configurations with creation timestamps
+    - Load existing configurations with full validation and error handling
+    - Delete unwanted configurations with confirmation dialogs
+    - Preview configuration contents before loading
+    - Automatic backup creation before overwriting existing configurations
+    - Backward compatibility support for legacy configuration formats
+    - Comprehensive error handling for corrupted or invalid files
+    
+    Configuration Content:
+    - All tab settings (Realistic Replay, Historic Sampling, Conflicts, Procedures)
+    - Filter configurations including airspace, altitude, and temporal constraints
+    - Model training parameters and machine learning settings
+    - File paths for data sources with validation
+    - UI state including widget values and selections
+    - Cache management settings and optimization preferences
+    
+    Backward Compatibility:
+    - Automatically detects legacy configuration formats
+    - Converts old filter structures (exclude -> include semantics)
+    - Migrates deprecated parameter names to current standards
+    - Preserves user data during format upgrades
+    - Provides informative messages about configuration updates
+    
+    Args:
+        config_dir (str): Directory containing saved configuration files
+        config_files (List[str]): List of available configuration filenames
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Attributes:
+        config_dir (str): Path to configuration storage directory
+        config_files (List[str]): Current list of available configuration files
+        config_list (QListWidget): Widget displaying available configurations
+        selected_config (str): Currently selected configuration filename
+    
+    Returns:
+        str: Filename of selected configuration when loading
+        None: When dialog is cancelled or no selection made
+    
+    Examples:
+        # Create dialog with current configuration state
+        dialog = ConfigManagerDialog(
+            config_dir="./configs",
+            config_files=["default.json", "morning_rush.json"],
+            parent=self
+        )
+        
+        # Show dialog and handle selection
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_file = dialog.get_selected_config()
+            if selected_file:
+                self._load_configuration(selected_file)
+    
+    Note:
+        The dialog automatically handles configuration format migrations and
+        provides detailed error messages for invalid or corrupted configuration
+        files. All operations include confirmation dialogs to prevent accidental
+        data loss, and the dialog maintains consistency with the main application's
+        styling and behavior patterns.
+    """
     
     def __init__(self, config_dir: str, config_files: List[str], parent=None):
         super().__init__(parent)
@@ -3876,7 +4070,64 @@ class ConfigManagerDialog(QDialog):
 
 # Cache Manager Dialog Class
 class CacheManagerDialog(QDialog):
-    """Dialog for managing cache files."""
+    """
+    Comprehensive dialog for managing SATG cache files and optimization data.
+    
+    This dialog provides centralized management of all SATG caching systems including
+    TraffixGen parquet files, summary data caches, filter configuration caches,
+    and performance optimization data. The dialog enables users to monitor cache
+    usage, clear outdated data, and manage storage efficiency.
+    
+    The Cache Manager handles multiple cache types used throughout the SATG system:
+    - TraffixGen parquet files: High-performance columnar flight data storage
+    - Summary data caches: Pre-computed dataset statistics and metadata
+    - Filter configuration caches: Cached filter results for dialog performance
+    - File path caches: Optimized file discovery and validation data
+    
+    Key Features:
+    - Visual cache usage statistics and storage information
+    - Selective cache clearing with confirmation dialogs
+    - Cache validation and integrity checking
+    - Performance impact analysis and recommendations
+    - Automatic cache cleanup and optimization suggestions
+    - Real-time cache size monitoring and alerts
+    
+    Management Operations:
+    - Clear all caches: Complete cache reset for troubleshooting
+    - Selective clearing: Target specific cache types or files
+    - Cache validation: Verify cache integrity and consistency
+    - Size monitoring: Track cache growth and storage usage
+    - Performance analysis: Identify optimization opportunities
+    
+    Attributes:
+        cache_info (dict): Comprehensive cache information and statistics
+        cache_files (list): List of identified cache files for management
+    
+    Args:
+        cache_info (dict): Cache information containing file lists, sizes,
+                         and metadata for all detected cache systems
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Examples:
+        # Create cache manager with current cache state
+        cache_info = {
+            'cache_files': ['traffixgen_data.parquet', 'summary_cache.pkl'],
+            'total_size': 1024000,
+            'last_modified': datetime.now()
+        }
+        dialog = CacheManagerDialog(cache_info, parent=self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Process any cache management actions
+            self._refresh_data_if_needed()
+    
+    Note:
+        This dialog provides safe cache management with confirmation prompts
+        for destructive operations. Cache clearing operations include progress
+        feedback and error handling to ensure system stability during cleanup.
+        The dialog helps users understand cache usage patterns and optimize
+        performance through intelligent cache management.
+    """
     
     def __init__(self, cache_info: dict, parent=None):
         super().__init__(parent)
@@ -4208,7 +4459,71 @@ class AircraftTypeDialog(QDialog):
 # --- RL tab (Realistic Replay) --------------------------------------------
 
 class RLTab(QWidget):
-    """Realistic Replay: load -> jitter -> autodel/make/run."""
+    """
+    Realistic Replay tab for scenario-based air traffic generation and simulation.
+    
+    This comprehensive interface provides scenario-based air traffic generation using
+    pre-processed EUROCONTROL flight data with advanced configuration options for
+    jitter, filtering, and scenario customization. The Realistic Replay approach
+    uses deterministic flight data with configurable variations to create realistic
+    but reproducible traffic scenarios.
+    
+    The tab implements a structured workflow: data loading -> configuration -> 
+    filtering -> jitter settings -> scenario generation -> simulation execution.
+    All steps include comprehensive validation and user feedback to ensure proper
+    configuration and successful scenario generation.
+    
+    Key Features:
+    - EUROCONTROL data file loading with format validation
+    - Advanced filtering system with airspace, altitude, and temporal constraints
+    - Jitter configuration for realistic flight variations
+    - Phase-based altitude and timing adjustments
+    - Track configuration for individual flight customization
+    - Scenario generation with comprehensive validation
+    - Direct integration with BlueSky simulation environment
+    
+    Workflow Components:
+    1. Load EUROCONTROL Data: Import flights, filed plans, actual tracks, FIR data
+    2. Configure Filters: Set date ranges, airspace, altitude, aircraft constraints
+    3. Jitter Settings: Configure realistic variations in timing and positioning
+    4. Phase Configuration: Set altitude ranges and timing for flight phases
+    5. Track Configuration: Individual flight parameter customization
+    6. Scenario Generation: Create BlueSky-compatible scenario files
+    7. Simulation Execution: Run scenarios in BlueSky environment
+    
+    Data Sources:
+    - Flights file: Flight operation metadata and basic information
+    - Filed plans file: Planned flight routes and procedural data
+    - Actual tracks file: Historical trajectory data with coordinates
+    - FIR boundaries file: Airspace definition data for geographic filtering
+    
+    Attributes:
+        flights_file_label (QLabel): Display widget for selected flights data file
+        filed_file_label (QLabel): Display widget for selected filed plans file
+        actual_file_label (QLabel): Display widget for selected actual tracks file
+        fir_file_label (QLabel): Display widget for selected FIR boundaries file
+        eurocontrol_filters (dict): Current filter configuration settings
+        jitter_enabled (bool): Flag indicating if jitter variations are enabled
+        phase_configurations (dict): Phase-specific altitude and timing settings
+    
+    Examples:
+        # Tab is created as part of main window
+        rl_tab = RLTab(parent_window)
+        
+        # Typical workflow:
+        # 1. Load EUROCONTROL data files
+        # 2. Configure filters for desired traffic subset
+        # 3. Set jitter parameters for realistic variations
+        # 4. Generate scenarios with specified parameters
+        # 5. Execute scenarios in BlueSky simulation
+    
+    Note:
+        This tab provides feature parity with Historic Sampling tab but uses
+        predetermined historical data rather than ML-generated synthetic data.
+        The filtering system operates on actual flight trajectory data to ensure
+        accurate geographic and temporal constraints for scenario generation.
+    """
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         main = QVBoxLayout(self)
@@ -4581,9 +4896,9 @@ class RLTab(QWidget):
                 getattr(self, '_actual_file', '')):
             QMessageBox.critical(self, "Missing Files", 
                                "Please select the required Eurocontrol files first:\n\n"
-                               "• Flights Extract\n"
-                               "• Flight Points Filed Extract\n" 
-                               "• Flight Points Actual Extract")
+                               "* Flights Extract\n"
+                               "* Flight Points Filed Extract\n" 
+                               "* Flight Points Actual Extract")
             return False
             
         # Check if filters are configured
@@ -4621,11 +4936,11 @@ class RLTab(QWidget):
             reply = QMessageBox.question(self, "Using Default Phase Altitudes", 
                                        "You are using default phase altitude settings.\n\n"
                                        "Default settings:\n"
-                                       "• Takeoff: FL0-FL15\n"
-                                       "• Climb: FL15-FL250\n" 
-                                       "• Cruise: FL250-FL450\n"
-                                       "• Descent: FL50-FL250\n"
-                                       "• Approach: FL0-FL50\n\n"
+                                       "* Takeoff: FL0-FL15\n"
+                                       "* Climb: FL15-FL250\n" 
+                                       "* Cruise: FL250-FL450\n"
+                                       "* Descent: FL50-FL250\n"
+                                       "* Approach: FL0-FL50\n\n"
                                        "Do you want to proceed with these defaults?",
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                        QMessageBox.StandardButton.Yes)
@@ -4710,9 +5025,9 @@ class RLTab(QWidget):
                 getattr(self, '_actual_file', '')):
             QMessageBox.warning(self, "Files Required", 
                               "Please load all three required Eurocontrol files before configuring filters:\n\n"
-                              "• Flights Extract\n"
-                              "• Flight Points Filed Extract\n" 
-                              "• Flight Points Actual Extract")
+                              "* Flights Extract\n"
+                              "* Flight Points Filed Extract\n" 
+                              "* Flight Points Actual Extract")
             return
             
         # Load data and get summary for filter dialog
@@ -4933,10 +5248,56 @@ class RLTab(QWidget):
             return
 
     # Deprecated: _create_temp_csv_files method removed
-    # Now using direct plugin communication via TraffixGen → SATG commands
+    # Now using direct plugin communication via TraffixGen -> SATG commands
 
     def _get_traffixgen_data(self, command: str) -> dict:
-        """Helper method to get data from TraffixGen plugin via direct function calls"""
+        """
+        Retrieve data from TraffixGen plugin using direct function calls.
+        
+        This method provides a centralized interface for accessing EUROCONTROL
+        flight data processed by the TraffixGen plugin. It handles direct function
+        calls to avoid command-line interface overhead and provides proper error
+        handling for data access operations.
+        
+        The method supports multiple data retrieval commands including flight
+        summaries for filter configuration and filtered track data for scenario
+        generation. All operations include comprehensive error handling to ensure
+        graceful degradation when data access fails.
+        
+        Args:
+            command (str): Data retrieval command to execute
+                          'GET_SUMMARY' - Flight data summary for filter configuration
+                          'GET_TRACKS' - Filtered flight track data for processing
+        
+        Returns:
+            dict: Retrieved data with command-specific structure:
+                  For 'GET_SUMMARY': Flight summary with date ranges, aircraft types,
+                                   airspace information, and data statistics
+                  For 'GET_TRACKS': Filtered flight tracks with trajectory data
+                                  formatted for scenario generation
+                  On error: {'error': 'Descriptive error message'}
+        
+        Raises:
+            ImportError: When TraffixGen plugin cannot be imported
+            AttributeError: When requested function is not available
+            Exception: For any other data access errors
+        
+        Examples:
+            # Get flight data summary for filter configuration
+            summary = self._get_traffixgen_data('GET_SUMMARY')
+            if 'error' not in summary:
+                self._configure_filters(summary)
+            
+            # Get filtered tracks for scenario generation
+            tracks = self._get_traffixgen_data('GET_TRACKS')
+            if tracks.get('total_tracks', 0) > 0:
+                self._generate_scenario(tracks)
+        
+        Note:
+            This method bypasses the command-line interface for better performance
+            and error handling. It requires the TraffixGen plugin to be properly
+            loaded and configured with valid EUROCONTROL data files.
+        """
         try:
             # Import TraffixGen plugin functions directly
             from . import traffixgen
@@ -4953,7 +5314,63 @@ class RLTab(QWidget):
             return {'error': f'Error accessing TraffixGen data: {e}'}
 
     def _load_and_get_summary(self):
-        """Load Eurocontrol files and get data summary for filter configuration"""
+        """
+        Load EUROCONTROL data files and generate comprehensive data summary.
+        
+        This method orchestrates the loading of EUROCONTROL flight data files
+        and generates a comprehensive summary for filter configuration. It includes
+        intelligent caching to avoid expensive reprocessing when file paths haven't
+        changed, significantly improving performance for repeated operations.
+        
+        The method handles the complete data loading pipeline including validation
+        of file paths, loading flight data through the TraffixGen backend, and
+        generating summary statistics for date ranges, aircraft types, airspace
+        boundaries, and flight characteristics needed for filter configuration.
+        
+        Performance Optimization:
+        - File path caching to detect when reloading is unnecessary
+        - Summary data caching with intelligent invalidation
+        - Early return for unchanged configurations
+        - Progress tracking for long-running operations
+        
+        Data Loading Process:
+        1. Check cached data validity using file path comparison
+        2. Load EUROCONTROL data files through TraffixGen backend
+        3. Process flight data to extract summary statistics
+        4. Cache results for future use with current file paths
+        5. Return comprehensive summary for filter configuration
+        
+        Returns:
+            dict: Comprehensive flight data summary containing:
+                - date_range: Available date bounds in the data
+                - aircraft_types: List of all aircraft types found
+                - airspace_info: FIR boundary data for geographic filtering
+                - flight_counts: Statistics on total flights and coverage
+                - altitude_info: Altitude distribution data
+                - phase_info: Flight phase distribution statistics
+            None: When loading fails or files are invalid
+        
+        Raises:
+            ImportError: When TraffixGen plugin cannot be imported
+            FileNotFoundError: When specified data files don't exist
+            ValueError: When data files contain invalid or corrupted data
+            Exception: For other data loading or processing errors
+        
+        Examples:
+            # Load data and get summary for filter configuration
+            summary = self._load_and_get_summary()
+            if summary:
+                self._configure_filter_dialog(summary)
+                self._update_date_bounds(summary['date_range'])
+            else:
+                self._show_loading_error()
+        
+        Note:
+            This method uses intelligent caching based on file path comparison
+            to avoid expensive reprocessing. The cache is automatically invalidated
+            when any of the source file paths change, ensuring data consistency
+            while maximizing performance for repeated filter configuration operations.
+        """
         try:
             # Import TraffixGen functions directly
             from . import traffixgen
@@ -4971,10 +5388,7 @@ class RLTab(QWidget):
                 hasattr(self, '_cached_summary_data') and
                 self._cached_file_paths == current_file_paths and
                 self._cached_summary_data):
-                print("DEBUG: Using cached data for Realistic Replay filter dialog...")
                 return self._cached_summary_data
-            else:
-                print("DEBUG: File paths changed or no cache - refreshing data for Realistic Replay filter dialog...")
             
             # Step 1: Load Eurocontrol data via TraffixGen
             fir_file = self._fir_file if self._fir_file else ""
@@ -5095,9 +5509,9 @@ class RLTab(QWidget):
                 getattr(self, '_actual_file', '')):
             QMessageBox.warning(self, "Files Required", 
                               "Please load all three required Eurocontrol files first:\n\n"
-                              "• Flights Extract\n"
-                              "• Flight Points Filed Extract\n" 
-                              "• Flight Points Actual Extract")
+                              "* Flights Extract\n"
+                              "* Flight Points Filed Extract\n" 
+                              "* Flight Points Actual Extract")
             return
             
         # Check if filters have been configured - if not, show warning and stop
@@ -5182,7 +5596,78 @@ class RLTab(QWidget):
 # --- Flight Phase Altitude Configuration Dialog ----------------------------
 
 class EurocontrolFilterDialog(QDialog):
-    """Dialog for configuring Eurocontrol data filtering options"""
+    """
+    Advanced dialog for configuring EUROCONTROL flight data filtering options.
+    
+    This sophisticated dialog provides comprehensive filtering capabilities for
+    EUROCONTROL flight data, including date ranges, airspace boundaries, altitude
+    constraints, aircraft types, and flight phase restrictions. The dialog features
+    intelligent caching systems for performance optimization and includes flight
+    point filtering for accurate model training data preparation.
+    
+    The dialog supports include-based filtering semantics where selected items
+    are included in the analysis rather than excluded. This approach provides
+    intuitive behavior for users configuring which flight data should be used
+    for machine learning model training.
+    
+    Key Features:
+    - Date range selection with automatic bounds detection
+    - Airspace boundary filtering with geometric calculations
+    - Altitude range constraints with phase-specific settings
+    - Aircraft type filtering with comprehensive type listings
+    - Flight phase filtering (departure, enroute, arrival)
+    - Real-time preview of filter effects on data
+    - Performance optimization through intelligent caching
+    - Flight point filtering for model training accuracy
+    
+    Performance Optimizations:
+    - File path caching to avoid repeated expensive operations
+    - Summary data caching with intelligent invalidation
+    - Vectorized geometric calculations for airspace filtering
+    - Bounding box pre-filtering for point-in-polygon tests
+    
+    Args:
+        current_filters (dict): Current filter configuration to populate dialog
+        fir_file_path (str): Path to FIR boundary data file for airspace filtering
+        summary_data (dict): Cached summary data for performance optimization
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Attributes:
+        current_filters (dict): Working copy of filter configuration
+        fir_file_path (str): Path to FIR boundary data file
+        summary_data (dict): Cached flight data summary information
+        date_from (QDateEdit): Start date selection widget
+        date_to (QDateEdit): End date selection widget
+        include_airspace_list (QListWidget): Airspace selection with include semantics
+        altitude_min (QSpinBox): Minimum altitude constraint
+        altitude_max (QSpinBox): Maximum altitude constraint
+        aircraft_types_list (QListWidget): Aircraft type selection widget
+        flight_phases_list (QListWidget): Flight phase selection widget
+    
+    Returns:
+        dict: Updated filter configuration when dialog is accepted
+        None: When dialog is cancelled or encounters errors
+    
+    Examples:
+        # Create dialog with current configuration
+        dialog = EurocontrolFilterDialog(
+            current_filters=self.eurocontrol_filters,
+            fir_file_path=self.fir_file_path,
+            summary_data=cached_summary,
+            parent=self
+        )
+        
+        # Show dialog and handle result
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated_filters = dialog.get_filters()
+            self._apply_new_filters(updated_filters)
+    
+    Note:
+        This dialog implements include-based filtering where selected airspaces,
+        aircraft types, and flight phases are INCLUDED in the analysis. The dialog
+        also performs actual flight point filtering to ensure model training uses
+        accurately filtered data rather than just metadata filtering.
+    """
     
     def __init__(self, current_filters, fir_file_path, summary_data, parent=None):
         super().__init__(parent)
@@ -5673,8 +6158,6 @@ class EurocontrolFilterDialog(QDialog):
                         
                         if start_date.isValid() and end_date.isValid():
                             # Set ranges to constrain to actual data bounds (same behavior as other filters)
-                            print(f"DEBUG: Realistic Replay - Setting date constraints: {start_date.toString('dd-MM-yyyy')} to {end_date.toString('dd-MM-yyyy')}")
-                            
                             # Use setMinimumDate/setMaximumDate for proper constraint (like setRange for spinboxes)
                             self.date_start.setMinimumDate(start_date)
                             self.date_start.setMaximumDate(end_date)
@@ -6247,13 +6730,13 @@ class PhaseAltitudeConfigDialog(QDialog):
         # Navigation buttons
         nav_button_layout = QHBoxLayout()
         
-        self.prev_btn = QPushButton("← Previous Aircraft")
+        self.prev_btn = QPushButton("< Previous Aircraft")
         self.prev_btn.setToolTip("Go to the previous aircraft track in the loaded data")
         self.prev_btn.clicked.connect(self._previous_track)
         self.prev_btn.setAutoDefault(False)
         nav_button_layout.addWidget(self.prev_btn)
         
-        self.next_btn = QPushButton("Next Aircraft →")
+        self.next_btn = QPushButton("Next Aircraft >")
         self.next_btn.setToolTip("Go to the next aircraft track in the loaded data")
         self.next_btn.clicked.connect(self._next_track)
         self.next_btn.setAutoDefault(False)
@@ -6391,7 +6874,7 @@ class PhaseAltitudeConfigDialog(QDialog):
         if hasattr(self, 'gb_flight_profile'):
             profile_title = f"2) Flight profile - {track_callsign}"
             if origin and destination:
-                profile_title += f" ({origin}→{destination})"
+                profile_title += f" ({origin}->{destination})"
             self.gb_flight_profile.setTitle(profile_title)
         
         # Update button states
@@ -6640,7 +7123,7 @@ class PhaseAltitudeConfigDialog(QDialog):
                 destination = track_info.get('destination', '')
                 
                 # Create route info for title
-                route_info = f"{origin}→{destination}" if origin and destination else f"Flight {aircraft_id}"
+                route_info = f"{origin}->{destination}" if origin and destination else f"Flight {aircraft_id}"
                 
                 print(f"Plotting track: {track_callsign} (Aircraft: {aircraft_id})")
                 print(f"Data shape: {df.shape}")
@@ -6913,7 +7396,7 @@ class PhaseAltitudeConfigDialog(QDialog):
             msg.setText("Not all aircraft have been configured with phase altitudes.")
             msg.setInformativeText(
                 f"The following aircraft still need configuration:\n\n" +
-                "\n".join(f"• {callsign}" for callsign in unconfigured_tracks[:10]) +
+                "\n".join(f"* {callsign}" for callsign in unconfigured_tracks[:10]) +
                 (f"\n... and {len(unconfigured_tracks) - 10} more" if len(unconfigured_tracks) > 10 else "") +
                 "\n\nPlease navigate through all aircraft and configure their phase altitudes before finishing."
             )
@@ -7153,7 +7636,84 @@ class PhaseVisualizationWidget(QWidget):
 # --- Historic Sampling tab (Synthetic Route Generation) --------------------
 
 class HistoricSamplingTab(QWidget):
-    """Historic Sampling: load data -> train models -> create scenarios (auto-generates trajectories)."""
+    """
+    Historic Sampling tab for ML-based aircraft generation from EUROCONTROL data.
+    
+    This sophisticated interface provides machine learning-based synthetic air traffic
+    generation using historic EUROCONTROL flight data. The tab supports comprehensive
+    data filtering, model training, and scenario generation with automatic trajectory
+    synthesis based on learned patterns from real flight operations.
+    
+    The Historic Sampling approach uses machine learning models trained on filtered
+    historic flight data to generate realistic synthetic traffic scenarios. Unlike
+    the Realistic Replay tab which uses predetermined scenarios, Historic Sampling
+    creates entirely new flight trajectories based on statistical patterns learned
+    from real operations.
+    
+    Key Features:
+    - EUROCONTROL data loading with comprehensive format support
+    - Advanced filtering system with airspace, altitude, and temporal constraints
+    - Machine learning model training on filtered flight point data
+    - Synthetic trajectory generation with realistic flight characteristics
+    - Date range selection with automatic bounds detection from data
+    - Aircraft type distribution modeling from historic patterns
+    - Flight phase analysis and altitude profile generation
+    - Performance optimization through intelligent caching systems
+    
+    Data Processing Pipeline:
+    1. Load EUROCONTROL flight data files (flights, filed, actual, FIR)
+    2. Apply comprehensive filters to select relevant flight data
+    3. Process flight points for model training (not just metadata)
+    4. Train machine learning models on filtered trajectory data
+    5. Generate synthetic scenarios with learned flight characteristics
+    6. Export scenarios for BlueSky simulation with proper formatting
+    
+    Filter System:
+    - Date Range: Select specific time periods from available data
+    - Airspace: Include specific FIR regions using geometric calculations
+    - Altitude: Constrain flight levels for different operational phases
+    - Aircraft Types: Focus on specific aircraft categories or models
+    - Flight Phases: Filter by takeoff, climb, cruise, descent, approach
+    
+    Performance Features:
+    - File path caching for rapid dialog reopening
+    - Summary data caching with intelligent invalidation
+    - Vectorized flight point filtering with numpy optimization
+    - Progress dialogs with proper UI thread management
+    - Parquet caching for processed data persistence
+    
+    Attributes:
+        _flights_file (str): Path to EUROCONTROL flights data file
+        _filed_file (str): Path to filed flight plans data file  
+        _actual_file (str): Path to actual trajectory data file
+        _fir_file (str): Path to FIR boundary definition file
+        _model_trained (bool): Flag indicating if ML models are trained
+        _synthetic_data (list): Generated synthetic flight data
+        _data_filters (dict): Current filter configuration
+        eurocontrol_filters (dict): Comprehensive filter settings
+        date_from (QDateEdit): Start date selection widget
+        date_to (QDateEdit): End date selection widget
+        num_flights_spin (QSpinBox): Number of flights to generate
+    
+    Examples:
+        # Tab is created as part of main window
+        hs_tab = HistoricSamplingTab(parent_window)
+        
+        # Typical workflow:
+        # 1. Load data files through file selection dialogs
+        # 2. Configure filters using advanced filtering dialog
+        # 3. Train models on filtered data
+        # 4. Generate synthetic scenarios
+        # 5. Export to BlueSky scenario files
+    
+    Note:
+        This tab implements the same filtering interface as Realistic Replay
+        for feature parity, but applies filters to actual flight point data
+        for ML model training rather than just scenario metadata filtering.
+        The tab requires EUROCONTROL data files in specific formats and uses
+        sophisticated geometric calculations for accurate airspace filtering.
+    """
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -7311,6 +7871,7 @@ class HistoricSamplingTab(QWidget):
             'fl_min': 0, 'fl_max': 500,
             'include_airspace': [],
             'time_start': None, 'time_end': None,
+            'date_start': None, 'date_end': None,
             'aircraft_types': []
         }
         
@@ -8036,8 +8597,8 @@ class HistoricSamplingTab(QWidget):
                     "Models Already Trained", 
                     "Machine learning models are already trained.\n\n"
                     "Do you want to retrain them? This will take some time but ensures fresh results.\n\n"
-                    "• Click 'Yes' to retrain models (recommended for new data or changed filters)\n"
-                    "• Click 'No' to use existing trained models (faster)",
+                    "* Click 'Yes' to retrain models (recommended for new data or changed filters)\n"
+                    "* Click 'No' to use existing trained models (faster)",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No  # Default to No for faster workflow
                 )
@@ -8296,10 +8857,8 @@ class HistoricSamplingTab(QWidget):
         
         # Only refresh data if file paths have changed or no cached data exists
         if current_file_paths != cached_paths or cached_summary is None:
-            print("DEBUG: File paths changed or no cache - refreshing data for filter dialog...")
             needs_refresh = True
         else:
-            print("DEBUG: File paths unchanged - using cached data for filter dialog...")
             needs_refresh = False
         
         # Show progress dialog for data loading/caching
@@ -8374,16 +8933,10 @@ class HistoricSamplingTab(QWidget):
         
         # Always try to set data context and bounds
         if summary_data and 'error' not in summary_data:
-            if needs_refresh:
-                print(f"DEBUG: Setting fresh bounds from updated summary data: {list(summary_data.keys())}")
-            else:
-                print(f"DEBUG: Setting cached bounds from summary data: {list(summary_data.keys())}")
             self.historic_filter_dialog.summary_data = summary_data
             self.historic_filter_dialog._set_bounds_from_data()
             # Force a filter summary update after bounds are set
             self.historic_filter_dialog._update_filter_summary()
-        else:
-            print("DEBUG: No valid summary data available for filter bounds")
         
         # Complete progress (only if we showed it)
         if needs_refresh:
@@ -8477,11 +9030,9 @@ class HistoricSamplingTab(QWidget):
                     print("ERROR: Failed to load EUROCONTROL data")
             
             # Method 3: Fallback to direct DataFrame analysis
-            print("DEBUG: Falling back to direct data analysis...")
             return self._load_data_sample()
             
         except Exception as e:
-            print(f"DEBUG: Error in _load_and_get_summary_for_historic: {e}")
             import traceback
             traceback.print_exc()
             return self._load_data_sample()
@@ -8494,36 +9045,27 @@ class HistoricSamplingTab(QWidget):
             
             # Try to get the flight summary from TraffixGen (same method as realistic replay)
             if hasattr(traffixgen, '_dataset_collection') and traffixgen._dataset_collection is not None:
-                print("DEBUG: Getting summary from existing TraffixGen dataset")
                 summary = traffixgen.get_flight_summary()
                 if 'error' not in summary:
-                    print(f"DEBUG: Got TraffixGen summary: {summary}")
                     return summary
-                else:
-                    print(f"DEBUG: TraffixGen summary error: {summary}")
             
             # Fallback 1: Check if we have historic_data loaded in parent
             if hasattr(self, 'parent') and self.parent() and hasattr(self.parent(), 'historic_data'):
                 data = self.parent().historic_data
                 if data is not None and not data.empty:
-                    print(f"DEBUG: Using parent's historic_data with {len(data)} rows")
-                    print(f"DEBUG: Available columns: {list(data.columns)}")
                     return self._extract_summary_from_dataframe(data)
             
             # Fallback 2: Try to load data if we have file path
             if hasattr(self, 'parent') and self.parent() and hasattr(self.parent(), '_flights_file'):
                 flights_file = self.parent()._flights_file
                 if flights_file and os.path.exists(flights_file):
-                    print(f"DEBUG: Loading sample from file: {flights_file}")
                     import pandas as pd
                     data = pd.read_csv(flights_file, nrows=1000)
                     return self._extract_summary_from_dataframe(data)
             
-            print("DEBUG: No data source available, using defaults")
             return self._get_default_summary()
                 
         except Exception as e:
-            print(f"DEBUG: Error in _load_data_sample: {e}")
             import traceback
             traceback.print_exc()
             return self._get_default_summary()
@@ -8552,14 +9094,12 @@ class HistoricSamplingTab(QWidget):
                     values = data[col_name].dropna()
                     if not values.empty:
                         lat_values.extend(values.tolist())
-                        print(f"DEBUG: Found {len(values)} latitude values in '{col_name}'")
             
             if lat_values:
                 summary_data['lat_bounds'] = {
                     'min': float(min(lat_values)), 
                     'max': float(max(lat_values))
                 }
-                print(f"DEBUG: Latitude bounds: {summary_data['lat_bounds']}")
             
             # Extract longitude bounds
             lon_values = []
@@ -8568,14 +9108,12 @@ class HistoricSamplingTab(QWidget):
                     values = data[col_name].dropna()
                     if not values.empty:
                         lon_values.extend(values.tolist())
-                        print(f"DEBUG: Found {len(values)} longitude values in '{col_name}'")
             
             if lon_values:
                 summary_data['lon_bounds'] = {
                     'min': float(min(lon_values)), 
                     'max': float(max(lon_values))
                 }
-                print(f"DEBUG: Longitude bounds: {summary_data['lon_bounds']}")
             
             # Extract flight level bounds
             for col_name in column_mappings['flight_level']:
@@ -8589,10 +9127,9 @@ class HistoricSamplingTab(QWidget):
                                     'min': int(fl_numeric.min()), 
                                     'max': int(fl_numeric.max())
                                 }
-                                print(f"DEBUG: FL bounds from '{col_name}': {summary_data['fl_bounds']}")
                                 break
                         except Exception as e:
-                            print(f"DEBUG: Error processing FL column '{col_name}': {e}")
+                            pass
             
             # Extract aircraft types
             for col_name in column_mappings['aircraft_type']:
@@ -8601,18 +9138,15 @@ class HistoricSamplingTab(QWidget):
                     if not ac_data.empty:
                         aircraft_types = sorted(ac_data.unique())
                         summary_data['aircraft_types'] = aircraft_types[:50]  # Limit to 50
-                        print(f"DEBUG: Aircraft types from '{col_name}': {len(aircraft_types)} types")
                         break
             
             # Default aircraft types if none found
             if 'aircraft_types' not in summary_data:
                 summary_data['aircraft_types'] = ['A320', 'A330', 'A380', 'B737', 'B747', 'B777', 'B787']
             
-            print(f"DEBUG: Final extracted summary: {summary_data}")
             return summary_data
             
         except Exception as e:
-            print(f"DEBUG: Error extracting summary from DataFrame: {e}")
             return self._get_default_summary()
     
     def _get_default_summary(self):
@@ -9035,10 +9569,10 @@ class HistoricSamplingFilterDialog(QDialog):
             data_parts = []
             if 'lat_bounds' in self.summary_data:
                 lat_bounds = self.summary_data['lat_bounds']
-                data_parts.append(f"Lat: {lat_bounds['min']:.2f}° to {lat_bounds['max']:.2f}°")
+                data_parts.append(f"Lat: {lat_bounds['min']:.2f} deg to {lat_bounds['max']:.2f} deg")
             if 'lon_bounds' in self.summary_data:
                 lon_bounds = self.summary_data['lon_bounds']
-                data_parts.append(f"Lon: {lon_bounds['min']:.2f}° to {lon_bounds['max']:.2f}°")
+                data_parts.append(f"Lon: {lon_bounds['min']:.2f} deg to {lon_bounds['max']:.2f} deg")
             if 'fl_bounds' in self.summary_data:
                 fl_bounds = self.summary_data['fl_bounds']
                 data_parts.append(f"FL: {fl_bounds['min']} to {fl_bounds['max']}")
@@ -9048,9 +9582,9 @@ class HistoricSamplingFilterDialog(QDialog):
             if 'date_bounds' in self.summary_data:
                 date_bounds = self.summary_data['date_bounds']
                 data_parts.append(f"Date: {date_bounds['min']} to {date_bounds['max']}")
-                print(f"✓ Date range found: {date_bounds['min']} to {date_bounds['max']}")
+                print(f"[OK] Date range found: {date_bounds['min']} to {date_bounds['max']}")
             else:
-                print("✗ No date range found in data")
+                print("[ERROR] No date range found in data")
             if 'aircraft_types' in self.summary_data:
                 ac_count = len(self.summary_data['aircraft_types'])
                 data_parts.append(f"Aircraft types: {ac_count}")
@@ -9062,7 +9596,7 @@ class HistoricSamplingFilterDialog(QDialog):
         if hasattr(self, 'lat_min_spin'):
             lat_min, lat_max = self.lat_min_spin.value(), self.lat_max_spin.value()
             lon_min, lon_max = self.lon_min_spin.value(), self.lon_max_spin.value()
-            summary_parts.append(f"<b>Geographic Filter:</b><br>Lat: {lat_min:.2f}° to {lat_max:.2f}°<br>Lon: {lon_min:.2f}° to {lon_max:.2f}°")
+            summary_parts.append(f"<b>Geographic Filter:</b><br>Lat: {lat_min:.2f} deg to {lat_max:.2f} deg<br>Lon: {lon_min:.2f} deg to {lon_max:.2f} deg")
         
         # Flight level filters
         if hasattr(self, 'fl_min_spin'):
@@ -9258,7 +9792,6 @@ class HistoricSamplingFilterDialog(QDialog):
     def _set_bounds_from_data(self):
         """Set filter input bounds based on the loaded data ranges"""
         if not self.summary_data:
-            print("DEBUG: No summary data available for setting bounds")
             return
             
         bounds_set = []
@@ -9384,7 +9917,7 @@ class HistoricSamplingFilterDialog(QDialog):
                 # Enable date filtering when bounds are available
                 self.date_enabled.setChecked(True)
                 bounds_set.append(f"Date range: {date_min} to {date_max}")
-                print(f"✓ Date range constraints applied: {date_min} to {date_max}")
+                print(f"[OK] Date range constraints applied: {date_min} to {date_max}")
                     
             except (ValueError, IndexError) as e:
                 print(f"Could not parse date bounds: {e}")
@@ -9420,9 +9953,9 @@ class HistoricSamplingFilterDialog(QDialog):
         
         # Summary of what was set
         if bounds_set:
-            print(f"✓ Data bounds configured: {len(bounds_set)} filters")
+            print(f"[OK] Data bounds configured: {len(bounds_set)} filters")
         else:
-            print("✗ No data bounds were configured")
+            print("[ERROR] No data bounds were configured")
         
         # Update the filter summary display
         self._update_filter_summary()
@@ -9636,7 +10169,6 @@ class HistoricSamplingFilterDialog(QDialog):
         # If no data passed directly, try to get it from parent
         if data is None and self.parent() and hasattr(self.parent(), 'historic_data'):
             data = self.parent().historic_data
-            print(f"DEBUG: Got data from parent: {len(data) if data is not None else 'None'} rows")
         
         # Extract data summary for bounds setting
         if data is not None and hasattr(data, 'columns') and not data.empty:
@@ -10297,7 +10829,7 @@ class GCRelativePage(QWidget):
         target_form.addRow(self.include_target_cb)
 
         self.target_acid = QLineEdit("")
-        self.target_acid.setPlaceholderText("optional – auto if left blank")
+        self.target_acid.setPlaceholderText("optional - auto if left blank")
         self.target_acid.setClearButtonEnabled(True)
         target_form.addRow("Target callsign:", self.target_acid)
         self.target_type = QLineEdit("A320,B738,A350,B78X")
@@ -10381,7 +10913,7 @@ class GCRelativePage(QWidget):
         intr_form.setContentsMargins(5, 5, 5, 5)
         
         self.intr_acid = QLineEdit("")
-        self.intr_acid.setPlaceholderText("optional – auto if left blank")
+        self.intr_acid.setPlaceholderText("optional - auto if left blank")
         self.intr_acid.setClearButtonEnabled(True)
         intr_form.addRow("Intruder callsign (optional):", self.intr_acid)
         self.intr_type = QLineEdit("A320,B738,A350,B78X")
@@ -10958,6 +11490,68 @@ class GCRelativePage(QWidget):
 
 
 class GCTab(QWidget):
+    """
+    Geometric Conflicts tab for advanced conflict detection and resolution scenarios.
+    
+    This comprehensive interface provides sophisticated geometric conflict generation
+    capabilities using precise mathematical algorithms to create controlled loss of
+    separation scenarios. The tab supports both legacy CPA (Closest Point of Approach)
+    methods and modern relative conflict generation techniques for air traffic
+    management research and training applications.
+    
+    The Geometric Conflicts system enables precise control over conflict parameters
+    including timing, location, geometry, and resolution characteristics. All
+    conflicts are generated using validated geometric algorithms that ensure
+    realistic aircraft trajectories and conflict dynamics.
+    
+    Key Features:
+    - Dual conflict generation modes: CPA-based and Relative positioning
+    - Separation minima configuration with ICAO standard compliance
+    - Aircraft type and performance parameter integration
+    - Visual conflict indicators with real-time CPA reference display
+    - Comprehensive conflict geometry validation and verification
+    - Integration with BlueSky simulation for immediate testing
+    
+    Conflict Generation Methods:
+    1. CPA (Legacy) Mode: Traditional closest point of approach calculations
+       - Fixed conflict location and timing specifications
+       - Geometric trajectory calculations for precise CPA achievement
+       - Aircraft positioning based on separation thresholds
+    
+    2. Relative (Creconfs) Mode: Advanced relative positioning algorithms
+       - Dynamic conflict geometry with variable parameters
+       - Enhanced realism through stochastic conflict characteristics
+       - Sophisticated resolution scenario generation
+    
+    Visual Components:
+    - Minima Panel: Separation threshold configuration and validation
+    - CPA Display: Real-time visual conflict reference indicators
+    - Parameter Controls: Comprehensive conflict parameter specification
+    - Status Indicators: Conflict validation and generation feedback
+    
+    Attributes:
+        _minima (GCMinimaPanel): Separation minima configuration panel
+        _absolute_page (GCAbsolutePage): CPA-based conflict generation interface
+        _relative_page (GCRelativePage): Relative conflict generation interface
+    
+    Examples:
+        # Tab is created as part of main window
+        gc_tab = GCTab(parent_window)
+        
+        # Typical workflow:
+        # 1. Configure separation minima (horizontal/vertical)
+        # 2. Select conflict generation method (CPA or Relative)
+        # 3. Specify conflict parameters (location, timing, geometry)
+        # 4. Generate conflict scenarios with validation
+        # 5. Test scenarios in BlueSky simulation environment
+    
+    Note:
+        This tab provides research-grade conflict generation capabilities with
+        precise geometric control for academic and professional air traffic
+        management applications. All generated conflicts comply with aviation
+        standards and provide realistic conflict resolution challenges.
+    """
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         main = QVBoxLayout(self)
@@ -10992,7 +11586,7 @@ class GCTab(QWidget):
 # --- RC tab (Random Conflicts) ---------------------------------------------
 
 class RCTab(QWidget):
-    """Random Conflicts (RC) — Modern geometric conflicts in a circle region."""
+    """Random Conflicts (RC) - Modern geometric conflicts in a circle region."""
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -11930,7 +12524,7 @@ class ProcTab(QWidget):
         self.lst_wpt = QListWidget()
         self.lst_wpt.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         wpt_btns = QWidget(); hbw = QHBoxLayout(wpt_btns); hbw.setContentsMargins(0,0,0,0)
-        btn_wpt_add = QPushButton("Add waypoint files…")
+        btn_wpt_add = QPushButton("Add waypoint files...")
         btn_wpt_rm  = QPushButton("Remove selected")
         btn_wpt_clr = QPushButton("Clear all")
         hbw.addWidget(btn_wpt_add); hbw.addWidget(btn_wpt_rm); hbw.addWidget(btn_wpt_clr); hbw.addStretch(1)
@@ -11944,7 +12538,7 @@ class ProcTab(QWidget):
         proc_btns = QWidget(); hbp = QHBoxLayout(proc_btns); hbp.setContentsMargins(0,0,0,0)
         
         # File management buttons (left side)
-        btn_proc_add = QPushButton("Add procedure files…")
+        btn_proc_add = QPushButton("Add procedure files...")
         btn_proc_rm  = QPushButton("Remove selected")
         btn_proc_clr = QPushButton("Clear all")
         hbp.addWidget(btn_proc_add); hbp.addWidget(btn_proc_rm); hbp.addWidget(btn_proc_clr)
@@ -12083,7 +12677,7 @@ class ProcTab(QWidget):
         generic_actypes_widget.setLayout(generic_actypes_layout)
         fg.addRow("Aircraft types:", generic_actypes_widget)
         
-        self.generic_sched_btn = QPushButton("Configure schedule…")
+        self.generic_sched_btn = QPushButton("Configure schedule...")
         self.generic_sched_btn.clicked.connect(self._configure_generic_schedule)
         fg.addRow(self.generic_sched_btn)
         self.generic_mode.currentIndexChanged.connect(self._on_generic_mode_changed)
@@ -12144,7 +12738,7 @@ class ProcTab(QWidget):
         sid_actypes_widget.setLayout(sid_actypes_layout)
         fs.addRow("Aircraft types:", sid_actypes_widget)
         
-        self.sid_sched_btn = QPushButton("Configure schedule…")
+        self.sid_sched_btn = QPushButton("Configure schedule...")
         self.sid_sched_btn.clicked.connect(self._configure_sid_schedule)
         fs.addRow(self.sid_sched_btn)
         self.sid_mode.currentIndexChanged.connect(self._on_sid_mode_changed)
@@ -12239,7 +12833,7 @@ class ProcTab(QWidget):
         star_actypes_widget.setLayout(star_actypes_layout)
         ft.addRow("Aircraft types:", star_actypes_widget)
         
-        self.star_sched_btn = QPushButton("Configure schedule…")
+        self.star_sched_btn = QPushButton("Configure schedule...")
         self.star_sched_btn.clicked.connect(self._configure_star_schedule)
         ft.addRow(self.star_sched_btn)
         self.star_mode.currentIndexChanged.connect(self._on_star_mode_changed)
@@ -13052,10 +13646,6 @@ class ProcTab(QWidget):
 
     def _refresh_all_batch_options(self):
         """Comprehensive refresh of all batch options to ensure consistency."""
-        # Debug info
-        print(f"[DEBUG] Refreshing batch options - Current files: {len(self._proc_files)}")
-        print(f"[DEBUG] Proc widgets keys: {list(self._proc_widgets.keys())}")
-        
         # Capture current rates before refreshing
         if hasattr(self, '_generic_basis_index'):
             basis = self._current_generic_basis()
@@ -13072,10 +13662,6 @@ class ProcTab(QWidget):
         self._sync_destination_edits()
         self._sync_origin_edits()
         self._update_dest_state()
-        
-        # Debug info
-        print(f"[DEBUG] After refresh - Generic procs: {self._current_generic_procs()}")
-        print(f"[DEBUG] After refresh - STAR procs: {self._current_star_procs()}")
 
     def _clr_proc(self):
         if not self._proc_files: return
@@ -13593,6 +14179,56 @@ class HelpTab(QWidget):
 # --- main window ------------------------------------------------------------
 
 class SATGWindow(QWidget):
+    """
+    Main window for the Synthetic Air Traffic Generation (SATG) GUI plugin.
+    
+    This class provides the primary interface for all SATG functionality including
+    historic sampling, realistic replay, conflict generation, and procedure management.
+    The window uses a tabbed interface with intelligent visual indicator management
+    and comprehensive configuration persistence.
+    
+    The window manages multiple specialized tabs, each focused on specific aspects
+    of air traffic generation:
+    - Help: Documentation and usage examples
+    - Realistic Replay: Scenario-based traffic generation with conflict simulation
+    - Historic Sampling: ML-based aircraft generation from EUROCONTROL data
+    - Geometric Conflicts: Advanced conflict detection and resolution algorithms
+    - Random Conflicts: Stochastic conflict generation and analysis
+    - Procedures: SID/STAR procedure creation and management
+    
+    Features:
+    - Tabbed interface with consistent styling and behavior
+    - Visual indicator management across tabs (circles, CPA references)
+    - Configuration management with save/load functionality
+    - Cache management with intelligent validation
+    - Performance optimizations including file path caching
+    - Progress dialog integration with proper UI threading
+    
+    Attributes:
+        help_tab (HelpTab): Documentation and usage information
+        rl_tab (RLTab): Realistic Replay traffic generation interface
+        hs_tab (HistoricSamplingTab): Historic Sampling ML-based generation
+        gc_tab (GCTab): Geometric conflict detection and resolution
+        rc_tab (RCTab): Random conflict generation and analysis
+        proc_tab (ProcTab): Procedure creation and management
+        tabs (QTabWidget): Main tab container widget
+        top (TopStrip): Configuration and cache management controls
+    
+    Note:
+        This window uses lazy initialization and should only be created after
+        QApplication is available. Visual indicators are automatically managed
+        when switching between tabs to prevent display conflicts.
+    
+    Examples:
+        # Window is typically created through the plugin system
+        window = SATGWindow()
+        window.show()
+        
+        # Tab switching automatically manages visual indicators
+        # Configuration persistence is handled automatically
+        # Cache validation occurs when needed
+    """
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("SATG GUI")
@@ -13706,7 +14342,6 @@ class SATGWindow(QWidget):
             delattr(self, '_cached_filter_file_paths')
         if hasattr(self, '_cached_filter_summary_data'):
             delattr(self, '_cached_filter_summary_data')
-        print("DEBUG: Cleared filter configuration cache due to file path changes")
 
 # single instance + lazy creation
 _window = None
