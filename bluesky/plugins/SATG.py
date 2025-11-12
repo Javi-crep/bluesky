@@ -221,10 +221,49 @@ def _gs_to_cas_kt(gs_kt: float, flight_level: float) -> float:
 
 # ---------------- Helpers ---------------- #
 def _to_float(s, default=0.0):
+    """
+    Safely convert string or numeric value to float with fallback default.
+    
+    Args:
+        s: Input value to convert (str, int, float, or other)
+        default (float): Default value returned on conversion failure (default: 0.0)
+        
+    Returns:
+        float: Converted float value or default on failure
+        
+    Examples:
+        >>> _to_float("123.45")
+        123.45
+        >>> _to_float("invalid", 99.9)
+        99.9
+        >>> _to_float(None, 0.0)
+        0.0
+    """
     try: return float(s)
     except Exception: return default
 
 def _to_int(s, default=0):
+    """
+    Safely convert string or numeric value to integer with fallback default.
+    
+    Args:
+        s: Input value to convert (str, int, float, or other)
+        default (int): Default value returned on conversion failure (default: 0)
+        
+    Returns:
+        int: Converted integer value or default on failure
+        
+    Examples:
+        >>> _to_int("42")
+        42
+        >>> _to_int("123.7")  # Converts via float first
+        123
+        >>> _to_int("invalid", -1)
+        -1
+        
+    Note:
+        Converts through float first to handle decimal strings like "123.7"
+    """
     try: return int(float(s))
     except Exception: return default
 
@@ -241,6 +280,21 @@ def _stamp(td: timedelta) -> str:
     return f"{h}:{m:02d}:{s:05.2f}>"
 
 def _echo_lines(lines: List[str]):
+    """
+    Echo multiple lines to BlueSky console output.
+    
+    Args:
+        lines (List[str]): List of text lines to display in console
+        
+    Note:
+        - Sends each line as individual ECHO command to BlueSky stack
+        - Used for displaying multi-line status messages and results
+        - Maintains original line ordering and formatting
+        
+    Example:
+        >>> _echo_lines(["Status: Ready", "Flights: 5", "Time: 14:30"])
+        # Outputs each line to console separately
+    """
     for line in lines: stack.stack(f"ECHO {line}")
 
 def _echo_ok(msg: str, nxt: Optional[str]=None):
@@ -582,7 +636,24 @@ def _get_polygon_creation_command(polygon_name: str) -> Optional[str]:
 
 # ---------------- State ---------------- #
 class _SATGState:
+    """
+    Internal state management class for SATG plugin operations and configuration.
+    
+    This singleton-style class maintains all SATG plugin state including flight data,
+    jitter configurations, procedure definitions, and runtime settings. It provides
+    centralized access to plugin data and ensures consistency across all SATG operations.
+    """
     def __init__(self):
+        """
+        Initialize SATG state with default configuration values.
+        
+        Note:
+            - Sets up all plugin state containers and default settings
+            - Configures jitter system in disabled state by default
+            - Initializes procedure management structures
+            - Prepares flight data storage and phase configuration
+            - All settings can be modified through SATG commands
+        """
         # RL data
         self.flights: Dict[str, Dict[str, str]] = {}
         self.base_points: Dict[str, List[dict]] = {}
@@ -698,6 +769,25 @@ STATE = _SATGState()
 DEFAULT_BASE_DIR = os.path.abspath(os.path.join(os.getcwd(), "satg_data"))
 
 def _init_dirs(base_dir: Optional[str]=None):
+    """
+    Initialize SATG directory structure for data and scenario storage.
+    
+    Args:
+        base_dir (str, optional): Custom base directory path. 
+                                 Uses DEFAULT_BASE_DIR if None
+    
+    Note:
+        - Creates 'data' and 'scenarios' subdirectories if they don't exist
+        - Updates STATE object with validated directory paths
+        - Skips initialization if directories already exist and match current state
+        - Ensures proper directory structure for SATG operations
+        - Uses makedirs with exist_ok=True for safe directory creation
+    
+    Directory Structure Created:
+        base_dir/
+        ├── data/       # SATG data files and configurations
+        └── scenarios/  # Generated scenario files
+    """
     base = os.path.abspath(base_dir or DEFAULT_BASE_DIR)
     data = os.path.join(base, "data"); scns = os.path.join(base, "scenarios")
     if STATE.base_dir == base and os.path.isdir(data) and os.path.isdir(scns):
@@ -2422,11 +2512,44 @@ def _gc_rel_write_scn(path: str, *, append: bool, lines: List[str], **header_par
 
 # ------- Procedures helpers ----------------- #
 def _dms_to_deg(sign, d, m, s):
+    """
+    Convert degrees-minutes-seconds to decimal degrees.
+    
+    Args:
+        sign (str): Direction indicator ("N", "S", "E", "W")
+        d (str/float): Degrees component
+        m (str/float): Minutes component  
+        s (str/float): Seconds component
+        
+    Returns:
+        float: Decimal degrees (negative for South/West)
+        
+    Example:
+        >>> _dms_to_deg("N", 52, 30, 45)
+        52.5125
+        >>> _dms_to_deg("S", 10, 15, 30)
+        -10.258333...
+    """
     deg = float(d) + float(m)/60.0 + float(s)/3600.0
     if sign in ("S","W"): deg = -deg
     return deg
 
 def _parse_defwpt_line(line: str):
+    """
+    Parse DEFWPT command line to extract waypoint definition.
+    
+    Args:
+        line (str): Line containing DEFWPT command
+        
+    Returns:
+        tuple or None: (name, lat, lon) if valid DEFWPT found, None otherwise
+        
+    Note:
+        - Supports both decimal and DMS coordinate formats
+        - Handles numeric format: ">DEFWPT NAME lat lon"  
+        - Handles DMS format with direction indicators
+        - Case-insensitive DEFWPT matching
+    """
     L = line.strip()
     if not L or "DEFWPT" not in L.upper():
         return None
@@ -2867,6 +2990,24 @@ def _resolve_fix_coord(name: Optional[str],
     return None
 
 def _bearing_deg(lat1, lon1, lat2, lon2):
+    """
+    Calculate bearing in degrees from first to second coordinate.
+    
+    Args:
+        lat1 (float): Starting latitude in degrees
+        lon1 (float): Starting longitude in degrees
+        lat2 (float): Target latitude in degrees
+        lon2 (float): Target longitude in degrees
+        
+    Returns:
+        float: Bearing in degrees (0-360)
+        
+    Note:
+        - Uses BlueSky geo tools for accurate spherical calculations
+        - Falls back to manual spherical trigonometry if geo tools unavailable
+        - Bearing is measured clockwise from North
+        - Always returns value in 0-360 degree range
+    """
     try:
         from bluesky.tools import geo
         if hasattr(geo, "qdrdist"):
@@ -2882,6 +3023,25 @@ def _bearing_deg(lat1, lon1, lat2, lon2):
     return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
 
 def _dest_nm(lat, lon, brg_deg, dist_nm):
+    """
+    Calculate destination coordinates given bearing and distance.
+    
+    Args:
+        lat (float): Starting latitude in degrees
+        lon (float): Starting longitude in degrees
+        brg_deg (float): Bearing in degrees (0-360)
+        dist_nm (float): Distance in nautical miles
+        
+    Returns:
+        tuple: (lat2, lon2) destination coordinates in degrees
+        
+    Note:
+        - Uses BlueSky geo tools for accurate spherical calculations
+        - Falls back to manual spherical trigonometry if geo tools unavailable
+        - Distance should be in nautical miles
+        - Uses Earth radius of 3440.065 nm for fallback calculations
+        - Longitude normalized to ±180 degree range
+    """
     try:
         from bluesky.tools import geo
         if hasattr(geo, "qdrpos"):
@@ -5992,6 +6152,22 @@ def _rebuild_generic_rates():
 
 @command
 def SATG_PROC_UNLOAD_PROC(path: str):
+    """
+    Unload a procedure file from SATG system.
+    
+    Args:
+        path (str): Path to procedure file to unload
+        
+    Returns:
+        tuple: (True, "") on success
+        
+    Note:
+        - Removes procedure file from loaded procedures list
+        - Unregisters all SID and STAR metadata for the file
+        - Clears associated destination mappings
+        - Rebuilds generic rates to exclude unloaded procedures
+        - Normalizes and cleans path format for consistent matching
+    """
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     STATE.proc_proc_files = [x for x in STATE.proc_proc_files if x != p]
     _unregister_sid_proc(p)
@@ -6967,6 +7143,21 @@ def _normalize_star_fix(proc_id: str) -> str:
 
 @command
 def SATG_PROC_USE_DEST(flag: int):
+    """
+    Enable or disable destination-based procedure filtering.
+    
+    Args:
+        flag (int): 1 to enable destinations, 0 to disable
+        
+    Returns:
+        tuple: (True, "") on success
+        
+    Note:
+        - Controls whether procedures consider destination airports
+        - When enabled, procedures only apply to flights with matching destinations
+        - When disabled, all procedures apply regardless of destination
+        - Affects both SID and STAR procedure selection logic
+    """
     STATE.proc_destinations_enabled = bool(int(flag))
     state_txt = "ON" if STATE.proc_destinations_enabled else "OFF"
     _echo_ok(f"SATG procedure destinations {state_txt}")

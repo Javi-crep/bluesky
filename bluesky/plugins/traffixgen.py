@@ -414,9 +414,38 @@ class FlightTrajectory:
         self.columns = columns
         
     def __len__(self):
+        """
+        Return the number of trajectory points in this flight.
+        
+        Returns:
+            int: Number of trajectory data points
+            
+        Example:
+            >>> trajectory = FlightTrajectory(data)
+            >>> len(trajectory)  # Returns number of waypoints
+            25
+        """
         return len(self.data)
         
     def __getitem__(self, key):
+        """
+        Access trajectory data by column name or index.
+        
+        Args:
+            key (str or int): Column name or array index for data access
+            
+        Returns:
+            np.ndarray: Column data array or indexed data
+            
+        Raises:
+            KeyError: If column name is not found in trajectory
+            
+        Examples:
+            >>> trajectory['latitude']  # Get latitude column
+            array([52.3, 52.4, 52.5, ...])
+            >>> trajectory[0]  # Get first data row
+            array([52.3, 4.9, 35000, ...])
+        """
         if isinstance(key, str):
             if key in self.columns:
                 idx = self.columns.index(key)
@@ -494,11 +523,39 @@ def fit_simple_distribution(data):
     probs = counts / counts.sum()
     
     class EmpiricalDistribution:
+        """
+        Empirical probability distribution for discrete categorical data sampling.
+        
+        This inner class provides statistical sampling functionality for categorical
+        flight data based on observed frequency patterns. It enables realistic
+        generation of synthetic flight characteristics that preserve the statistical
+        properties of original EUROCONTROL operations data.
+        """
         def __init__(self, values, probabilities):
+            """
+            Initialize empirical distribution with categorical values and probabilities.
+            
+            Args:
+                values (np.ndarray): Array of unique categorical values
+                probabilities (np.ndarray): Normalized probability weights
+            """
             self.values = values
             self.probs = probabilities
             
         def sample(self, size=1):
+            """
+            Generate random samples from empirical distribution.
+            
+            Args:
+                size (int): Number of samples to generate (default: 1)
+                
+            Returns:
+                np.ndarray: Array of sampled values matching original data distribution
+                
+            Example:
+                >>> dist.sample(5)  # Generate 5 aircraft types
+                array(['B738', 'A320', 'B738', 'A319', 'B737'])
+            """
             return np.random.choice(self.values, size=size, p=self.probs)
     
     return EmpiricalDistribution(unique_vals, probs)
@@ -1048,9 +1105,41 @@ class EnhancedFlightTrajectory:
         self._col_index = {name: i for i, name in enumerate(columns)}
         
     def __len__(self):
+        """
+        Return the number of trajectory points in this enhanced flight.
+        
+        Returns:
+            int: Number of trajectory data points
+            
+        Example:
+            >>> trajectory = EnhancedFlightTrajectory(data, columns)
+            >>> len(trajectory)  # Returns number of waypoints
+            42
+        """
         return len(self.data)
         
     def __getitem__(self, key):
+        """
+        Access enhanced trajectory data by column name or index with optimized lookup.
+        
+        Args:
+            key (str or int): Column name or array index for data access
+            
+        Returns:
+            np.ndarray: Column data array or indexed data
+            
+        Raises:
+            KeyError: If column name is not found in trajectory
+            
+        Examples:
+            >>> trajectory['longitude']  # Get longitude column
+            array([4.9, 5.0, 5.1, ...])
+            >>> trajectory[1]  # Get second data row
+            array([52.4, 5.0, 35500, ...])
+            
+        Note:
+            Uses optimized column index lookup for faster access performance.
+        """
         if isinstance(key, str):
             if key in self.columns:
                 idx = self.columns.index(key)
@@ -1471,6 +1560,16 @@ class EnhancedFlightTrajectorySampler:
     """Enhanced trajectory sampler with full TraffixGen capabilities."""
     
     def __init__(self):
+        """
+        Initialize enhanced trajectory sampler with comprehensive ML capabilities.
+        
+        Note:
+            - Initializes all data structures for EUROCONTROL flight processing
+            - Sets up machine learning model containers for trajectory generation
+            - Prepares distribution objects for realistic flight pattern sampling
+            - Configures state space for advanced trajectory modeling
+            - All components start as None and are populated during preprocessing
+        """
         self.flights_df = None
         self.route_df = None
         self.state_space = None
@@ -1727,6 +1826,16 @@ class TraffixGenPlugin(bs.core.Entity):
     }
     
     def __init__(self):
+        """
+        Initialize TraffixGen BlueSky plugin with comprehensive data processing capabilities.
+        
+        Note:
+            - Inherits from BlueSky core Entity for plugin integration
+            - Initializes enhanced trajectory sampler for ML-based generation
+            - Configures XGBoost model parameters for trajectory prediction
+            - Sets up shared data structures for inter-plugin communication
+            - Prepares all components for historic sampling and synthetic generation
+        """
         super().__init__()
         self.sampler = None
         self.is_trained = False
@@ -2463,6 +2572,15 @@ class DatasetCollection:
     """
     
     def __init__(self):
+        """
+        Initialize DatasetCollection with empty EUROCONTROL data containers.
+        
+        Note:
+            - Creates containers for all EUROCONTROL data file types
+            - All DataFrames start as None and are populated by load_data()
+            - Supports flights, filed plans, actual trajectories, and FIR boundaries
+            - Provides foundation for comprehensive flight data analysis
+        """
         self.flights_df = None
         self.filed_points_df = None
         self.actual_points_df = None
@@ -2594,6 +2712,19 @@ class DatasetCollection:
             
         # Convert GUI time format (HH:MM:SS) to seconds for comparison
         def time_to_seconds(time_str):
+            """
+            Convert time string in HH:MM:SS format to total seconds.
+            
+            Args:
+                time_str (str): Time string in "HH:MM:SS" format
+                
+            Returns:
+                int: Total seconds since midnight, or 0 for invalid input
+                
+            Example:
+                >>> time_to_seconds("14:30:45")
+                52245  # 14*3600 + 30*60 + 45
+            """
             if isinstance(time_str, str) and ':' in time_str:
                 parts = time_str.split(':')
                 if len(parts) >= 3:
@@ -2608,6 +2739,21 @@ class DatasetCollection:
         
         # Convert Time Over column to seconds for comparison
         def extract_time_seconds(time_str):
+            """
+            Extract time component from datetime string and convert to seconds.
+            
+            Args:
+                time_str (str): Time or datetime string to parse
+                
+            Returns:
+                int: Time component in seconds since midnight
+                
+            Examples:
+                >>> extract_time_seconds("01-03-2015 14:30:45")
+                52245  # Time part: 14:30:45
+                >>> extract_time_seconds("09:15:30")
+                33330  # Direct time format
+            """
             if isinstance(time_str, str):
                 # Handle full datetime format like "01-03-2015 05:55:00"
                 if ' ' in time_str and ':' in time_str:
@@ -2697,9 +2843,30 @@ from typing import Optional, Tuple, List, Dict
 class Dataset:
     """Simple Dataset class following original TraffixGen pattern."""
     def __init__(self, data: pd.DataFrame = None):
+        """
+        Initialize Dataset with optional pandas DataFrame.
+        
+        Args:
+            data (pd.DataFrame, optional): Initial dataset. Defaults to empty DataFrame
+            
+        Note:
+            - Provides simple wrapper around pandas DataFrame functionality
+            - Maintains compatibility with original TraffixGen data structures
+        """
         self.data = data if data is not None else pd.DataFrame()
     
     def get_column_names(self):
+        """
+        Get list of column names from the dataset.
+        
+        Returns:
+            List[str]: List of dataset column names
+            
+        Example:
+            >>> dataset = Dataset(flight_df)
+            >>> dataset.get_column_names()
+            ['ECTRL ID', 'Origin', 'Destination', 'Aircraft Type']
+        """
         return list(self.data.columns)
 
 class DatasetCollection:
@@ -4370,6 +4537,20 @@ def traffixgen_apply_filters(filters_dict):
                 
                 # Convert GUI time format (HH:MM:SS) to seconds for comparison
                 def time_to_seconds(time_str):
+                    """
+                    Convert time string from GUI format to total seconds.
+                    
+                    Args:
+                        time_str (str): Time in "HH:MM:SS" format from GUI input
+                        
+                    Returns:
+                        int: Total seconds since midnight for time comparison
+                        
+                    Note:
+                        - Handles GUI time picker format specifically
+                        - Used for filtering EUROCONTROL time data
+                        - Returns 0 for invalid input formats
+                    """
                     if isinstance(time_str, str) and ':' in time_str:
                         parts = time_str.split(':')
                         if len(parts) >= 3:
@@ -4384,6 +4565,20 @@ def traffixgen_apply_filters(filters_dict):
                     original_points = len(_dataset_collection.flights_points.data)
                     
                     def extract_time_seconds(time_str):
+                        """
+                        Extract time component from EUROCONTROL datetime strings.
+                        
+                        Args:
+                            time_str (str): Datetime or time string from EUROCONTROL data
+                            
+                        Returns:
+                            int: Time component in seconds since midnight
+                            
+                        Note:
+                            - Handles both full datetime and time-only formats
+                            - Used for time-based filtering of flight trajectory data
+                            - Extracts time portion from complex datetime strings
+                        """
                         if isinstance(time_str, str):
                             # Handle full datetime format like "01-03-2015 05:55:00"
                             if ' ' in time_str and ':' in time_str:
