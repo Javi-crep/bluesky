@@ -3902,9 +3902,59 @@ def SATG_GC_CONF(hsep_nm: float=5.0, vsep_ft: int=1000):
 
 @command
 def SATG_GC_TYPES(*types):
-    """SATG_GC_TYPES [TYPE1] [TYPE2] ...
+    """
+    Configure aircraft types for Geometric Conflict scenario generation.
+    
+    SATG_GC_TYPES [TYPE1] [TYPE2] ...
     Set the candidate aircraft types used for CPA scenario generation.
     Without arguments, resets to the default list.
+    
+    This command defines the pool of aircraft types available for selection
+    during geometric conflict scenario generation, enabling realistic aircraft
+    performance characteristics and operational diversity in training scenarios.
+    The aircraft type selection affects trajectory calculations, performance
+    parameters, and visual representation in conflict scenarios.
+    
+    Aircraft type configuration influences:
+    - Flight performance characteristics (climb rates, speeds, maneuverability)
+    - Realistic aircraft mix for training scenario authenticity
+    - Wake turbulence categories for separation requirement modeling
+    - Visual identification training with diverse aircraft silhouettes
+    - Operational realism matching real-world traffic compositions
+    - Statistical analysis of conflict resolution performance by aircraft type
+    
+    The system maintains a curated list of common commercial aircraft types
+    with verified performance characteristics suitable for air traffic control
+    training scenarios. Custom aircraft types can be added if supported by
+    the BlueSky aircraft performance database.
+    
+    Args:
+        *types: Variable arguments containing aircraft type designators
+               (e.g., "A320", "B738", "A350", "B78X"). Aircraft codes should
+               follow ICAO aircraft type designator standards. Multiple types
+               can be specified separated by spaces or commas.
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration, (False, "") on error
+    
+    Examples:
+        # Set common European aircraft types
+        SATG_GC_TYPES A320 B738 A350 B77W
+        
+        # Set mixed fleet with regional and wide-body aircraft  
+        SATG_GC_TYPES E190 A320 A330 B747 B78X
+        
+        # Reset to default aircraft type selection
+        SATG_GC_TYPES
+        
+        # Single aircraft type for specialized training
+        SATG_GC_TYPES A320
+    
+    Note:
+        Aircraft types must be supported by BlueSky's aircraft performance
+        database for proper scenario execution. The default list includes
+        verified aircraft types commonly used in European airspace for
+        comprehensive air traffic control training coverage.
     """
     cleaned: List[str] = []
     for tok in types:
@@ -3932,13 +3982,64 @@ def SATG_GC_TYPES(*types):
 @command
 def SATG_GC_RANGE(cas1: str=None, cas2: str=None, fl1: str=None, fl2: str=None,
                   brg1: str=None, angle: str=None):
-    """Configure sampling ranges for geometric conflicts.
+    """
+    Configure sampling ranges for geometric conflict scenario parameters.
+    
+    Configure sampling ranges for geometric conflicts.
 
     Parameters mirror the SATG_GC_CRE inputs:
       cas1/cas2 -> CAS range [kt] for aircraft 1/2
       fl1/fl2   -> Flight level range for aircraft 1/2
       brg1      -> Initial bearing range for aircraft 1 (deg)
       angle     -> CPA angle range (0=head-on, 180=overtake)
+    
+    This command sets the statistical sampling ranges used for randomizing
+    aircraft parameters in geometric conflict scenarios, enabling diverse
+    training scenarios with realistic operational parameter variations.
+    The ranges define the bounds for random parameter generation, ensuring
+    scenarios remain within operationally realistic constraints while
+    providing sufficient diversity for comprehensive training coverage.
+    
+    Parameter range configuration enables:
+    - Calibrated airspeed variations matching realistic cruise performance
+    - Flight level distributions representative of actual traffic patterns
+    - Initial bearing randomization for diverse approach geometries
+    - Conflict angle variations covering head-on, crossing, and overtaking scenarios
+    - Statistical scenario generation with controlled parameter bounds
+    - Reproducible training scenarios with consistent parameter distributions
+    
+    Sampling ranges support both fixed values and intervals:
+    - Single values: "350" for fixed parameters
+    - Ranges: "320-450" for uniform distribution between bounds
+    - Flight levels: Specified as flight level numbers (e.g., "350" = FL350)
+    - Angles: Specified in degrees with 0° = head-on, 180° = overtaking
+    
+    Args:
+        cas1 (str, optional): CAS range for aircraft 1 in knots (e.g., "250-450")
+        cas2 (str, optional): CAS range for aircraft 2 in knots (e.g., "280-420")
+        fl1 (str, optional): Flight level range for aircraft 1 (e.g., "300-400")
+        fl2 (str, optional): Flight level range for aircraft 2 (e.g., "310-390")
+        brg1 (str, optional): Initial bearing range for aircraft 1 in degrees (e.g., "0-360")
+        angle (str, optional): CPA angle range in degrees (e.g., "30-150")
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful configuration, (False, "") on error
+    
+    Examples:
+        # Configure realistic cruise speed and altitude ranges
+        SATG_GC_RANGE cas1="320-450" cas2="300-420" fl1="300-400" fl2="310-390"
+        
+        # Set head-on conflict parameters
+        SATG_GC_RANGE angle="0-30" brg1="0-360"
+        
+        # Configure crossing conflict scenarios
+        SATG_GC_RANGE angle="60-120" cas1="350" cas2="380"
+    
+    Note:
+        Parameter ranges should reflect realistic operational constraints
+        for the intended training airspace and aircraft types. The system
+        uses uniform distributions within specified ranges for scenario
+        generation, ensuring balanced coverage of the parameter space.
     """
     r = STATE.gc_ranges
     if cas1 is not None:
@@ -4210,8 +4311,57 @@ def SATG_GC_CRE(*argv):
 
 @command
 def SATG_GC_RUN(name: str):
-    """SATG_GC_RUN name
+    """
+    Load and execute geometric conflict scenario for training.
+    
+    SATG_GC_RUN name
     Load the specified geometric-conflict scenario (paused; ASAS ON at 0 only in file header).
+    
+    This command loads previously generated geometric conflict scenarios into
+    the BlueSky simulator for immediate execution, providing streamlined access
+    to training scenarios with proper initialization for conflict detection and
+    resolution training. The scenario starts paused to allow instructor setup
+    and student briefing before conflict execution begins.
+    
+    Scenario loading process includes:
+    1. Scenario file validation and path resolution
+    2. BlueSky scenario loading with proper initialization
+    3. ASAS system preparation for conflict detection
+    4. Simulation state setup with paused start for training control
+    5. Conflict timing synchronization for precise training execution
+    6. Ready-to-execute state for immediate training session start
+    
+    Training scenario features:
+    - Paused start for instructor control and student preparation
+    - ASAS system enabled for conflict detection and alerting
+    - Precise conflict timing for predictable training outcomes
+    - Multiple conflict capability through scenario composition
+    - Realistic aircraft trajectories with operational constraints
+    - Integrated conflict resolution challenge progression
+    
+    Args:
+        name (str): Scenario name (without .scn extension) to load from the
+                   configured scenarios directory. The scenario must have been
+                   previously generated using SATG_GC_CRE command.
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful loading, (False, "") on file error
+    
+    Examples:
+        # Load head-on conflict training scenario
+        SATG_GC_RUN head_on_training
+        
+        # Load complex multi-conflict scenario
+        SATG_GC_RUN advanced_conflicts
+        
+        # Load specific conflict geometry scenario
+        SATG_GC_RUN crossing_60deg_FL350
+    
+    Note:
+        The scenario file must exist in the configured scenarios directory.
+        Additional conflicts can be appended to the same scenario using
+        SATG_GC_CRE with the same scenario name for complex training sequences.
+        Use standard BlueSky commands (OP, HOLD) to control simulation execution.
     """
     nm = name.strip()
     if "=" in nm and nm.lower().startswith("name="): nm = nm.split("=",1)[1].strip()
@@ -4225,8 +4375,52 @@ def SATG_GC_RUN(name: str):
 
 @command
 def SATG_GC_DEL():
-    """SATG_GC_DEL
+    """
+    Delete all aircraft created by geometric conflict generation.
+    
+    SATG_GC_DEL
     Delete all aircraft created via SATG_GC_CRE during this BlueSky session.
+    
+    This command provides clean-up functionality for geometric conflict scenarios
+    by removing all aircraft that were created during the current session through
+    SATG geometric conflict generation commands. This enables rapid scenario
+    reset and preparation for new conflict scenarios without full simulation
+    restart, improving training session efficiency and workflow.
+    
+    The deletion process includes:
+    1. Identification of all SATG-generated aircraft from session records
+    2. Individual aircraft deletion commands sent to BlueSky simulator
+    3. Session state cleanup to reset aircraft tracking records
+    4. Confirmation feedback with list of deleted aircraft identifiers
+    5. Preparation for new scenario generation without aircraft ID conflicts
+    6. Memory cleanup for optimal simulation performance
+    
+    Cleanup benefits for training sessions:
+    - Rapid scenario reset without full simulation restart
+    - Clean slate preparation for new conflict scenarios
+    - Prevention of aircraft ID conflicts in subsequent scenarios
+    - Memory optimization for extended training sessions
+    - Clear visual airspace for new scenario setup
+    - Streamlined workflow for iterative training scenario testing
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful deletion, (False, "") if no aircraft
+    
+    Examples:
+        # Clean up after conflict resolution training
+        SATG_GC_DEL
+        
+        # Prepare for new scenario after training session
+        SATG_GC_DEL
+        
+        # Reset airspace between different conflict types
+        SATG_GC_DEL
+    
+    Note:
+        Only aircraft created through SATG_GC_CRE commands are deleted.
+        Other aircraft in the simulation remain unaffected. The command
+        maintains session records to track SATG-generated aircraft for
+        accurate cleanup without affecting manually created aircraft.
     """
     if not STATE.gc_last_acids:
         _echo_err("No geometric-conflict aircraft recorded to delete."); return False, ""
@@ -4374,7 +4568,10 @@ def _write_gc_rel_scn(out_path: str, *,
 
 @command
 def SATG_RC_CIRCLE(*argv):
-    """SATG_RC_CIRCLE name n types center_lat center_lon radius_nm [mode] [altmode] [tcpa] [angle] [dh] [seed] [fl] [cas] [actypes] [overwrite] [area_type] [polygon_name]
+    """
+    Generate randomized conflicts within circular or polygonal airspace areas.
+    
+    SATG_RC_CIRCLE name n types center_lat center_lon radius_nm [mode] [altmode] [tcpa] [angle] [dh] [seed] [fl] [cas] [actypes] [overwrite] [area_type] [polygon_name]
     Append n randomized 2-AC conflicts with CPA uniformly inside a circle or polygon.
     - Args can be positional (in that order) or key=value (mix ok).
     - All aircraft spawn at t=0; CPA time equals tcpa (no tspan).
@@ -4390,6 +4587,75 @@ def SATG_RC_CIRCLE(*argv):
         - circle: Use center_lat, center_lon, radius_nm for circular area
         - polygon: Use polygon_name for polygon area (requires geopandas)
     polygon_name: Name of polygon when area_type=polygon
+    
+    This command generates multiple randomized geometric conflict scenarios
+    distributed within specified airspace boundaries, creating diverse training
+    scenarios with realistic spatial distribution patterns. The random conflict
+    placement enables comprehensive airspace coverage for training controllers
+    on varied conflict geometries and locations within their operational area.
+    
+    The randomized conflict generation process includes:
+    1. Spatial distribution calculation within circular or polygonal boundaries
+    2. Conflict type randomization (head-on, crossing, overtaking scenarios)
+    3. CPA timing synchronization for realistic conflict sequence presentation
+    4. Aircraft parameter sampling from configured ranges for diversity
+    5. Altitude mode selection for vertical conflict dimension training
+    6. Reproducible scenario generation with optional seed control
+    
+    Spatial distribution features:
+    - Uniform random CPA placement within defined airspace boundaries
+    - Circular areas: Center point and radius specification in nautical miles
+    - Polygonal areas: Named polygon boundaries for irregular airspace shapes
+    - Geographic coordinate system integration for real-world airspace modeling
+    - Boundary compliance validation for all generated conflicts
+    - Scalable area coverage from approach sectors to terminal control areas
+    
+    Conflict diversity parameters:
+    - Multiple conflict types in single scenario for comprehensive training
+    - Randomized aircraft performance parameters within operational bounds
+    - Altitude crossing patterns for vertical separation training challenges
+    - Mixed conflict generation modes combining absolute and relative positioning
+    - Aircraft type diversity from configured type pools for operational realism
+    
+    Args:
+        *argv: Variable arguments supporting positional or key=value format:
+               - name (str): Scenario name for file generation
+               - n (int): Number of conflict pairs to generate
+               - types (str): CSV conflict types (headon,cross,overtake)
+               - center_lat (float): Center latitude for circular area (degrees)
+               - center_lon (float): Center longitude for circular area (degrees)  
+               - radius_nm (float): Radius in nautical miles for circular area
+               - mode (str, optional): Generation mode (abs|rel|mix, default: abs)
+               - altmode (str, optional): Altitude mode (level|altcross|mix)
+               - tcpa (float, optional): Time to CPA in seconds
+               - angle (float, optional): Conflict angle constraint in degrees
+               - dh (str, optional): Altitude offset range in feet (e.g., "0:2000")
+               - seed (int, optional): Random seed for reproducible generation
+               - fl (str, optional): Flight level range override
+               - cas (str, optional): CAS range override in knots
+               - actypes (str, optional): Aircraft type list override
+               - overwrite (int, optional): Overwrite existing scenario flag
+               - area_type (str, optional): Area type (circle|polygon, default: circle)
+               - polygon_name (str, optional): Named polygon for area_type=polygon
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful generation, (False, "") on error
+    
+    Examples:
+        # Generate 5 mixed conflicts in circular area around Amsterdam
+        SATG_RC_CIRCLE training_ams 5 headon,cross,overtake 52.3 4.8 25
+        
+        # Create reproducible scenario with specific parameters  
+        SATG_RC_CIRCLE seed_test 3 cross 51.5 0.1 30 mode=abs altmode=level seed=12345
+        
+        # Generate conflicts within named polygon boundary
+        SATG_RC_CIRCLE sector_conflicts 8 headon,cross center_lat=50.0 center_lon=3.0 area_type=polygon polygon_name=BRUSSELS_TMA
+    
+    Note:
+        Circular areas require center coordinates and radius. Polygon areas
+        require geopandas installation and named polygon definitions. All
+        generated conflicts maintain operational realism within specified
+        airspace boundaries for effective controller training scenarios.
     """
     # parse argv
     order = ["name","n","types","center_lat","center_lon","radius_nm",
