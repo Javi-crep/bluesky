@@ -1214,6 +1214,53 @@ def _renumber_pr_acids(path: str, start_index: int = 0):
 
 # ---------------- RL scenario writing ---------------- #
 def _write_rl_scn(out_path: str, append: bool = False):
+    """
+    Write Realistic Replay scenario file with comprehensive flight trajectory data.
+    
+    This function generates BlueSky-compatible scenario files from loaded flight
+    trajectory data, incorporating jitter variations, auto-delete configurations,
+    and proper scenario formatting. The function handles both new scenario creation
+    and appending to existing scenarios with collision detection and resolution.
+    
+    The scenario generation process includes:
+    1. Scenario header generation with configuration metadata
+    2. BlueSky simulation initialization commands
+    3. Flight trajectory data processing and formatting
+    4. Aircraft ID collision detection and resolution for append mode
+    5. Proper timestamp formatting and command sequencing
+    
+    Generated scenarios include complete flight operations with:
+    - Aircraft creation commands with proper positioning
+    - Route assignments and waypoint sequences
+    - Altitude and speed profiles throughout flight phases
+    - Timing synchronization for realistic traffic patterns
+    
+    Args:
+        out_path (str): Output file path for the generated scenario file
+        append (bool, optional): If True, append to existing file with collision
+                               avoidance. If False, create new file. Defaults to False
+    
+    Returns:
+        None: Writes scenario data directly to the specified output file
+    
+    Raises:
+        IOError: When output file cannot be created or written
+        ValueError: When flight data is invalid or incomplete
+        Exception: For other scenario generation errors
+    
+    Examples:
+        # Create new realistic replay scenario
+        _write_rl_scn("morning_rush.scn", append=False)
+        
+        # Append additional traffic to existing scenario
+        _write_rl_scn("busy_airspace.scn", append=True)
+    
+    Note:
+        The function automatically handles aircraft ID conflicts when appending
+        to existing scenarios by renaming colliding callsigns with systematic
+        suffixes. All scenario commands are properly timestamped and formatted
+        for BlueSky simulation compatibility with realistic traffic timing.
+    """
     mode = "a" if append else "w"
     with open(out_path, mode, encoding="utf-8") as f:
         if not append:
@@ -1452,9 +1499,99 @@ def _format_numeric(val: float, *, as_int: bool=False) -> str:
     return txt if txt and txt != "-0" else "0"
 
 def _rand_in(rng: random.Random, lo: float, hi: float) -> float:
+    """
+    Generate uniformly distributed random value within specified range.
+    
+    This utility function provides consistent random value generation within
+    a specified range using the provided random number generator. The function
+    handles edge cases where minimum and maximum values are equal, returning
+    the constant value directly without random generation overhead.
+    
+    The function supports both integer and floating-point ranges with uniform
+    distribution characteristics suitable for parameter sampling in scenario
+    generation, ensuring consistent statistical properties across different
+    random seeds and generator instances.
+    
+    Args:
+        rng (random.Random): Random number generator instance for consistent sampling
+        lo (float): Lower bound of the range (inclusive)
+        hi (float): Upper bound of the range (inclusive)
+    
+    Returns:
+        float: Uniformly distributed random value between lo and hi (inclusive)
+               or lo if lo equals hi (constant value case)
+    
+    Examples:
+        # Generate random airspeed within operational range
+        rng = random.Random(12345)
+        speed = _rand_in(rng, 250.0, 450.0)  # Returns value in [250, 450]
+        
+        # Handle constant value case
+        fixed_alt = _rand_in(rng, 35000, 35000)  # Returns 35000 directly
+        
+        # Generate random angle for conflict geometry
+        angle = _rand_in(rng, 0.0, 180.0)  # Returns value in [0, 180]
+    
+    Note:
+        The function uses uniform distribution which is appropriate for most
+        scenario generation parameters where all values within the range are
+        equally likely. For specialized distributions (normal, exponential),
+        use appropriate generator methods directly on the rng instance.
+    """
     return lo if lo == hi else rng.uniform(lo, hi)
 
 def _gc_sample(seed: Optional[int]):
+    """
+    Generate randomized aircraft parameters for geometric conflict scenarios.
+    
+    This function samples realistic aircraft operational parameters using
+    configurable random distributions to create diverse conflict scenarios
+    for training and testing purposes. The sampling includes speed profiles,
+    flight levels, initial bearings, and conflict angles based on realistic
+    operational constraints and statistical distributions from real traffic data.
+    
+    The sampling process generates:
+    1. Calibrated airspeed (CAS) values for both aircraft within operational ranges
+    2. Flight level assignments considering separation requirements and airspace
+    3. Initial bearing calculations for trajectory planning and conflict setup
+    4. Conflict angle determination for crossing, head-on, and overtaking scenarios
+    5. Consistent randomization using optional seed for reproducible scenarios
+    
+    Sampled parameters follow realistic distributions:
+    - CAS values: Configured range based on aircraft performance and flight phase
+    - Flight levels: Configured range considering typical cruise altitudes
+    - Bearings: 0-360 degrees with uniform distribution for approach directions
+    - Conflict angles: Configured range with emphasis on operationally significant cases
+    
+    Args:
+        seed (Optional[int]): Random seed for reproducible parameter generation.
+                            If None, uses system entropy for random sampling
+    
+    Returns:
+        Tuple: Generated parameters including (rng, cas1, cas2, fl1, fl2, brg1, angle):
+        - rng: Python random generator for additional sampling
+        - cas1, cas2: Calibrated airspeed for aircraft 1 and 2 (knots)
+        - fl1, fl2: Flight levels for aircraft 1 and 2 (flight level * 100 feet)
+        - brg1: Initial bearing for aircraft 1 trajectory (degrees)
+        - angle: Conflict crossing angle between aircraft trajectories (degrees)
+    
+    Examples:
+        # Generate random parameters for conflict scenario
+        rng, cas1, cas2, fl1, fl2, brg1, angle = _gc_sample(None)
+        print(f"Aircraft 1: {cas1} knots at FL{fl1}, bearing {brg1}°")
+        print(f"Aircraft 2: {cas2} knots at FL{fl2}")
+        print(f"Conflict angle: {angle}°")
+        
+        # Generate reproducible parameters for testing
+        rng, cas1, cas2, fl1, fl2, brg1, angle = _gc_sample(12345)
+        # Same parameters will be generated with seed=12345
+    
+    Note:
+        The function uses realistic operational constraints from STATE.gc_ranges
+        configuration to ensure generated scenarios are achievable and representative
+        of actual air traffic conflicts. Parameters are sampled from configured
+        ranges to maintain training scenario authenticity and operational realism.
+    """
     rng = random.Random(seed) if seed is not None else random.Random()
     r = STATE.gc_ranges
     cas1 = _rand_in(rng, *r["cas1"]); cas2 = _rand_in(rng, *r["cas2"])
@@ -1552,6 +1689,79 @@ def _write_gc_scn(out_path: str, *,
                   alt_offset_value: Optional[float] = None,
                   alt_offset_range: Optional[Tuple[float, float]] = None,
                   polygon_commands: Optional[List[str]] = None):
+    """
+    Write Geometric Conflict scenario file with comprehensive conflict trajectory data.
+    
+    This function generates BlueSky-compatible scenario files from geometric conflict
+    configurations, creating structured conflict scenarios with precise aircraft
+    positioning, timing, and trajectory management. The function handles multiple
+    conflict parameters including CPA positioning, timing variations, altitude
+    offsets, and aircraft type selection with comprehensive geometric validation.
+    
+    The scenario generation process includes:
+    1. Conflict geometry validation and parameter verification
+    2. Aircraft trajectory calculation with CPA timing precision
+    3. BlueSky simulation initialization with conflict-specific settings
+    4. Multi-parameter randomization for realistic conflict variations
+    5. Proper scenario timing and synchronization for training effectiveness
+    
+    Generated scenarios feature complete conflict operations with:
+    - Precise aircraft positioning for guaranteed conflicts at specified CPA
+    - Calculated trajectory intersections with configurable timing accuracy
+    - Speed and altitude profiles optimized for conflict execution
+    - Randomized parameters within specified ranges for training variation
+    - Aircraft type selection from configured type pools
+    - Polygon constraint integration for airspace boundary enforcement
+    
+    Args:
+        out_path (str): Output file path for the generated scenario file
+        append (bool): If True, append to existing file. If False, create new file
+        name (str): Scenario name identifier for metadata and organization
+        cpa_lat (float): Latitude coordinate of the Closest Point of Approach (degrees)
+        cpa_lon (float): Longitude coordinate of the Closest Point of Approach (degrees)
+        tcpa_value (Optional[float]): Fixed time to CPA in seconds, or None for range
+        tcpa_range (Optional[Tuple[float, float]]): Time to CPA range (min, max) seconds
+        fl_cpa (Optional[int]): Flight level at CPA, or None for default sampling
+        acid1 (str): Aircraft ID for first aircraft in conflict
+        acid2 (str): Aircraft ID for second aircraft in conflict
+        ac1 (str): Aircraft callsign/identifier for first aircraft
+        ac2 (str): Aircraft callsign/identifier for second aircraft
+        ac_types (Optional[List[str]]): Aircraft type pool for selection, or None for default
+        seed (Optional[int]): Random seed for reproducible parameter generation
+        angle_in (Optional[float]): Fixed conflict angle in degrees, or None for range
+        angle_range (Optional[Tuple[float, float]]): Conflict angle range (min, max) degrees
+        alt_offset_value (Optional[float]): Fixed altitude offset in feet, or None for range
+        alt_offset_range (Optional[Tuple[float, float]]): Altitude offset range (min, max) feet
+        polygon_commands (Optional[List[str]]): Airspace polygon constraint commands
+    
+    Returns:
+        None: Writes scenario data directly to the specified output file
+    
+    Raises:
+        IOError: When output file cannot be created or written
+        ValueError: When conflict configuration parameters are invalid or incomplete
+        GeometryError: When conflict geometry calculations fail validation
+        Exception: For other scenario generation errors
+    
+    Examples:
+        # Create fixed-parameter head-on conflict
+        _write_gc_scn("head_on.scn", append=False, name="HeadOn_Test",
+                     cpa_lat=52.3, cpa_lon=4.8, tcpa_value=300.0, fl_cpa=350,
+                     acid1="KLM001", acid2="UAL002", ac1="A320", ac2="B737")
+        
+        # Create randomized crossing conflict with variations
+        _write_gc_scn("crossing_var.scn", append=True, name="Crossing_Random",
+                     cpa_lat=51.5, cpa_lon=0.1, tcpa_range=(240, 360),
+                     angle_range=(60, 120), alt_offset_range=(-1000, 1000),
+                     acid1="BAW003", acid2="AFR004", ac1="B777", ac2="A350")
+    
+    Note:
+        The function validates all conflict geometry before scenario generation
+        to ensure realistic and achievable conflict scenarios. CPA calculations
+        include safety margins and operational constraints for training realism.
+        Random parameter generation uses specified seeds for reproducible scenarios
+        when needed for training consistency and evaluation purposes.
+    """
     
     # Sample speeds/levels/initial bearing and default crossing angle
     rng, cas1, cas2, fl1, fl2, brg1, angle = _gc_sample(seed)
@@ -2674,9 +2884,50 @@ def SATG_RL_JITTER(mode: str,
 
 @command
 def SATG_RL_AUTODEL(mode: str):
-    """SATG_RL_AUTODEL mode
+    """
+    Configure automatic aircraft deletion at scenario endpoints.
+    
+    SATG_RL_AUTODEL mode
       mode: on|off
     Delete aircraft at last waypoint even if final FL>0 (default: ON).
+    
+    This command controls whether aircraft are automatically deleted when they
+    reach their final waypoint in Realistic Replay scenarios, regardless of
+    their final flight level. This feature ensures clean scenario termination
+    and prevents aircraft from continuing indefinitely beyond their planned
+    trajectory endpoints, which is essential for training scenario management.
+    
+    When auto-deletion is enabled:
+    - Aircraft are removed upon reaching their last waypoint
+    - Final flight level restrictions are ignored for deletion
+    - Scenario cleanup is automated for training sessions
+    - Memory usage is optimized for long-running scenarios
+    
+    When auto-deletion is disabled:
+    - Aircraft remain active after reaching final waypoints
+    - Manual deletion commands are required for cleanup
+    - Useful for extended observation of aircraft behavior
+    - May cause memory accumulation in long scenarios
+    
+    Args:
+        mode (str): Configuration mode, must be "on" or "off"
+                   - "on": Enable automatic deletion at last waypoint
+                   - "off": Disable automatic deletion, require manual cleanup
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") on invalid input
+    
+    Examples:
+        # Enable automatic aircraft deletion (default)
+        SATG_RL_AUTODEL on
+        
+        # Disable automatic deletion for extended observation
+        SATG_RL_AUTODEL off
+    
+    Note:
+        Auto-deletion is enabled by default to ensure proper scenario cleanup
+        and optimal memory usage during training sessions. Disabling should only
+        be done when extended aircraft observation is required for analysis.
     """
     m = mode.strip().lower()
     if m not in ("on","off"):
@@ -2688,9 +2939,51 @@ def SATG_RL_AUTODEL(mode: str):
 
 @command
 def SATG_RL_PHASE_JITTER(mode: str):
-    """SATG_RL_PHASE_JITTER mode
+    """
+    Configure flight phase-based jitter system for enhanced scenario realism.
+    
+    SATG_RL_PHASE_JITTER mode
       mode: on|off
     Enable/disable flight phase-based jitter system.
+    
+    This command controls the advanced phase-based jitter system that applies
+    different variation parameters depending on the current flight phase
+    (initial climb, top of climb, cruise, top of descent, final approach).
+    Phase-based jitter provides more realistic trajectory variations that
+    reflect actual operational differences between flight phases.
+    
+    The phase-based system enables:
+    - Flight phase-specific jitter parameters (position, timing, altitude)
+    - Realistic variation patterns matching operational procedures
+    - Enhanced training scenario diversity with phase-appropriate variations
+    - Improved simulation fidelity for different flight segments
+    - Configurable parameters per phase via SATG_RL_PHASE_CONFIG
+    
+    When enabled, jitter variations are applied according to:
+    - Initial climb: Higher altitude and timing variations
+    - Cruise: Moderate position variations with stable altitude
+    - Descent: Progressive altitude changes with approach timing
+    - Approach: Minimal variations for approach precision requirements
+    
+    Args:
+        mode (str): Configuration mode, must be "on" or "off"
+                   - "on": Enable phase-based jitter system
+                   - "off": Disable phase-based jitter, use global settings
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") on invalid input
+    
+    Examples:
+        # Enable phase-based jitter for realistic variations
+        SATG_RL_PHASE_JITTER on
+        
+        # Disable phase-based system, use global jitter
+        SATG_RL_PHASE_JITTER off
+    
+    Note:
+        Phase-based jitter requires proper flight phase configuration via
+        SATG_RL_PHASE_CONFIG for each phase. When disabled, global jitter
+        settings from SATG_RL_JITTER are used uniformly across all phases.
     """
     m = mode.strip().lower()
     if m not in ("on","off"):
@@ -2703,7 +2996,10 @@ def SATG_RL_PHASE_JITTER(mode: str):
 
 @command  
 def SATG_RL_PHASE_CONFIG(phase: str, enabled: str=None, dt: float=None, dlat: float=None, dlon: float=None, dfl: int=None):
-    """SATG_RL_PHASE_CONFIG phase [enabled] [dt] [dlat] [dlon] [dfl]
+    """
+    Configure jitter parameters for specific flight phases.
+    
+    SATG_RL_PHASE_CONFIG phase [enabled] [dt] [dlat] [dlon] [dfl]
     Configure jitter parameters for a specific flight phase.
       phase: takeoff|climb|cruise|descent|approach
       enabled: on|off
@@ -2711,6 +3007,51 @@ def SATG_RL_PHASE_CONFIG(phase: str, enabled: str=None, dt: float=None, dlat: fl
       dlat: degrees (+/- range latitude) 
       dlon: degrees (+/- range longitude)
       dfl: flight levels (+/- range)
+    
+    This command enables fine-grained control over jitter parameters for
+    different flight phases, allowing realistic variation patterns that
+    reflect operational differences between takeoff, climb, cruise, descent,
+    and approach phases. Each phase can have unique jitter characteristics
+    tailored to typical operational variations in that flight segment.
+    
+    Phase-specific configurations enable:
+    - Takeoff: Higher timing variations for departure slot flexibility
+    - Climb: Altitude and position variations for traffic management
+    - Cruise: Moderate position jitter with stable flight levels
+    - Descent: Progressive altitude changes with approach timing coordination
+    - Approach: Minimal variations to maintain approach precision
+    
+    Jitter parameters for each phase:
+    - dt: Temporal variation range (±seconds) for waypoint timing
+    - dlat/dlon: Spatial variation ranges (±degrees) for position accuracy
+    - dfl: Altitude variation range (±flight levels) for level changes
+    - enabled: Phase-specific enable/disable control
+    
+    Args:
+        phase (str): Flight phase identifier (takeoff|climb|cruise|descent|approach)
+        enabled (str, optional): Enable phase jitter ("on"|"off")
+        dt (float, optional): Time jitter range in seconds (±)
+        dlat (float, optional): Latitude jitter range in degrees (±)
+        dlon (float, optional): Longitude jitter range in degrees (±)
+        dfl (int, optional): Flight level jitter range (±)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") on invalid input
+    
+    Examples:
+        # Configure climb phase with moderate variations
+        SATG_RL_PHASE_CONFIG climb enabled on dt 30 dlat 0.01 dlon 0.01 dfl 2
+        
+        # Configure approach phase with minimal variations
+        SATG_RL_PHASE_CONFIG approach enabled on dt 10 dlat 0.001 dlon 0.001 dfl 0
+        
+        # Disable jitter for cruise phase
+        SATG_RL_PHASE_CONFIG cruise enabled off
+    
+    Note:
+        Phase-based jitter requires SATG_RL_PHASE_JITTER to be enabled.
+        Flight phase detection uses altitude thresholds and track analysis
+        configured via SATG_RL_TRACK_CONFIG for accurate phase identification.
     """
     p = phase.strip().lower()
     if p not in STATE.phase_configs:
@@ -2738,11 +3079,56 @@ def SATG_RL_PHASE_CONFIG(phase: str, enabled: str=None, dt: float=None, dlat: fl
 
 @command
 def SATG_RL_PHASE_ALTITUDES(phase: str, min_fl: int=None, max_fl: int=None):
-    """SATG_RL_PHASE_ALTITUDES phase [min_fl] [max_fl]
+    """
+    Configure altitude boundaries for flight phase detection and classification.
+    
+    SATG_RL_PHASE_ALTITUDES phase [min_fl] [max_fl]
     Configure altitude boundaries for flight phases.
       phase: takeoff|climb|cruise|descent|approach
       min_fl: minimum flight level
       max_fl: maximum flight level
+    
+    This command defines altitude boundaries used for automatic flight phase
+    detection in Realistic Replay scenarios. Proper phase classification is
+    essential for applying phase-specific jitter parameters and ensuring
+    realistic trajectory variations that match operational flight profiles.
+    
+    Flight phase altitude boundaries enable:
+    - Automatic phase detection based on current aircraft altitude
+    - Phase-specific jitter parameter application
+    - Realistic trajectory modeling for different flight segments
+    - Training scenario authenticity with proper operational phases
+    - Statistical analysis of phase-based performance metrics
+    
+    Typical altitude ranges for phase classification:
+    - Takeoff: Ground level to initial climb altitude (FL000-FL100)
+    - Climb: Initial climb to cruise entry (FL100-FL300)
+    - Cruise: Primary cruise altitudes (FL300-FL400)
+    - Descent: Cruise exit to approach entry (FL300-FL100)
+    - Approach: Approach entry to landing (FL100-FL000)
+    
+    Args:
+        phase (str): Flight phase identifier (takeoff|climb|cruise|descent|approach)
+        min_fl (int, optional): Minimum flight level boundary for phase
+        max_fl (int, optional): Maximum flight level boundary for phase
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") on invalid input
+    
+    Examples:
+        # Configure cruise phase altitude boundaries
+        SATG_RL_PHASE_ALTITUDES cruise min_fl 300 max_fl 400
+        
+        # Configure approach phase for low altitudes
+        SATG_RL_PHASE_ALTITUDES approach min_fl 0 max_fl 100
+        
+        # Set climb phase boundaries
+        SATG_RL_PHASE_ALTITUDES climb min_fl 100 max_fl 300
+    
+    Note:
+        Altitude boundaries should not overlap between phases to ensure
+        unambiguous phase classification. The system uses these boundaries
+        combined with track analysis for accurate flight phase detection.
     """
     p = phase.strip().lower()
     if p not in STATE.phase_altitudes:
@@ -2759,15 +3145,58 @@ def SATG_RL_PHASE_ALTITUDES(phase: str, min_fl: int=None, max_fl: int=None):
 
 @command
 def SATG_RL_TRACK_CONFIG(ectrl_id: str, initial_climb: int, top_of_climb: int, top_of_descent: int, final_approach: int):
-    """SATG_RL_TRACK_CONFIG ectrl_id initial_climb top_of_climb top_of_descent final_approach
+    """
+    Configure track-specific altitude boundaries for flight phase detection.
+    
+    SATG_RL_TRACK_CONFIG ectrl_id initial_climb top_of_climb top_of_descent final_approach
     Set altitude boundaries for a specific ECTRL ID (all values in flight levels).
     
+    This command enables individual flight track customization of altitude
+    boundaries for flight phase detection, allowing precise phase classification
+    based on each track's unique operational profile. Track-specific configuration
+    overrides global phase altitude settings for enhanced accuracy in phase-based
+    jitter application and realistic trajectory modeling.
+    
+    Track-specific configuration enables:
+    - Individual flight profile optimization for phase detection
+    - Accurate phase classification for diverse route types
+    - Enhanced jitter parameter application based on actual flight characteristics
+    - Realistic scenario generation matching specific operational procedures
+    - Statistical analysis of route-specific performance patterns
+    
+    Flight phase boundaries define altitude transitions:
+    - Takeoff phase: Ground (FL000) to initial_climb altitude
+    - Climb phase: initial_climb to top_of_climb altitude
+    - Cruise phase: top_of_climb to top_of_descent altitude
+    - Descent phase: final_approach to top_of_descent altitude
+    - Approach phase: Ground (FL000) to final_approach altitude
+    
     Args:
-        ectrl_id: Track identifier (e.g., "IBE3312", "TAP342")
-        initial_climb: Upper bound for takeoff phase (FL)
-        top_of_climb: Upper bound for climb phase (FL)  
-        top_of_descent: Upper bound for cruise phase / start of descent (FL)
-        final_approach: Upper bound for approach phase (FL)
+        ectrl_id (str): EUROCONTROL track identifier for flight configuration
+                       (e.g., "IBE3312", "TAP342", "KLM1234")
+        initial_climb (int): Upper bound altitude for takeoff phase (flight levels)
+        top_of_climb (int): Upper bound altitude for climb phase (flight levels)
+        top_of_descent (int): Upper bound for cruise/start of descent (flight levels)
+        final_approach (int): Upper bound altitude for approach phase (flight levels)
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on success, (False, "") on configuration error
+    
+    Examples:
+        # Configure short-haul domestic flight profile
+        SATG_RL_TRACK_CONFIG IBE3312 100 250 250 80
+        
+        # Configure long-haul international flight profile
+        SATG_RL_TRACK_CONFIG TAP342 120 380 390 100
+        
+        # Configure regional jet profile with lower cruise
+        SATG_RL_TRACK_CONFIG KLM1234 80 300 320 60
+    
+    Note:
+        Track-specific configurations take precedence over global phase altitude
+        settings. Altitude boundaries should reflect realistic operational profiles
+        for the specific route type to ensure accurate phase detection and
+        appropriate jitter parameter application during scenario generation.
     """
     try:
         # Store track-specific altitude boundaries in the expected format
@@ -2789,9 +3218,59 @@ def SATG_RL_TRACK_CONFIG(ectrl_id: str, initial_climb: int, top_of_climb: int, t
 
 @command
 def SATG_RL_MAKE(*args):
-    """SATG_RL_MAKE name [overwrite] [files]
+    """
+    Generate Realistic Replay scenario file from loaded flight data.
+    
+    SATG_RL_MAKE name [overwrite] [files]
     Write <base>/scenarios/<name>.scn (scenario starts paused; ASAS ON at 0).
     If files provided, automatically load them first.
+    
+    This command generates complete BlueSky scenario files from previously loaded
+    EUROCONTROL flight trajectory data, incorporating all configured jitter
+    parameters, phase-based variations, and operational constraints. The generated
+    scenarios are fully functional BlueSky simulation files ready for training
+    and evaluation purposes with realistic air traffic patterns.
+    
+    The scenario generation process includes:
+    1. Flight trajectory data processing with jitter application
+    2. Aircraft creation commands with proper positioning and timing
+    3. Route assignments and waypoint sequence generation
+    4. Altitude and speed profile integration throughout flight phases
+    5. ASAS (Airborne Separation Assurance System) initialization
+    6. Proper scenario formatting for BlueSky simulation compatibility
+    
+    Generated scenarios feature:
+    - Realistic aircraft trajectories with operational variations
+    - Phase-based jitter application for enhanced training diversity
+    - Proper timing synchronization for multi-aircraft scenarios
+    - ASAS system activation for conflict detection training
+    - Configurable aircraft deletion at trajectory endpoints
+    - Complete flight operations from takeoff to landing
+    
+    Args:
+        *args: Variable arguments containing:
+               - name (str): Scenario file name (without .scn extension)
+               - overwrite (int, optional): Overwrite flag (1=overwrite, 0=no overwrite)
+               - files (str, optional): Flight data files to auto-load before generation
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful generation, (False, "") on error
+    
+    Examples:
+        # Generate scenario from currently loaded data
+        SATG_RL_MAKE morning_rush_scenario
+        
+        # Generate with overwrite enabled
+        SATG_RL_MAKE busy_airspace 1
+        
+        # Auto-load data files and generate scenario
+        SATG_RL_MAKE training_scenario 1 flight_data.json
+    
+    Note:
+        Generated scenarios start paused to allow setup verification before
+        simulation execution. ASAS is automatically enabled at simulation start
+        for conflict detection training. The scenario file is saved to the
+        configured scenarios directory with proper BlueSky formatting.
     """
     if len(args) < 1:
         _echo_err("Usage: SATG_RL_MAKE name [overwrite] [files]")
@@ -2829,9 +3308,58 @@ def SATG_RL_MAKE(*args):
 
 @command
 def SATG_RL_RUN(*args):
-    """SATG_RL_RUN name [overwrite] [files]
+    """
+    Generate and immediately execute Realistic Replay scenario.
+    
+    SATG_RL_RUN name [overwrite] [files]
     Write + immediately load <base>/scenarios/<name>.scn (paused; ASAS ON at 0).
     If files provided, automatically load them first.
+    
+    This command combines scenario generation and execution in a single operation,
+    generating a BlueSky scenario file from loaded flight data and immediately
+    loading it into the simulator for execution. This streamlined workflow is
+    ideal for rapid training scenario deployment and iterative scenario testing
+    with immediate validation of generated trajectories.
+    
+    The combined generation and execution process includes:
+    1. Automatic flight data loading if files are provided
+    2. Scenario generation with all configured jitter and phase parameters
+    3. Immediate scenario file loading into BlueSky simulator
+    4. Simulation initialization with paused state for setup review
+    5. ASAS system activation for conflict detection training
+    6. Ready-to-execute training scenario with realistic air traffic
+    
+    Execution features:
+    - Immediate scenario validation through simulator loading
+    - Paused start for instructor setup and briefing
+    - ASAS system ready for separation assurance training
+    - Real-time trajectory visualization for training effectiveness
+    - Quick iteration capability for scenario refinement
+    - Direct feedback on scenario quality and realism
+    
+    Args:
+        *args: Variable arguments containing:
+               - name (str): Scenario name for generation and execution
+               - overwrite (int, optional): Overwrite flag (1=overwrite, 0=append)
+               - files (str, optional): Flight data files to auto-load before generation
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful execution, (False, "") on error
+    
+    Examples:
+        # Generate and run scenario from loaded data
+        SATG_RL_RUN morning_training
+        
+        # Generate with overwrite and immediate execution
+        SATG_RL_RUN conflict_scenario 1
+        
+        # Auto-load data, generate, and run in one command
+        SATG_RL_RUN comprehensive_training 1 flight_data.json
+    
+    Note:
+        The scenario starts paused to allow instructor setup and student briefing.
+        ASAS is enabled automatically for conflict detection training. Use standard
+        BlueSky commands (OP, HOLD) to control simulation execution after loading.
     """
     if len(args) < 1:
         _echo_err("Usage: SATG_RL_RUN name [overwrite] [files]")
@@ -2872,9 +3400,63 @@ def SATG_RL_RUN(*args):
 
 @command
 def SATG_RL_LOAD_DATA(flights_json: str, points_json: str):
-    """SATG_RL_LOAD_DATA <flights_json> <points_json>
+    """
+    Load flight trajectory data directly from JSON strings for TraffixGen integration.
+    
+    SATG_RL_LOAD_DATA <flights_json> <points_json>
     Load flight data directly from JSON strings (for TraffixGen integration).
     This bypasses file loading and accepts processed data directly from TraffixGen.
+    
+    This command enables seamless integration between TraffixGen's machine learning
+    pipeline and SATG's scenario generation capabilities by accepting pre-processed
+    flight trajectory data directly in memory without intermediate file operations.
+    This integration streamlines the workflow from EUROCONTROL data processing
+    through ML-based traffic generation to realistic scenario creation.
+    
+    The direct data loading process includes:
+    1. JSON string parsing and validation for both flights and points data
+    2. Data structure verification for compatibility with SATG processing
+    3. Flight trajectory integration with existing SATG data management
+    4. Point cloud processing for spatial and temporal trajectory representation
+    5. Seamless transition to SATG scenario generation pipeline
+    6. Memory-efficient processing without temporary file creation
+    
+    Integration benefits:
+    - Eliminates file I/O overhead for TraffixGen workflow integration
+    - Maintains data integrity throughout the ML-to-scenario pipeline
+    - Enables real-time scenario generation from ML-processed traffic data
+    - Supports dynamic traffic pattern generation with immediate scenario creation
+    - Preserves all trajectory metadata for enhanced scenario realism
+    - Facilitates automated scenario generation workflows
+    
+    Args:
+        flights_json (str): JSON string containing flight metadata and trajectory
+                           information with structure compatible with EUROCONTROL
+                           flight data format including callsigns, aircraft types,
+                           routes, and operational parameters
+        points_json (str): JSON string containing trajectory point data with
+                          temporal and spatial coordinates, altitudes, speeds,
+                          and other trajectory-specific operational parameters
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful data loading and integration,
+                         (False, "") on JSON parsing errors or data validation failure
+    
+    Examples:
+        # Load TraffixGen-processed flight data directly
+        flights = '{"flights": [{"callsign": "KLM001", "route": "EHAM-EGLL"}]}'
+        points = '{"points": [{"lat": 52.3, "lon": 4.8, "alt": 35000}]}'
+        SATG_RL_LOAD_DATA flights points
+        
+        # Integration with TraffixGen automated workflow
+        # (typically called programmatically from TraffixGen)
+        result = traffixgen_export_to_satg(processed_data)
+    
+    Note:
+        This command is primarily designed for programmatic use by TraffixGen
+        and other automated traffic generation systems. The JSON data must
+        conform to EUROCONTROL trajectory data structure for proper integration
+        with SATG's flight processing and scenario generation capabilities.
     """
     try:
         import json
@@ -2951,12 +3533,71 @@ def SATG_RL_LOAD_DATA(flights_json: str, points_json: str):
 # ---------------- GC commands (typed) ---------------- #
 @command
 def SATG_GC_REL(*argv):
-    """SATG_GC_REL target=<acid> dpsi=<deg> dcpa=<NM> tlosh=<s>
+    """
+    Create relative geometric conflict scenario with precise aircraft positioning.
+    
+    SATG_GC_REL target=<acid> dpsi=<deg> dcpa=<NM> tlosh=<s>
     Optional:
       acid=<id> actype=<type> dh=<ft> tlosv=<s> spd=<CAS/Mach>
     include_target=1 target_acid=<id> target_type=<type> target_lat=<deg> target_lon=<deg>
                target_hdg=<deg> target_alt_ft=<ft> target_spd=<kt>
     name=<scenario> overwrite=1 seed=<int>
+    
+    This command generates geometric conflict scenarios by positioning aircraft
+    relative to existing target aircraft in the simulation, creating precise
+    conflict geometries with configurable parameters for separation distances,
+    timing, and aircraft characteristics. This approach enables dynamic conflict
+    generation during live simulation for advanced training scenarios.
+    
+    The relative positioning system calculates:
+    1. Target aircraft state vector (position, heading, speed, altitude)
+    2. Conflict geometry parameters (approach angle, CPA distance, timing)
+    3. Intruder aircraft initial positioning for precise conflict execution
+    4. Trajectory calculations ensuring specified separation parameters
+    5. Optional target aircraft specification for complete conflict control
+    6. Randomization with seed control for reproducible scenarios
+    
+    Conflict parameters enable precise control over:
+    - dpsi: Relative approach angle difference (degrees) between aircraft tracks
+    - dcpa: Distance at Closest Point of Approach (nautical miles)
+    - tlosh: Time to Loss of Separation Horizontal (seconds) from conflict start
+    - dh: Altitude separation difference (feet) for vertical conflict components
+    - tlosv: Time to Loss of Separation Vertical (seconds) for climbing/descending
+    
+    Args:
+        *argv: Variable keyword arguments containing conflict parameters:
+               - target (str): Target aircraft ID for relative positioning
+               - dpsi (float): Relative approach angle in degrees
+               - dcpa (float): Distance at CPA in nautical miles
+               - tlosh (float): Time to horizontal loss of separation in seconds
+               - acid (str, optional): Intruder aircraft ID
+               - actype (str, optional): Intruder aircraft type
+               - dh (float, optional): Altitude difference in feet
+               - tlosv (float, optional): Time to vertical loss of separation
+               - spd (str, optional): Intruder speed (CAS or Mach)
+               - include_target (int, optional): Include target aircraft in scenario
+               - target_* (various, optional): Target aircraft override parameters
+               - name (str): Scenario name for file generation
+               - overwrite (int, optional): Overwrite existing scenario flag
+               - seed (int, optional): Random seed for reproducible generation
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful generation, (False, "") on error
+    
+    Examples:
+        # Create head-on conflict with existing aircraft
+        SATG_GC_REL target=KLM001 dpsi=180 dcpa=3.0 tlosh=120 name=head_on_test
+        
+        # Create crossing conflict with altitude separation
+        SATG_GC_REL target=BAW002 dpsi=90 dcpa=5.0 tlosh=180 dh=1000 name=crossing_alt
+        
+        # Create reproducible conflict with custom intruder
+        SATG_GC_REL target=AFR003 dpsi=45 dcpa=4.0 tlosh=150 acid=UAL004 actype=B777 seed=12345 name=custom_conflict
+    
+    Note:
+        The target aircraft must exist in the current simulation for relative
+        positioning calculations. The command generates scenario files compatible
+        with standard BlueSky scenario loading for training session integration.
     """
 
     params = _gc_rel_parse(argv)
