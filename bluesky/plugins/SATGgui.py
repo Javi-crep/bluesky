@@ -1,63 +1,61 @@
 """
 SATGgui.py - BlueSky GUI Plugin for Synthetic Air Traffic Generation
 
-This comprehensive PyQt6-based GUI plugin provides a sophisticated interface for 
-synthetic air traffic generation, historic sampling, and conflict simulation in 
-the BlueSky Air Traffic Management simulator. The plugin features intelligent 
-caching systems, performance optimizations, and full feature parity between 
+PyQt6 GUI plugin for synthetic air traffic generation, historic sampling, and 
+conflict simulation in BlueSky Air Traffic Management simulator. Provides 
+caching systems, performance optimizations, and feature parity between 
 Historic Sampling and Realistic Replay modes.
 
-Core Features:
+Features:
     * Historic Sampling Tab: ML-based aircraft generation from EUROCONTROL data
     * Realistic Replay Tab: Scenario-based aircraft generation with conflict simulation
-    * Geometric Conflicts Tab: Advanced conflict detection and resolution algorithms
+    * Geometric Conflicts Tab: Conflict detection and resolution algorithms
     * Random Conflicts Tab: Stochastic conflict generation and analysis
     * Procedure Management: SID/STAR procedure creation and editing
     * Configuration Management: Save/load system with backward compatibility
-    * Cache Management: Intelligent caching with file path validation
-    * Filter Systems: Advanced airspace and flight point filtering
+    * Cache Management: File-based caching with path validation
+    * Filter Systems: Airspace and flight point filtering
 
-GUI Architecture:
+Architecture:
     * Lazy window creation to avoid QApplication race conditions
-    * Tab-based interface with consistent styling and behavior
-    * Progress dialogs with proper UI thread updates
-    * Comprehensive configuration persistence system
-    * Performance optimizations including file path caching
+    * Tab-based interface with consistent styling
+    * Progress dialogs with UI thread updates
+    * Configuration persistence system
+    * File path caching optimizations
 
-Key Classes:
-    * SATGWindow: Main application window with tab management
+Classes:
+    * SATGWindow: Main window with tab management
     * HistoricSamplingTab: ML-based aircraft generation interface
     * RLTab: Realistic Replay scenario generation interface
-    * GCTab: Geometric conflict detection and resolution
     * RCTab: Random conflict generation and analysis
     * ProcTab: Procedure creation and management
-    * EurocontrolFilterDialog: Advanced filtering with flight point processing
+    * EurocontrolFilterDialog: Filtering with flight point processing
     * ConfigManagerDialog: Configuration save/load management
     * CacheManagerDialog: Cache validation and management
 
-Performance Features:
+Performance:
     * File path caching for Configure Filters dialog
-    * Intelligent cache validation using file modification times
-    * Vectorized flight point filtering with numpy optimization
+    * Cache validation using file modification times
+    * Vectorized flight point filtering with numpy
     * Bounding box pre-filtering for geometric calculations
-    * Progress dialog updates with proper threading
+    * Progress dialog updates with threading
 
 Dependencies:
-    * PyQt6: Modern Qt6 GUI framework
+    * PyQt6: Qt6 GUI framework
     * NumPy: Vectorized calculations and data processing
     * Pandas: Flight data manipulation and analysis
     * GeoPandas: Geometric airspace calculations
-    * Shapely: Point-in-polygon calculations for filtering
-    * BlueSky: Core ATM simulator integration
+    * Shapely: Point-in-polygon calculations
+    * BlueSky: ATM simulator integration
     * TraffixGen: EUROCONTROL data processing backend
 
 Usage:
-    The plugin is activated through the BlueSky console command 'SATGGUI'.
-    All configuration is persistent through the save/load system with full
-    backward compatibility for legacy configuration formats.
+    Plugin activated through BlueSky console command 'SATGGUI'.
+    Configuration is persistent through save/load system with 
+    backward compatibility for legacy formats.
 
 Examples:
-    # Activate the GUI from BlueSky console
+    # Activate GUI from BlueSky console
     SATGGUI
     
     # The GUI provides complete functionality for:
@@ -139,7 +137,7 @@ def _qpath(path: str) -> str:
 
 def _kv(key: str, val):
     """
-    Format key-value pair for command line, returning empty string for null/empty values.
+    Format key-value pair for command line, return empty string for null/empty values.
     
     Args:
         key (str): Parameter key name
@@ -155,11 +153,6 @@ def _kv(key: str, val):
         ""
         >>> _kv("desc", "  ")
         ""
-        
-    Note:
-        - Returns empty string for None values
-        - Returns empty string for empty/whitespace-only strings
-        - Useful for building command line parameter strings
     """
     if val is None:
         return ""
@@ -276,15 +269,14 @@ class SIDSchedDialog(QDialog):
     """
     Dialog for configuring SID (Standard Instrument Departure) runway scheduling.
     
-    This dialog provides a comprehensive interface for configuring departure schedules
-    for different runways, including time windows and capacity constraints. The dialog
-    supports multiple runways with individual scheduling parameters and allows users
-    to set departure rates and time slots for realistic traffic generation.
+    Interface for configuring departure schedules for different runways, including 
+    time windows and capacity constraints. Supports multiple runways with individual 
+    scheduling parameters and departure rates for traffic generation.
     
-    The dialog features a time-based scheduling system where users can configure:
+    Time-based scheduling system configuration:
     - Start and end times for departure operations
     - Departure capacity (aircraft per hour) for different time periods
-    - Visual slider interface for intuitive schedule configuration
+    - Slider interface for schedule configuration
     - Per-runway configuration with easy switching between runways
     
     Key Features:
@@ -486,16 +478,14 @@ class SIDSchedDialog(QDialog):
 
 class StarSchedDialog(QDialog):
     """
-    Advanced dialog for configuring STAR (Standard Terminal Arrival Route) scheduling.
+    Dialog for configuring STAR (Standard Terminal Arrival Route) scheduling.
     
-    This sophisticated interface provides comprehensive STAR procedure scheduling
-    capabilities with time-slot based management, arrival rate configuration, and
-    coordinated approach sequencing. The dialog enables realistic arrival traffic
-    generation that adheres to published STAR procedures with proper spacing and
-    timing constraints.
+    Interface for STAR procedure scheduling with time-slot based management, 
+    arrival rate configuration, and approach sequencing. Enables arrival traffic
+    generation that adheres to STAR procedures with spacing and timing constraints.
     
-    The STAR Scheduling system uses 15-minute time slots to provide granular
-    control over arrival traffic patterns throughout simulation periods. Each
+    STAR Scheduling system uses 15-minute time slots for granular control over 
+    arrival traffic patterns throughout simulation periods. Each
     STAR procedure can be individually configured with different arrival rates
     and scheduling parameters to create realistic terminal airspace operations.
     
@@ -1207,19 +1197,15 @@ class DestDialog(QDialog):
 
 class ProcedureCreatorDialog(QDialog):
     """
-    Advanced dialog for interactive procedure creation with visual track drawing and constraint management.
+    Dialog for interactive procedure creation with visual track drawing and constraint management.
     
-    This sophisticated interface enables users to create new SID and STAR procedures
-    through interactive track drawing on the BlueSky display, combined with detailed
-    waypoint constraint configuration. The dialog provides a seamless workflow for
-    procedure development from initial route sketching to final parameter specification
-    and validation for realistic air traffic procedure implementation.
+    Interface for creating SID and STAR procedures through interactive track drawing 
+    on BlueSky display, with waypoint constraint configuration. Workflow for procedure 
+    development from route sketching to parameter specification and validation.
     
-    The Procedure Creator integrates directly with BlueSky's visual interface,
-    allowing users to draw procedure tracks directly on the simulation display
-    while the dialog remains open for constraint configuration. This approach
-    provides intuitive procedure development with immediate visual feedback
-    and spatial awareness during the creation process.
+    Procedure Creator integrates with BlueSky's visual interface, allowing users to 
+    draw procedure tracks on simulation display while dialog remains open for 
+    constraint configuration. Provides visual feedback during creation process.
     
     Key Features:
     - Interactive track drawing on BlueSky simulation display
@@ -8961,13 +8947,12 @@ class PhaseVisualizationWidget(QWidget):
 
 class HistoricSamplingTab(QWidget):
     """
-    Advanced Historic Sampling interface for machine learning-based synthetic air traffic generation.
+    Historic Sampling interface for machine learning-based synthetic air traffic generation.
     
-    This sophisticated tab provides comprehensive machine learning-based synthetic air traffic
-    generation using historic EUROCONTROL flight data with advanced filtering, model training,
-    and trajectory synthesis capabilities. The tab represents the cutting-edge of synthetic
-    traffic generation, using learned patterns from real flight operations to create entirely
-    new, realistic flight trajectories that maintain statistical consistency with historic data.
+    Machine learning-based synthetic air traffic generation using historic EUROCONTROL 
+    flight data with filtering, model training, and trajectory synthesis. Uses learned 
+    patterns from real flight operations to create new flight trajectories that maintain 
+    statistical consistency with historic data.
     
     The Historic Sampling methodology leverages advanced machine learning algorithms trained
     on filtered historic flight data to generate synthetic traffic scenarios with realistic
@@ -9025,10 +9010,8 @@ class HistoricSamplingTab(QWidget):
     - Integration with SATG configuration management for session state preservation
     - Real-time feedback and status updates throughout the ML pipeline execution
     
-    The Historic Sampling tab represents the most advanced synthetic traffic generation
-    capability in SATG, providing researchers and training organizations with cutting-edge
-    machine learning tools for creating realistic, diverse training scenarios based on
-    comprehensive analysis of real-world flight operations and traffic patterns.
+    Historic Sampling tab provides machine learning tools for creating training scenarios 
+    based on analysis of real-world flight operations and traffic patterns.
     
     Args:
         parent (QWidget, optional): Parent widget, typically SATGWindow instance

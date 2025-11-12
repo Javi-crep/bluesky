@@ -1,9 +1,8 @@
 """
 SATG: Scenario and Traffic Generator Plugin for BlueSky ATM Simulator
 
-This module provides comprehensive scenario generation capabilities for the BlueSky Air Traffic 
-Management simulator, including realistic replay from EUROCONTROL data and geometric conflict 
-generation for training and testing purposes.
+This module provides scenario generation for the BlueSky Air Traffic Management simulator, 
+including replay from EUROCONTROL data and geometric conflict generation for testing.
 
 Main Features:
     - Realistic Replay: Generate scenarios from historical EUROCONTROL flight data
@@ -11,7 +10,7 @@ Main Features:
     - Geometric Conflicts: Generate controlled conflict scenarios for testing
     - Random Conflicts: Create randomized conflict situations
     - Procedure Integration: Support for SID/STAR procedures and custom waypoints
-    - Advanced Filtering: Geographic, altitude, time, and aircraft type filtering
+    - Filtering: Geographic, altitude, time, and aircraft type filtering
 
 The module integrates with the broader BlueSky ecosystem and provides both command-line
 and GUI interfaces for scenario generation and management.
@@ -31,7 +30,7 @@ Dependencies:
     - TraffixGen plugin for ML-based synthetic data
     - PyQt6 for GUI components
     - NumPy/Pandas for data processing
-    - Optional: GeoPandas for advanced geographic operations
+    - Optional: GeoPandas for geographic operations
 
 Usage:
     This plugin is automatically loaded by BlueSky and provides commands accessible
@@ -68,7 +67,7 @@ import bluesky.traffic.traffic as _traf_mod
 
 def _satg_safe_lat2txt(lat: float) -> str:
     """
-    Convert latitude to standardized text format with robust numeric handling.
+    Convert latitude to standardized text format with numeric handling.
     
     Converts a latitude value (in decimal degrees) to a formatted string representation
     using degrees, minutes, and seconds notation. Handles both regular Python floats
@@ -106,7 +105,7 @@ def _satg_safe_lat2txt(lat: float) -> str:
 
 def _satg_safe_lon2txt(lon: float) -> str:
     """
-    Convert longitude to standardized text format with robust numeric handling.
+    Convert longitude to standardized text format with numeric handling.
     
     Converts a longitude value (in decimal degrees) to a formatted string representation
     using degrees, minutes, and seconds notation. Handles both regular Python floats
@@ -460,7 +459,7 @@ def _bearing_nm(lat1, lon1, lat2, lon2):
     
     This function computes the initial bearing (forward azimuth) along the
     great-circle path from the first point to the second point using either
-    BlueSky's optimized geo functions or a fallback mathematical implementation.
+    BlueSky's geo functions or a fallback mathematical implementation.
     The result represents the compass direction to follow at the starting point
     to reach the destination along the shortest spherical path.
     
@@ -481,7 +480,7 @@ def _bearing_nm(lat1, lon1, lat2, lon2):
         next_bearing = _bearing_nm(current_lat, current_lon, waypoint_lat, waypoint_lon)
     
     Note:
-        This function uses BlueSky's geo.qdrdist when available for optimized
+        This function uses BlueSky's geo.qdrdist when available for
         calculations, with a mathematical fallback for environments where
         BlueSky geo functions are not accessible. The bearing is the initial
         direction and will change along the great-circle path due to convergence.
@@ -525,7 +524,7 @@ def _dest_nm(lat, lon, brg_deg, dist_nm):
         wp_lat, wp_lon = _dest_nm(airport_lat, airport_lon, runway_heading, 10.0)
     
     Note:
-        This function uses BlueSky's geo.qdrpos when available for optimized
+        This function uses BlueSky's geo.qdrpos when available for
         spherical calculations, with a mathematical fallback implementation.
         The calculation accounts for Earth's curvature and provides accurate
         results for aviation navigation applications.
@@ -1160,7 +1159,7 @@ def _load_files(files_arg: str) -> Tuple[bool, str]:
             paths = parts
     if not paths: return False, "No CSV files found."
 
-    # Use optimized TraffixGen loading system for large files
+    # Use TraffixGen loading system for large files
     try:
         from . import traffixgen
         
@@ -1181,8 +1180,8 @@ def _load_files(files_arg: str) -> Tuple[bool, str]:
         if not points_files:
             return False, "No flight points CSV file found (must have ECTRL ID, Time Over, Latitude, Longitude columns)."
         
-        # Use TraffixGen optimized loading (supports all our optimizations)
-        print("Using optimized loading system for Realistic Replay...")
+        # Use TraffixGen loading system
+        print("Using TraffixGen loading system for Realistic Replay...")
         success = traffixgen.traffixgen_load_eurocontrol(
             flights_file, 
             points_files[0],  # Filed points 
@@ -1191,12 +1190,12 @@ def _load_files(files_arg: str) -> Tuple[bool, str]:
         )
         
         if not success:
-            return False, "Failed to load data using optimized system."
+            return False, "Failed to load data using TraffixGen system."
         
         # Convert loaded data to SATG format  
         success_export = traffixgen.traffixgen_export_to_satg()
         if success_export:
-            return True, f"Loaded data using optimized system with all performance improvements."
+            return True, f"Loaded data using TraffixGen system."
         else:
             # Fallback to old method if export fails
             flights_rows: List[dict] = []; points_rows: List[dict] = []
@@ -1209,7 +1208,7 @@ def _load_files(files_arg: str) -> Tuple[bool, str]:
                 return False, "Missing required files: need both flights and flights_points (by headers)."
                 
     except Exception as e:
-        print(f"Optimized loading failed: {e}, falling back to original method...")
+        print(f"TraffixGen loading failed: {e}, falling back to original method...")
         # Fallback to original method
         flights_rows: List[dict] = []; points_rows: List[dict] = []
         found_flights = found_points = False
@@ -1393,7 +1392,7 @@ def _renumber_pr_acids(path: str, start_index: int = 0):
 # ---------------- RL scenario writing ---------------- #
 def _write_rl_scn(out_path: str, append: bool = False):
     """
-    Write Realistic Replay scenario file with comprehensive flight trajectory data.
+    Write Realistic Replay scenario file with flight trajectory data.
     
     This function generates BlueSky-compatible scenario files from loaded flight
     trajectory data, incorporating jitter variations, auto-delete configurations,
@@ -1546,7 +1545,7 @@ def _write_rl_scn(out_path: str, append: bool = False):
                 else:
                     f.write(f"{stamp0}ADDWPT {acid_out} {r['lat']:.6f},{r['lon']:.6f},{_fmt_alt_token(r['fl'])},{cas_i:.1f}\n")
 
-            # Robust takeoff logic - find first non-zero altitude waypoint for realistic initial conditions
+            # Find first non-zero altitude waypoint for initial conditions
             if cas0 <= 0 or alt_ft0 <= 0:
                 
                 # Find first waypoint with non-zero altitude (handles varying numbers of ground waypoints)
@@ -1629,7 +1628,7 @@ def _parse_range(text: Optional[str], cur: Tuple[float, float]) -> Tuple[float, 
     
     This utility function converts user input strings into numeric range tuples
     supporting both single values and range specifications. The function provides
-    robust error handling with fallback to current values when parsing fails,
+    error handling with fallback to current values when parsing fails,
     ensuring system stability during parameter configuration operations.
     
     Input format support:
@@ -1973,13 +1972,13 @@ def _write_gc_scn(out_path: str, *,
                   alt_offset_range: Optional[Tuple[float, float]] = None,
                   polygon_commands: Optional[List[str]] = None):
     """
-    Write Geometric Conflict scenario file with comprehensive conflict trajectory data.
+    Write Geometric Conflict scenario file with conflict trajectory data.
     
     This function generates BlueSky-compatible scenario files from geometric conflict
     configurations, creating structured conflict scenarios with precise aircraft
     positioning, timing, and trajectory management. The function handles multiple
     conflict parameters including CPA positioning, timing variations, altitude
-    offsets, and aircraft type selection with comprehensive geometric validation.
+    offsets, and aircraft type selection with geometric validation.
     
     The scenario generation process includes:
     1. Conflict geometry validation and parameter verification
@@ -1991,7 +1990,7 @@ def _write_gc_scn(out_path: str, *,
     Generated scenarios feature complete conflict operations with:
     - Precise aircraft positioning for guaranteed conflicts at specified CPA
     - Calculated trajectory intersections with configurable timing accuracy
-    - Speed and altitude profiles optimized for conflict execution
+    - Speed and altitude profiles for conflict execution
     - Randomized parameters within specified ranges for training variation
     - Aircraft type selection from configured type pools
     - Polygon constraint integration for airspace boundary enforcement
@@ -2212,14 +2211,14 @@ def _gc_rel_parse(argv: Tuple[str, ...]) -> Dict[str, str]:
     This utility function processes variable command arguments for relative
     geometric conflict generation, converting mixed positional and named
     arguments into a standardized parameter dictionary. The function handles
-    both key=value pairs and standalone tokens with intelligent parameter
-    assignment for flexible command-line interface support.
+    both key=value pairs and standalone tokens with parameter
+    assignment for command-line interface support.
     
     Argument parsing features:
     - Key=value pair extraction with case-insensitive keys
     - Standalone token handling with default parameter assignment
     - Whitespace normalization and input sanitization
-    - Flexible parameter order support for user convenience
+    - Parameter order support for user convenience
     - Default value assignment for missing parameters
     - Error-resilient parsing with graceful handling of malformed input
     
@@ -2259,7 +2258,7 @@ def _gc_rel_parse(argv: Tuple[str, ...]) -> Dict[str, str]:
 
 def _gc_rel_bool(val: Optional[str], default: bool = False) -> bool:
     """
-    Convert string parameter to boolean with flexible input format support.
+    Convert string parameter to boolean with input format support.
     
     This utility function provides robust boolean conversion from string
     parameters with support for multiple common boolean representations.
@@ -3420,7 +3419,7 @@ def SATG_RL_AUTODEL(mode: str):
     - Aircraft are removed upon reaching their last waypoint
     - Final flight level restrictions are ignored for deletion
     - Scenario cleanup is automated for training sessions
-    - Memory usage is optimized for long-running scenarios
+    - Memory usage is managed for long-running scenarios
     
     When auto-deletion is disabled:
     - Aircraft remain active after reaching final waypoints

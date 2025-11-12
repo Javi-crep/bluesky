@@ -1,49 +1,47 @@
 """
-TraffixGen Plugin - Advanced EUROCONTROL Data Processing and ML-Based Traffic Generation
-=======================================================================================
+TraffixGen Plugin - EUROCONTROL Data Processing and ML-Based Traffic Generation
+=============================================================================
 
-This comprehensive BlueSky plugin provides sophisticated EUROCONTROL flight data
-processing, advanced filtering systems, and machine learning-based synthetic traffic
-generation. The plugin serves as the core backend for Historic Sampling functionality
-with intelligent caching, performance optimizations, and accurate flight point filtering
-for model training applications.
+BlueSky plugin for EUROCONTROL flight data processing, filtering systems, and 
+machine learning-based synthetic traffic generation. Core backend for Historic 
+Sampling functionality with caching, performance optimizations, and flight point 
+filtering for model training applications.
 
-The plugin processes real EUROCONTROL flight operations data to create realistic
-synthetic air traffic scenarios, supporting both direct trajectory generation and
-machine learning model training for advanced traffic pattern analysis. All operations
-are optimized for performance while maintaining accuracy in geometric calculations
-and data integrity.
+Processes EUROCONTROL flight operations data to create synthetic air traffic 
+scenarios, supporting trajectory generation and machine learning model training 
+for traffic pattern analysis. Operations optimized for performance while 
+maintaining accuracy in geometric calculations and data integrity.
 
-Core Architecture:
-    * EUROCONTROL Data Processing: Comprehensive parsing and validation of flight data
-    * Advanced Filter System: Include-based filtering with flight point processing
+Architecture:
+    * EUROCONTROL Data Processing: Parsing and validation of flight data
+    * Filter System: Include-based filtering with flight point processing
     * Machine Learning Pipeline: Model training on filtered trajectory data
     * Geometric Calculations: Point-in-polygon algorithms for airspace filtering
-    * Performance Optimization: Intelligent caching with parquet file persistence
-    * BlueSky Integration: Seamless command interface and scenario generation
+    * Performance Optimization: Caching with parquet file persistence
+    * BlueSky Integration: Command interface and scenario generation
 
-Data Processing Features:
-    * Multi-format datetime parsing with robust error handling
+Data Processing:
+    * Multi-format datetime parsing with error handling
     * Categorical data type optimization for memory efficiency
-    * Flight point filtering using sophisticated geometric algorithms
-    * Vectorized calculations with numpy for performance optimization
-    * Intelligent cache management with automatic invalidation
+    * Flight point filtering using geometric algorithms
+    * Vectorized calculations with numpy for performance
+    * Cache management with automatic invalidation
     * Progress tracking for long-running operations
 
 Filter System:
     * Date Range Filtering: Temporal constraints with automatic bounds detection
     * Airspace Filtering: Include-based geometric point-in-polygon calculations
     * Altitude Filtering: Flight level constraints with phase-specific settings
-    * Aircraft Type Filtering: Comprehensive aircraft classification support
+    * Aircraft Type Filtering: Aircraft classification support
     * Flight Phase Filtering: Departure, enroute, and arrival phase selection
     * Real-time Filter Application: Live filtering of flight points for model training
 
 Machine Learning Pipeline:
     * Trajectory Pattern Analysis: Statistical learning from historic operations
-    * Realistic Trajectory Generation: ML-based synthetic flight creation
-    * Feature Engineering: Advanced flight characteristic extraction
-    * Model Persistence: Efficient model storage and retrieval systems
-    * Performance Validation: Comprehensive accuracy metrics and validation
+    * Trajectory Generation: ML-based synthetic flight creation
+    * Feature Engineering: Flight characteristic extraction
+    * Model Persistence: Model storage and retrieval systems
+    * Performance Validation: Accuracy metrics and validation
 
 Performance Optimizations:
     * Parquet Caching: High-performance columnar data storage
@@ -1027,7 +1025,7 @@ def holt_smooth(x: np.ndarray, alpha: float = 0.3, beta: float = 0.1):
     directional trends are important for realistic synthetic traffic generation.
     
     Holt's method maintains separate smoothing equations for data level and trend,
-    providing superior performance for trajectory data with consistent directional
+    providing good performance for trajectory data with consistent directional
     movement such as climb/descent profiles, course changes, and speed variations.
     The algorithm is particularly effective for flight path prediction and trajectory
     synthesis in machine learning applications.
