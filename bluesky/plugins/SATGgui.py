@@ -138,6 +138,29 @@ def _qpath(path: str) -> str:
     return f"\"{path}\"" if (" " in path and not (path.startswith('"') and path.endswith('"'))) else path
 
 def _kv(key: str, val):
+    """
+    Format key-value pair for command line, returning empty string for null/empty values.
+    
+    Args:
+        key (str): Parameter key name
+        val: Parameter value (any type)
+        
+    Returns:
+        str: Formatted "key=value" string or empty string for null/empty values
+        
+    Examples:
+        >>> _kv("speed", 250)
+        "speed=250"
+        >>> _kv("name", None)
+        ""
+        >>> _kv("desc", "  ")
+        ""
+        
+    Note:
+        - Returns empty string for None values
+        - Returns empty string for empty/whitespace-only strings
+        - Useful for building command line parameter strings
+    """
     if val is None:
         return ""
     if isinstance(val, str) and val.strip() == "":
@@ -145,6 +168,26 @@ def _kv(key: str, val):
     return f"{key}={val}"
 
 def _join_tokens(*tokens):
+    """
+    Join multiple tokens into space-separated string, filtering out empty/null tokens.
+    
+    Args:
+        *tokens: Variable number of token arguments (any type)
+        
+    Returns:
+        str: Space-separated string of non-empty tokens
+        
+    Examples:
+        >>> _join_tokens("CRE", "KL123", None, "B738")
+        "CRE KL123 B738"
+        >>> _join_tokens("", "TEST", "", "DATA")
+        "TEST DATA"
+        
+    Note:
+        - Filters out falsy values (None, empty strings, etc.)
+        - Useful for building command strings with optional parameters
+        - Converts all tokens to strings before joining
+    """
     return " ".join([t for t in tokens if t])
 
 def _validate_waypoint_name_conflict(name: str, is_coordinate_waypoint: bool) -> tuple[bool, str]:
@@ -334,19 +377,83 @@ class SIDSchedDialog(QDialog):
         self._load_runway(self.current_runway)
 
     def _round_time(self, time: QTime) -> QTime:
+        """
+        Round a time to the nearest slot interval.
+        
+        Args:
+            time (QTime): Time to be rounded to nearest slot interval
+            
+        Returns:
+            QTime: Rounded time aligned to slot boundaries
+            
+        Examples:
+            >>> dialog = PhaseAltitudeConfigDialog([], {})
+            >>> rounded = dialog._round_time(QTime(14, 23))  # 2:23 PM
+            >>> print(rounded.toString())  # Rounded to nearest 15-min slot
+            
+        Note:
+            - Uses SLOT_MINUTES constant for rounding interval
+            - Ensures result stays within 24-hour bounds
+            - Prevents rounding beyond valid time range
+        """
         minutes = time.hour() * 60 + time.minute()
         rounded = (minutes // self.SLOT_MINUTES) * self.SLOT_MINUTES
         rounded = max(0, min(rounded, 24 * 60 - self.SLOT_MINUTES))
         return QTime(rounded // 60, rounded % 60)
 
     def _time_to_minutes(self, time: QTime) -> float:
+        """
+        Convert QTime to total minutes since midnight.
+        
+        Args:
+            time (QTime): Time object to convert
+            
+        Returns:
+            float: Total minutes since midnight (0-1439)
+            
+        Examples:
+            >>> dialog = PhaseAltitudeConfigDialog([], {})
+            >>> minutes = dialog._time_to_minutes(QTime(14, 30))  # 2:30 PM
+            >>> print(minutes)  # 870.0 (14*60 + 30)
+            
+        Note:
+            - Used for time calculations and slot management
+            - Returns float for precision in time operations
+        """
         return time.hour() * 60 + time.minute()
 
     def _minutes_to_time(self, minutes: float) -> QTime:
+        """
+        Convert total minutes since midnight to QTime.
+        
+        Args:
+            minutes (float): Minutes since midnight to convert
+            
+        Returns:
+            QTime: Time object representing the converted time
+            
+        Examples:
+            >>> dialog = PhaseAltitudeConfigDialog([], {})
+            >>> time = dialog._minutes_to_time(870.0)  # 14.5 hours
+            >>> print(time.toString())  # "14:30"
+            
+        Note:
+            - Clamps input to valid 24-hour range (0-1440)
+            - Converts float minutes to integer for QTime constructor
+        """
         minutes = max(0, min(int(minutes), 24 * 60))
         return QTime(minutes // 60, minutes % 60)
 
     def _on_runway_changed(self):
+        """
+        Handle runway selection change in the combo box.
+        
+        Note:
+            - Saves current runway configuration before switching
+            - Updates current_runway attribute to new selection
+            - Loads configuration data for newly selected runway
+            - Called automatically when user changes runway selection
+        """
         self._save_current()
         data = self.runway_combo.currentData()
         if data:
@@ -354,6 +461,16 @@ class SIDSchedDialog(QDialog):
             self._load_runway(self.current_runway)
 
     def _on_time_changed(self):
+        """
+        Handle time range changes and ensure valid time intervals.
+        
+        Note:
+            - Rounds start and end times to nearest slot boundaries
+            - Ensures end time is after start time (minimum one slot)
+            - Blocks signals during programmatic time updates to prevent recursion
+            - Updates slot controls to reflect new time range
+            - Called automatically when user changes time values
+        """
         start = self._round_time(self.start_edit.time())
         end = self._round_time(self.end_edit.time())
         if end <= start:
@@ -368,10 +485,77 @@ class SIDSchedDialog(QDialog):
 
 
 class StarSchedDialog(QDialog):
+    """
+    Advanced dialog for configuring STAR (Standard Terminal Arrival Route) scheduling.
+    
+    This sophisticated interface provides comprehensive STAR procedure scheduling
+    capabilities with time-slot based management, arrival rate configuration, and
+    coordinated approach sequencing. The dialog enables realistic arrival traffic
+    generation that adheres to published STAR procedures with proper spacing and
+    timing constraints.
+    
+    The STAR Scheduling system uses 15-minute time slots to provide granular
+    control over arrival traffic patterns throughout simulation periods. Each
+    STAR procedure can be individually configured with different arrival rates
+    and scheduling parameters to create realistic terminal airspace operations.
+    
+    Key Features:
+    - Time-slot based arrival scheduling with 15-minute intervals
+    - Individual STAR procedure configuration and rate management  
+    - Coordinated arrival sequencing with proper separation
+    - Existing configuration preservation and modification
+    - Real-time schedule validation and conflict detection
+    - Traffic pattern optimization for realistic terminal operations
+    
+    Scheduling Parameters:
+    - Procedure Selection: Configure which STAR procedures are active
+    - Time Windows: Set operational periods for each STAR procedure
+    - Arrival Rates: Define aircraft per hour for different time periods
+    - Sequence Coordination: Manage arrival flow and spacing requirements
+    - Schedule Validation: Ensure configuration feasibility and realism
+    
+    Attributes:
+        SLOT_MINUTES (int): Time slot duration in minutes (15-minute intervals)
+        procs (List[str]): List of STAR procedure identifiers for scheduling
+        labels (Dict[str, str]): Human-readable labels for procedure display
+        data (Dict[str, Dict]): Current schedule configuration for each procedure
+    
+    Args:
+        procs (List[tuple[str, str]]): Procedure list with (path, label) pairs
+        existing (Dict[str, Dict[str, object]]): Current schedule configuration data
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Examples:
+        # Configure STAR schedules for multiple procedures
+        procedures = [
+            ("/path/to/STAR01.scn", "STAR01 Arrival"),
+            ("/path/to/STAR02.scn", "STAR02 Arrival")
+        ]
+        existing_config = {
+            "/path/to/STAR01.scn": {"rate": 10, "active_slots": [0, 1, 2]}
+        }
+        
+        dialog = StarSchedDialog(procedures, existing_config, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_schedule = dialog.get_schedule_data()
+            self._apply_star_schedule(new_schedule)
+    
+    Note:
+        The dialog uses 15-minute time slots to provide realistic granularity for
+        arrival scheduling while maintaining manageable configuration complexity.
+        All schedule configurations are validated to ensure feasible traffic
+        patterns and proper STAR procedure adherence for realistic terminal operations.
+    """
+    
     SLOT_MINUTES = 15
 
     def __init__(self, procs: List[tuple[str, str]], existing: Dict[str, Dict[str, object]], parent=None):
-        """procs: list of (path, label)."""
+        """
+        Initialize STAR scheduling dialog with procedure list and existing configuration.
+        
+        Args:
+            procs: List of (path, label) tuples for STAR procedures
+        """
         super().__init__(parent)
         self.setWindowTitle("STAR Procedure Schedule")
         self.procs = [p for p, _ in procs]
@@ -425,19 +609,58 @@ class StarSchedDialog(QDialog):
         self._load_proc(self.current_proc)
 
     def _round_time(self, time: QTime) -> QTime:
+        """
+        Round time to nearest slot interval for STAR scheduling.
+        
+        Args:
+            time (QTime): Time to round to nearest slot boundary
+            
+        Returns:
+            QTime: Rounded time aligned to SLOT_MINUTES intervals
+            
+        Note:
+            - Uses same logic as PhaseAltitudeConfigDialog
+            - Ensures STAR schedules align to time slots
+        """
         minutes = time.hour() * 60 + time.minute()
         rounded = (minutes // self.SLOT_MINUTES) * self.SLOT_MINUTES
         rounded = max(0, min(rounded, 24 * 60 - self.SLOT_MINUTES))
         return QTime(rounded // 60, rounded % 60)
 
     def _time_to_minutes(self, time: QTime) -> float:
+        """
+        Convert QTime to minutes for STAR schedule calculations.
+        
+        Args:
+            time (QTime): Time to convert
+            
+        Returns:
+            float: Total minutes since midnight
+        """
         return time.hour() * 60 + time.minute()
 
     def _minutes_to_time(self, minutes: float) -> QTime:
+        """
+        Convert minutes back to QTime for STAR schedules.
+        
+        Args:
+            minutes (float): Minutes since midnight
+            
+        Returns:
+            QTime: Converted time object
+        """
         minutes = max(0, min(int(minutes), 24 * 60))
         return QTime(minutes // 60, minutes % 60)
 
     def _on_proc_changed(self):
+        """
+        Handle STAR procedure selection change.
+        
+        Note:
+            - Saves current procedure configuration before switching
+            - Updates current_proc to newly selected procedure
+            - Loads configuration for selected STAR procedure
+        """
         self._save_current()
         data = self.proc_combo.currentData()
         if data:
@@ -445,6 +668,15 @@ class StarSchedDialog(QDialog):
             self._load_proc(self.current_proc)
 
     def _on_time_changed(self):
+        """
+        Handle time range changes for STAR scheduling.
+        
+        Note:
+            - Rounds times to slot boundaries
+            - Ensures valid time range (end > start)
+            - Updates slot controls with new time range
+            - Prevents signal loops during updates
+        """
         start = self._round_time(self.start_edit.time())
         end = self._round_time(self.end_edit.time())
         if end <= start:
@@ -458,10 +690,27 @@ class StarSchedDialog(QDialog):
         self._update_slot_controls()
 
     def _clear_current_schedule(self):
+        """
+        Reset current STAR procedure schedule to default values.
+        
+        Note:
+            - Resets to 1-hour window starting at midnight
+            - Sets capacity to zero (no scheduled aircraft)
+            - Reloads the cleared schedule in the interface
+        """
         self.data[self.current_proc] = {"start": 0.0, "end": 60.0, "caps": [0]}
         self._load_proc(self.current_proc)
 
     def _save_current(self):
+        """
+        Save current schedule configuration for the selected STAR procedure.
+        
+        Note:
+            - Captures all slider values as capacity array
+            - Saves time range in minutes since midnight
+            - Stores slot duration for future reference
+            - Called before switching procedures or closing dialog
+        """
         caps = [slider.value() for slider in self.sliders]
         self.data[self.current_proc] = {
             "start": self._time_to_minutes(self.start_edit.time()),
@@ -471,6 +720,19 @@ class StarSchedDialog(QDialog):
         }
 
     def _load_proc(self, proc_path: str):
+        """
+        Load schedule configuration for specified STAR procedure.
+        
+        Args:
+            proc_path (str): Identifier for STAR procedure to load
+            
+        Note:
+            - Retrieves saved configuration or uses defaults
+            - Converts stored minutes back to QTime objects
+            - Ensures valid time ranges (end > start)
+            - Rebuilds slot controls with saved capacity values
+            - Blocks signals during programmatic updates
+        """
         info = self.data.get(proc_path, {"start": 0.0, "end": 60.0, "caps": [0]})
         start_time = self._minutes_to_time(info.get("start", 0.0))
         end_time = self._minutes_to_time(info.get("end", max(info.get("start", 0.0) + self.SLOT_MINUTES, self.SLOT_MINUTES)))
@@ -487,6 +749,19 @@ class StarSchedDialog(QDialog):
         self._build_slot_controls(info.get("caps", [0]))
 
     def _build_slot_controls(self, caps: List[int]):
+        """
+        Build capacity slider controls for time slots.
+        
+        Args:
+            caps (List[int]): List of capacity values for each time slot
+            
+        Note:
+            - Clears existing slider widgets before rebuilding
+            - Creates vertical slider for each time slot
+            - Sets slider range 0-20 aircraft per slot
+            - Connects value change events for real-time updates
+            - Adds labels showing current capacity values
+        """
         while self.sliders:
             slider = self.sliders.pop()
             slider.deleteLater()
@@ -514,6 +789,15 @@ class StarSchedDialog(QDialog):
         self._update_slot_controls()
 
     def _update_slot_controls(self):
+        """
+        Update slot controls based on current time range.
+        
+        Note:
+            - Calculates required number of slots from time range
+            - Rebuilds controls if slot count changed
+            - Updates all slider labels with current values
+            - Preserves existing capacity values where possible
+        """
         start_minutes = self._time_to_minutes(self.start_edit.time())
         end_minutes = self._time_to_minutes(self.end_edit.time())
         duration = max(end_minutes - start_minutes, self.SLOT_MINUTES)
@@ -526,22 +810,64 @@ class StarSchedDialog(QDialog):
             slider.label.setText(str(slider.value()))  # type: ignore
 
     def _on_slider_changed(self, value: int):
+        """
+        Handle capacity slider value changes.
+        
+        Args:
+            value (int): New capacity value from slider
+            
+        Note:
+            - Updates corresponding label with new value
+            - Provides real-time feedback to user
+        """
         slider = self.sender()
         if isinstance(slider, QSlider):
             slider.label.setText(str(value))  # type: ignore
 
     @property
     def result_data(self) -> Dict[str, Dict[str, object]]:
+        """
+        Get complete schedule configuration data.
+        
+        Returns:
+            Dict[str, Dict[str, object]]: Schedule data for all procedures
+            
+        Note:
+            - Saves current procedure configuration before returning
+            - Returns all STAR schedule configurations
+        """
         self._save_current()
         return self.data
 
     def _clear_current_schedule(self):
+        """
+        Clear current runway schedule and reset to default values.
+        
+        Note:
+            - Resets start time to 00:00 and end time to 01:00
+            - Updates slot controls with default capacity values
+            - Clears schedule data for current runway in internal data structure
+            - Provides clean slate for new runway schedule configuration
+        """
         self.start_edit.setTime(QTime(0, 0))
         self.end_edit.setTime(QTime(1, 0))
         self._update_slot_controls(default=True)
         self.data[self.current_runway] = {"start": 0.0, "end": 60.0, "caps": [0]}
 
     def _load_runway(self, runway: str):
+        """
+        Load schedule configuration for specified runway.
+        
+        Args:
+            runway (str): Runway identifier to load configuration for
+            
+        Note:
+            - Retrieves runway schedule data or uses defaults if not found
+            - Converts stored minute values back to QTime objects
+            - Ensures end time is after start time (minimum slot duration)
+            - Blocks time editor signals during loading to prevent cascading updates
+            - Updates slot controls with stored capacity values
+        """
         info = self.data.get(runway, {"start": 0.0, "end": 60.0, "caps": [0]})
         start_time = self._minutes_to_time(info.get("start", 0.0))
         end_time = self._minutes_to_time(info.get("end", start_time.minute() + self.SLOT_MINUTES))
@@ -556,6 +882,17 @@ class StarSchedDialog(QDialog):
         self._update_slot_controls(existing_caps=info.get("caps", [0]))
 
     def _save_current(self):
+        """
+        Save current runway schedule configuration to internal data structure.
+        
+        Note:
+            - Captures all capacity slider values
+            - Ensures end time is after start time (minimum slot duration)
+            - Stores start/end times as minute values for persistence
+            - Handles empty capacity (treats as cleared schedule)
+            - Updates data dictionary with current runway configuration
+            - Called automatically when switching runways or applying changes
+        """
         caps = [slider.value() for slider in self.sliders]
         start = self._time_to_minutes(self.start_edit.time())
         end = self._time_to_minutes(self.end_edit.time())
@@ -568,6 +905,20 @@ class StarSchedDialog(QDialog):
             self.data[self.current_runway] = {"start": start, "end": end, "caps": []}
 
     def _update_slot_controls(self, existing_caps: Optional[List[int]] = None, default: bool = False):
+        """
+        Update slot controls based on time range and existing capacity values.
+        
+        Args:
+            existing_caps (Optional[List[int]]): Existing capacity values to preserve
+            default (bool): Whether to use default values instead of existing
+            
+        Note:
+            - Clears all existing slot control widgets before rebuilding
+            - Calculates slot count based on time range and SLOT_MINUTES interval
+            - Creates slider and spinbox pairs for each time slot
+            - Preserves existing capacity values when extending or shrinking slots
+            - Synchronizes slider and spinbox values bidirectionally
+        """
         # clear existing
         while self.slot_layout.count():
             item = self.slot_layout.takeAt(0)
@@ -628,18 +979,115 @@ class StarSchedDialog(QDialog):
             self.sliders.append(slider)
 
     def accept(self):
+        """
+        Handle dialog acceptance with data validation and saving.
+        
+        Note:
+            - Saves current configuration before accepting
+            - Ensures all runway configurations are preserved
+            - Calls parent accept to close dialog with accepted status
+        """
         self._save_current()
         super().accept()
 
     def reject(self):
+        """
+        Handle dialog rejection without saving changes.
+        
+        Note:
+            - Discards any unsaved configuration changes
+            - Returns dialog to previous state
+            - Calls parent reject to close dialog with rejected status
+        """
         super().reject()
 
     @property
     def result_data(self) -> Dict[str, Dict[str, object]]:
+        """
+        Get complete runway configuration data.
+        
+        Returns:
+            Dict[str, Dict[str, object]]: Configuration data for all runways
+                Format: {runway_id: {start: float, end: float, caps: List[int], slot: float}}
+                
+        Examples:
+            >>> dialog = PhaseAltitudeConfigDialog(['18L', '36R'], {})
+            >>> dialog.exec()
+            >>> data = dialog.result_data
+            >>> print(data)  # {'18L': {'start': 360.0, 'end': 420.0, 'caps': [5,3,2]}}
+            
+        Note:
+            - Returns deep copy of configuration data
+            - Includes capacity arrays for all time slots
+            - Safe to modify returned data without affecting dialog
+        """
         return {rw: dict(cfg) for rw, cfg in self.data.items()}
 
 
 class DestDialog(QDialog):
+    """
+    Dialog for configuring destination airports for procedural traffic generation.
+    
+    This specialized interface allows users to configure destination airports for
+    each procedure using ICAO airport codes. The dialog provides a structured
+    way to associate procedures with their appropriate destination airports,
+    enabling realistic traffic flow patterns and route assignment for generated
+    aircraft in synthetic traffic scenarios.
+    
+    The Destination Dialog supports comma-separated ICAO code entry for each
+    procedure, allowing multiple destination airports per procedure to create
+    varied and realistic traffic distributions. Users can configure both primary
+    and alternate destinations for comprehensive traffic scenario generation.
+    
+    Key Features:
+    - ICAO airport code configuration for procedure destinations
+    - Multiple destinations per procedure with comma-separated input
+    - Existing configuration preservation and modification
+    - Input validation for proper ICAO code format
+    - Real-time editing with immediate feedback
+    - Flexible destination assignment for realistic traffic patterns
+    
+    Configuration Options:
+    - Primary Destinations: Main airports for procedure traffic
+    - Alternate Destinations: Secondary airports for traffic variation
+    - Code Validation: Ensure proper ICAO format and airport existence
+    - Multiple Entries: Support comma-separated lists for each procedure
+    - Existing Data: Preserve and modify current destination configurations
+    
+    Attributes:
+        _procedures (List[tuple]): List of (path, label) pairs for procedures
+        _edits (Dict): Dictionary of text edit widgets for each procedure
+    
+    Args:
+        procedures (List[tuple]): Procedure list with (path, label) pairs
+        existing (Dict[str, List[str]]): Current destination configuration
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Returns:
+        Dict[str, List[str]]: Updated destination configuration when accepted
+    
+    Examples:
+        # Configure destinations for multiple procedures
+        procedures = [
+            ("/path/to/SID01.scn", "SID01 Departure"),
+            ("/path/to/SID02.scn", "SID02 Departure")  
+        ]
+        existing_dests = {
+            "/path/to/SID01.scn": ["KJFK", "KLGA", "KEWR"]
+        }
+        
+        dialog = DestDialog(procedures, existing_dests, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_destinations = dialog.get_destinations()
+            self._apply_procedure_destinations(new_destinations)
+    
+    Note:
+        The dialog expects valid ICAO airport codes in comma-separated format.
+        Input validation helps ensure proper code formatting, and the interface
+        provides clear guidance for entering multiple destinations per procedure
+        to create realistic and varied traffic generation scenarios.
+    """
+    
     def __init__(self, procedures: List[tuple], existing: Dict[str, List[str]], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Procedure Destinations")
@@ -685,9 +1133,33 @@ class DestDialog(QDialog):
         layout.addWidget(buttons)
 
     def _parse_codes(self, text: str) -> List[str]:
+        """
+        Parse comma/semicolon/space separated ICAO codes from text.
+        
+        Args:
+            text (str): Input text containing ICAO codes
+            
+        Returns:
+            List[str]: Cleaned and uppercased ICAO codes
+            
+        Examples:
+            >>> dialog = DestDialog([], {})
+            >>> codes = dialog._parse_codes("eham, egll; kjfk  eddf")
+            >>> print(codes)  # ['EHAM', 'EGLL', 'KJFK', 'EDDF']
+        """
         return [c.strip().upper() for c in re.split(r'[;,\\s]+', text) if c.strip()]
 
     def _apply_single(self, key: str):
+        """
+        Apply formatting to a single procedure's destination codes.
+        
+        Args:
+            key (str): Procedure identifier to format
+            
+        Note:
+            - Parses and reformats codes in the corresponding edit field
+            - Standardizes format with comma separation
+        """
         edit = self._edits.get(key)
         if not edit:
             return
@@ -695,6 +1167,16 @@ class DestDialog(QDialog):
         edit.setText(", ".join(codes))
 
     def _apply_all(self, key: str):
+        """
+        Apply the same destination codes to all procedures.
+        
+        Args:
+            key (str): Source procedure whose codes to copy
+            
+        Note:
+            - Takes codes from one procedure and applies to all
+            - Useful for scenarios where all procedures share destinations
+        """
         edit = self._edits.get(key)
         if not edit:
             return
@@ -705,6 +1187,16 @@ class DestDialog(QDialog):
 
     @property
     def result_data(self) -> Dict[str, List[str]]:
+        """
+        Get destination configuration for all procedures.
+        
+        Returns:
+            Dict[str, List[str]]: Mapping of procedures to destination airport codes
+            
+        Note:
+            - Only includes procedures with non-empty destination lists
+            - Returns parsed and validated ICAO codes
+        """
         data: Dict[str, List[str]] = {}
         for path, edit in self._edits.items():
             codes = self._parse_codes(edit.text())
@@ -714,7 +1206,73 @@ class DestDialog(QDialog):
 
 
 class ProcedureCreatorDialog(QDialog):
-    """Dialog for creating new procedures by drawing tracks and setting waypoint constraints."""
+    """
+    Advanced dialog for interactive procedure creation with visual track drawing and constraint management.
+    
+    This sophisticated interface enables users to create new SID and STAR procedures
+    through interactive track drawing on the BlueSky display, combined with detailed
+    waypoint constraint configuration. The dialog provides a seamless workflow for
+    procedure development from initial route sketching to final parameter specification
+    and validation for realistic air traffic procedure implementation.
+    
+    The Procedure Creator integrates directly with BlueSky's visual interface,
+    allowing users to draw procedure tracks directly on the simulation display
+    while the dialog remains open for constraint configuration. This approach
+    provides intuitive procedure development with immediate visual feedback
+    and spatial awareness during the creation process.
+    
+    Key Features:
+    - Interactive track drawing on BlueSky simulation display
+    - Comprehensive waypoint constraint configuration (altitude, speed, restrictions)
+    - Real-time procedure validation and feasibility checking
+    - Integrated polygon creation for procedure boundaries and sectors
+    - Non-modal operation allowing simultaneous BlueSky interaction
+    - Advanced waypoint management with coordinate precision
+    - Constraint validation ensuring realistic procedure parameters
+    
+    Creation Workflow:
+    1. Dialog opens in non-modal mode for BlueSky interaction
+    2. User draws procedure track directly on simulation display
+    3. System captures polygon coordinates and waypoint positions
+    4. User configures constraints for each waypoint (altitude, speed)
+    5. Validation ensures procedure feasibility and safety requirements
+    6. Procedure data is formatted and saved for use in traffic generation
+    
+    Constraint Configuration:
+    - Altitude Constraints: Set minimum, maximum, and target altitudes
+    - Speed Constraints: Configure approach, departure, and en-route speeds
+    - Waypoint Types: Define navigation waypoint characteristics and restrictions
+    - Route Validation: Ensure procedure adherence to airspace and safety requirements
+    - Parameter Optimization: Suggest realistic constraint values based on procedure type
+    
+    Attributes:
+        polygon_name (str): Identifier for the procedure polygon/track
+        waypoints (List[Dict]): Comprehensive waypoint data with constraints
+                              Format: {'name': str, 'lat': float, 'lon': float, 
+                                      'alt': str, 'spd': str}
+    
+    Args:
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Examples:
+        # Create new procedure with interactive drawing
+        dialog = ProcedureCreatorDialog(parent=self)
+        dialog.show()  # Non-modal for BlueSky interaction
+        
+        # User draws track on BlueSky display
+        # Dialog captures coordinates and provides constraint interface
+        # Final procedure data available through dialog methods
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            procedure_data = dialog.get_procedure_data()
+            self._save_new_procedure(procedure_data)
+    
+    Note:
+        The dialog operates in non-modal mode to allow simultaneous interaction
+        with the BlueSky simulation display for track drawing. All coordinate
+        data is captured with high precision, and constraint validation ensures
+        procedures meet safety and operational requirements for realistic traffic simulation.
+    """
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -729,6 +1287,16 @@ class ProcedureCreatorDialog(QDialog):
         self._init_ui()
         
     def _init_ui(self):
+        """
+        Initialize the procedure creation dialog user interface.
+        
+        Note:
+            - Creates multi-step interface for procedure creation
+            - Step 1: Track creation in BlueSky with polygon drawing
+            - Step 2: Procedure file generation and constraint configuration
+            - Step 3: Advanced editing options and waypoint management
+            - Provides status feedback and progress guidance
+        """
         layout = QVBoxLayout(self)
         
         # Step 1: Procedure Name and POLY creation
@@ -789,7 +1357,19 @@ class ProcedureCreatorDialog(QDialog):
         layout.addLayout(buttons)
         
     def _create_poly_command(self):
-        """Create POLY command and send to BlueSky command line."""
+        """
+        Create and execute POLY command for interactive track drawing in BlueSky.
+        
+        Note:
+            - Validates procedure name format (alphanumeric and underscores only)
+            - Sends POLY command to BlueSky command line for interactive drawing
+            - Enables subsequent procedure creation steps on success
+            - Provides user instructions for map interaction
+            - Updates status display with progress feedback
+            
+        Raises:
+            QMessageBox: Warning dialogs for validation failures
+        """
         name = self.name_input.text().strip()
         if not name:
             QMessageBox.warning(self, "Warning", "Please enter a procedure name first.")
@@ -813,7 +1393,20 @@ class ProcedureCreatorDialog(QDialog):
             self.poly_status.setText(f"Error sending command: {e}")
     
     def _create_basic_procedure(self):
-        """Create a basic procedure file using backend command."""
+        """
+        Create a basic procedure file from the drawn polygon track.
+        
+        Note:
+            - Requires polygon to be drawn first using _create_poly_command
+            - Uses SATG backend command to convert polygon to procedure file
+            - Creates procedure file in satg_data/procedures directory
+            - Validates file creation and provides feedback to user
+            - Enables advanced editing options on successful creation
+            - Provides fallback instructions if automatic detection fails
+            
+        Raises:
+            QMessageBox: Warning if no polygon name is set
+        """
         if not self.polygon_name:
             QMessageBox.warning(self, "Warning", "No polygon name set. Create a track first.")
             return
@@ -846,7 +1439,19 @@ class ProcedureCreatorDialog(QDialog):
             self.create_status.setText(f"Error creating procedure: {e}")
     
     def _load_for_editing(self):
-        """Load the created procedure for editing constraints."""
+        """
+        Load the created procedure for advanced constraint editing.
+        
+        Note:
+            - Opens ProcedureEditorDialog for the newly created procedure
+            - Constructs file path automatically from polygon name
+            - Requires successful procedure creation from _create_basic_procedure
+            - Provides modal editor interface for adding altitude and speed constraints
+            - Handles file access and parent tab integration
+            
+        Raises:
+            QMessageBox: Information dialog if parent procedures tab not accessible
+        """
         # Get the parent procedures tab to access loaded procedure files
         procedures_tab = self.parent()
         
@@ -904,7 +1509,75 @@ class ProcedureCreatorDialog(QDialog):
 
 
 class ProcedureEditorDialog(QDialog):
-    """Dialog for editing procedure waypoint constraints."""
+    """
+    Comprehensive dialog for editing and modifying existing procedure waypoint constraints and parameters.
+    
+    This advanced interface provides detailed editing capabilities for existing SID and STAR
+    procedures, allowing modification of waypoint constraints, altitude restrictions, speed
+    limitations, and route parameters. The dialog enables fine-tuning of procedure parameters
+    to optimize traffic flow and ensure compliance with operational requirements and airspace
+    constraints for realistic air traffic management scenarios.
+    
+    The Procedure Editor supports both newly created procedures (from ProcedureCreatorDialog)
+    and existing procedures loaded from scenario files. The interface provides comprehensive
+    editing capabilities with real-time validation to ensure all modifications maintain
+    procedure integrity and operational feasibility.
+    
+    Key Features:
+    - Comprehensive waypoint constraint editing with altitude and speed parameters
+    - Real-time validation ensuring procedure integrity and operational feasibility
+    - Support for both newly created and existing procedures from scenario files
+    - Advanced constraint management with minimum, maximum, and target values
+    - Route parameter modification with trajectory optimization
+    - Procedure validation against airspace and safety requirements
+    - Integrated file management for procedure storage and version control
+    
+    Editing Capabilities:
+    - Altitude Constraints: Modify minimum, maximum, and target altitude restrictions
+    - Speed Constraints: Configure approach, departure, and en-route speed limitations
+    - Waypoint Properties: Edit waypoint names, coordinates, and navigation characteristics
+    - Route Parameters: Modify procedure routing and trajectory specifications
+    - Constraint Validation: Real-time checking of constraint feasibility and safety
+    - Parameter Optimization: Suggest realistic values based on procedure type and airspace
+    
+    Validation Features:
+    - Constraint Consistency: Ensure waypoint constraints are logically consistent
+    - Safety Verification: Validate separation and safety requirements
+    - Performance Limits: Check aircraft performance constraints for procedure feasibility
+    - Airspace Compliance: Verify procedure compliance with airspace operational requirements
+    - Route Integrity: Ensure procedure routing maintains navigation accuracy
+    
+    Attributes:
+        proc_name (str): Name identifier for the procedure being edited
+        waypoints (List[Dict]): Comprehensive waypoint data with constraints and parameters
+        filepath (str): Path to the procedure scenario file for saving modifications
+        direct_file_path (str): Optional direct file path for newly created procedures
+    
+    Args:
+        proc_name (str): Name of the procedure to edit
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+        file_path (str, optional): Direct file path for newly created procedures
+    
+    Examples:
+        # Edit existing procedure from scenario file
+        editor = ProcedureEditorDialog("SID_RUNWAY_09", parent=self)
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            modified_procedure = editor.get_procedure_data()
+            self._save_procedure_changes(modified_procedure)
+            
+        # Edit newly created procedure with direct file path
+        editor = ProcedureEditorDialog(
+            "NEW_STAR_APPROACH", 
+            parent=self,
+            file_path="/path/to/new_procedure.scn"
+        )
+    
+    Note:
+        The editor operates in modal mode to ensure focused editing without conflicts.
+        All modifications are validated in real-time, and the dialog provides comprehensive
+        feedback for constraint violations or operational feasibility issues. File management
+        is integrated to support both scenario file updates and new procedure creation.
+    """
     
     def __init__(self, proc_name, parent=None, file_path=None):
         super().__init__(parent)
@@ -1164,7 +1837,17 @@ class ProcedureEditorDialog(QDialog):
             traceback.print_exc()
     
     def _populate_table(self):
-        """Populate the table with waypoint data."""
+        """
+        Populate the waypoints table with current procedure data.
+        
+        Note:
+            - Disconnects change signals temporarily to prevent recursion
+            - Sets appropriate colors and editability for different cell types
+            - Handles named waypoints vs coordinate waypoints differently
+            - Applies visual indicators (colors) for validation status
+            - Read-only cells (gray), editable cells (white), warnings (yellow)
+            - Reconnects change signals after population complete
+        """
         # Temporarily disconnect the signal to prevent recursion
         try:
             self.waypoints_table.itemChanged.disconnect(self._on_table_changed)
@@ -1244,7 +1927,20 @@ class ProcedureEditorDialog(QDialog):
         self.waypoints_table.itemChanged.connect(self._on_table_changed)
     
     def _on_table_changed(self, item):
-        """Update waypoint data when table items change."""
+        """
+        Handle changes to waypoint table cells with validation and conflict resolution.
+        
+        Args:
+            item (QTableWidgetItem): The table item that was modified
+            
+        Note:
+            - Validates waypoint names against navigation database
+            - Handles coordinate vs named waypoint conflicts
+            - Updates waypoint data structure with table changes
+            - Provides user dialogs for conflict resolution
+            - Temporarily disconnects signals to prevent recursion
+            - Applies appropriate cell formatting and validation indicators
+        """
         row = item.row()
         col = item.column()
         
@@ -1409,7 +2105,18 @@ class ProcedureEditorDialog(QDialog):
                 self.waypoints_table.itemChanged.connect(self._on_table_changed)
     
     def _update_coordinate_cells_readonly(self, row):
-        """Update coordinate cells to show read-only status for named waypoints."""
+        """
+        Update coordinate cells to show read-only status for named waypoints.
+        
+        Args:
+            row (int): Table row to update coordinate cell display
+            
+        Note:
+            - Sets coordinate cells to "Named Waypoint" text for named waypoints
+            - Applies gray background color to indicate read-only status
+            - Removes ItemIsEditable flag to prevent user editing
+            - Used when waypoint is identified as navigation database waypoint
+        """
         readonly_color = QColor(230, 230, 230)
         
         lat_item = self.waypoints_table.item(row, 1)
@@ -1426,7 +2133,21 @@ class ProcedureEditorDialog(QDialog):
             lon_item.setBackground(readonly_color)
 
     def _save_procedure(self):
-        """Save the procedure file with updated constraints in the new DEFWPT format."""
+        """
+        Save the procedure file with updated waypoint constraints and validation.
+        
+        Note:
+            - Updates waypoints from table to capture any reordering from drag-drop
+            - Validates all waypoint names and coordinates before saving
+            - Checks waypoint name format (alphanumeric, dash, underscore only)
+            - Validates coordinate ranges for coordinate waypoints
+            - Uses DEFWPT format for procedure file output
+            - Provides comprehensive error reporting for validation failures
+            - Preserves file structure and adds timestamp comments
+            
+        Raises:
+            QMessageBox: Warning dialogs for validation errors or file access issues
+        """
         try:
             # Update waypoints from table to capture any reordering
             self._update_waypoints_from_table()
@@ -1692,7 +2413,18 @@ class ProcedureEditorDialog(QDialog):
             QMessageBox.critical(self, "Error", error_msg)
 
     def _add_waypoint(self):
-        """Add a new waypoint to the procedure."""
+        """
+        Add a new waypoint to the procedure with type selection.
+        
+        Note:
+            - Prompts user to choose between named or coordinate waypoint
+            - Named waypoints: Uses navigation database (e.g., EHAM, LAK)
+            - Coordinate waypoints: Uses latitude/longitude pairs
+            - Auto-generates names for coordinate waypoints based on procedure
+            - Validates input coordinates and waypoint names
+            - Updates table display after adding waypoint
+            - Appends new waypoint to end of procedure route
+        """
         # Create new waypoint dialog
         from PyQt6.QtWidgets import QInputDialog
         
@@ -1745,7 +2477,20 @@ class ProcedureEditorDialog(QDialog):
             self.status_label.setText(f"Added coordinate waypoint: {auto_name} ({lat:.6f}, {lon:.6f})")
     
     def _delete_waypoint(self):
-        """Delete the selected waypoint from the procedure."""
+        """
+        Delete the currently selected waypoint from the procedure.
+        
+        Note:
+            - Requires a waypoint to be selected in the table
+            - Shows confirmation dialog before deletion
+            - Removes waypoint from internal data structure
+            - Refreshes table display after deletion
+            - Updates status with deleted waypoint name
+            - Validates selection bounds before deletion
+            
+        Raises:
+            QMessageBox: Information dialog if no waypoint is selected
+        """
         current_row = self.waypoints_table.currentRow()
         if current_row < 0:
             QMessageBox.information(self, "No Selection", "Please select a waypoint to delete.")
@@ -1772,7 +2517,17 @@ class ProcedureEditorDialog(QDialog):
             self.status_label.setText(f"Deleted waypoint: {waypoint_name}")
     
     def _update_waypoints_from_table(self):
-        """Update waypoints list from current table order (for drag-drop support)."""
+        """
+        Update internal waypoints list from current table state after drag-drop operations.
+        
+        Note:
+            - Reads all table rows to reconstruct waypoints list in current order
+            - Preserves waypoint data including names, coordinates, constraints
+            - Handles both named waypoints and coordinate waypoints appropriately
+            - Maintains waypoint type information (is_named flag)
+            - Called before saving to capture any drag-drop reordering
+            - Validates coordinate values and handles parsing errors gracefully
+        """
         try:
             new_waypoints = []
             
@@ -1812,7 +2567,16 @@ class ProcedureEditorDialog(QDialog):
             print(f"Error updating waypoints from table: {e}")
     
     def _setup_simple_drag_drop(self):
-        """Setup simple drag and drop using Qt's built-in functionality."""
+        """
+        Setup simple drag and drop functionality for waypoint reordering.
+        
+        Note:
+            - Uses Qt's built-in drag-drop with custom enhancements
+            - Timer-based approach to detect completed drag operations
+            - Monitors selection changes to trigger waypoint synchronization
+            - Restricts drops to between-rows positions only
+            - Prevents dropping on existing rows to avoid data corruption
+        """
         # Use a simple timer-based approach to detect changes
         from PyQt6.QtCore import QTimer
         self._sync_timer = QTimer()
@@ -1824,9 +2588,18 @@ class ProcedureEditorDialog(QDialog):
         
         # Override drop event to only allow drops between rows
         self._setup_between_rows_only_drop()
-    
+
     def _setup_between_rows_only_drop(self):
-        """Setup drop event to only allow drops between rows, not on rows."""
+        """
+        Setup drop event restrictions to allow drops only between rows.
+        
+        Note:
+            - Prevents dropping directly on existing rows
+            - Allows drops only in gaps between rows for insertion
+            - Overrides default Qt drag-move and drop event handlers
+            - Provides visual feedback for valid drop zones
+            - Maintains data integrity by preventing row replacement
+        """
         original_drop_event = self.waypoints_table.dropEvent
         original_drag_move_event = self.waypoints_table.dragMoveEvent
         
@@ -1915,11 +2688,27 @@ class ProcedureEditorDialog(QDialog):
         self.waypoints_table.dropEvent = custom_drop_event
     
     def _schedule_sync(self):
-        """Schedule a sync operation after a short delay."""
+        """
+        Schedule a delayed synchronization operation after drag-drop.
+        
+        Note:
+            - Uses 100ms delay to ensure drag operation is fully complete
+            - Prevents multiple sync operations during rapid UI changes
+            - Timer is single-shot to avoid overlapping sync operations
+        """
         self._sync_timer.start(100)  # 100ms delay
-    
+
     def _sync_waypoints_after_drag(self):
-        """Synchronize waypoints list with current table order after drag operations."""
+        """
+        Synchronize internal waypoints list with current table row order.
+        
+        Note:
+            - Called after drag-drop operations to maintain data consistency
+            - Matches waypoints by name to preserve all waypoint data
+            - Validates table and waypoints count before synchronization
+            - Updates internal waypoint order without losing constraints
+            - Handles cases where table and waypoints are temporarily mismatched
+        """
         try:
             # Only sync if table has same number of rows as our waypoints
             if self.waypoints_table.rowCount() != len(self.waypoints):
@@ -2063,7 +2852,17 @@ class ProcedureEditorDialog(QDialog):
             self._create_drag_widget()
     
     def _create_drag_widget(self):
-        """Create a floating widget that follows the mouse during drag."""
+        """
+        Create a floating visual widget that follows the mouse during drag operations.
+        
+        Note:
+            - Creates semi-transparent label showing waypoint name being dragged
+            - Uses custom styling with blue background and rounded borders
+            - Sets window flags to behave as tooltip without window frame
+            - Makes widget transparent to mouse events to avoid interference
+            - Displays waypoint name with asterisk prefix for clarity
+            - Widget follows mouse cursor to provide visual feedback during drag
+        """
         if self._drag_start_row >= 0:
             # Get the waypoint name being dragged
             name_item = self.waypoints_table.item(self._drag_start_row, 0)
@@ -2497,7 +3296,50 @@ class ProcedureEditorDialog(QDialog):
 # --- top strip -------------------------------------------------------------
 
 class TopStrip(QWidget):
-    """Top strip with base dir controls and a single RESET button."""
+    """
+    Top navigation strip widget providing SATG configuration management and system controls.
+    
+    This widget creates a horizontal toolbar at the top of the SATG GUI window, providing
+    essential navigation and configuration management functionality. The strip includes
+    controls for base directory management, configuration persistence, cache management,
+    and system reset operations for comprehensive SATG workflow management.
+    
+    The TopStrip serves as the primary control interface for SATG session management,
+    enabling users to configure working directories, save and load configuration states,
+    access help documentation, and perform system maintenance operations. The widget
+    integrates with the main SATG window to provide seamless configuration management
+    across all SATG operational modes and training scenarios.
+    
+    Control Categories:
+    - Directory Management: Base folder browsing and path display functionality
+    - Configuration Persistence: Save/load system with automatic state management
+    - Session Management: Configuration editing and cache management interfaces
+    - System Operations: Help access and BlueSky reset functionality
+    - Status Display: Real-time path information and operational status feedback
+    
+    The widget maintains integration with the parent SATG window for configuration
+    access and state synchronization, ensuring consistent behavior across all SATG
+    operations and providing centralized access to essential system functions.
+    
+    Attributes:
+        main_window: Reference to parent SATG window for configuration access
+        
+    Args:
+        parent (QWidget, optional): Parent widget, typically SATGWindow instance
+        
+    Examples:
+        # Create top strip as part of SATG window layout
+        top_strip = TopStrip(parent=satg_window)
+        main_layout.addWidget(top_strip)
+        
+        # Widget automatically connects to parent window configuration system
+        # and provides integrated control interface for all SATG operations
+    
+    Note:
+        The TopStrip requires a parent SATGWindow instance to access configuration
+        management systems. All controls integrate with the parent window's state
+        management and provide consistent behavior across SATG operational modes.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_window = parent  # Store reference to main window for config access
@@ -2542,7 +3384,18 @@ class TopStrip(QWidget):
             _emit(_join_tokens("SATG_DIR", _qpath(path)))
     
     def _save_config(self):
-        """Save current tab configuration to a file."""
+        """
+        Save current tab configuration to a file for later reuse.
+        
+        Note:
+            - Extracts complete configuration from currently active tab
+            - Prompts user for configuration name via input dialog
+            - Creates configSaves directory if it doesn't exist
+            - Supports all tab types: Procedures, Historic Sampling, 
+              Runway Limits, Ground Control, Route Control
+            - Saves as JSON file with tab-specific structure
+            - Provides feedback on save success/failure
+        """
         if not self.main_window:
             QMessageBox.warning(self, "Error", "Cannot access main window")
             return
@@ -2585,7 +3438,22 @@ class TopStrip(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
     
     def _load_config(self):
-        """Load a saved configuration into the current tab."""
+        """
+        Load a saved configuration into the current tab.
+        
+        Note:
+            - Scans configSaves directory for matching configuration files
+            - Filters configurations by current tab type
+            - Presents selection dialog for available configurations
+            - Applies configuration to current tab using tab-specific methods
+            - Validates configuration format and compatibility
+            - Provides feedback on load success/failure
+            
+        Examples:
+            Configuration files named like:
+            - "morning_rush_procedures.json" for Procedures tab
+            - "eurocontrol_2023_historic_sampling.json" for Historic Sampling
+        """
         if not self.main_window:
             QMessageBox.warning(self, "Error", "Cannot access main window")
             return
@@ -2639,7 +3507,22 @@ class TopStrip(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
     
     def _extract_tab_config(self, tab_widget, tab_name: str) -> Optional[Dict]:
-        """Extract configuration data from a tab widget."""
+        """
+        Extract configuration data from a tab widget based on tab type.
+        
+        Args:
+            tab_widget (QWidget): Tab widget to extract configuration from
+            tab_name (str): Name of the tab for type identification
+            
+        Returns:
+            Optional[Dict]: Configuration dictionary or None if unsupported tab
+            
+        Note:
+            - Routes to appropriate extraction method based on tab name
+            - Supports: Realistic Replay, Geometric Conflicts, Random Conflicts,
+              Procedures, Historic Sampling tabs
+            - Returns comprehensive configuration including all relevant settings
+        """
         config = {}
         
         if tab_name == "Realistic Replay":
@@ -2656,9 +3539,25 @@ class TopStrip(QWidget):
             return None
             
         return config
-    
+
     def _apply_tab_config(self, tab_widget, tab_name: str, config_data: Dict) -> bool:
-        """Apply configuration data to a tab widget."""
+        """
+        Apply configuration data to a tab widget based on tab type.
+        
+        Args:
+            tab_widget (QWidget): Tab widget to apply configuration to
+            tab_name (str): Name of the tab for type identification
+            config_data (Dict): Configuration data to apply
+            
+        Returns:
+            bool: True if configuration applied successfully, False otherwise
+            
+        Note:
+            - Routes to appropriate application method based on tab name
+            - Validates configuration data before applying
+            - Handles errors gracefully and provides feedback
+            - Updates UI controls with loaded configuration values
+        """
         try:
             if tab_name == "Realistic Replay":
                 return self._apply_rl_config(tab_widget, config_data)
@@ -2676,7 +3575,26 @@ class TopStrip(QWidget):
             return False
     
     def _extract_proc_config(self, tab_widget) -> Dict:
-        """Extract Procedures tab configuration."""
+        """
+        Extract comprehensive configuration from Procedures tab.
+        
+        Args:
+            tab_widget (QWidget): Procedures tab widget to extract configuration from
+            
+        Returns:
+            Dict: Complete procedures configuration including:
+                - Loaded procedure and waypoint files
+                - Origin and destination airports configuration  
+                - Generic flight parameters (altitude, speed, aircraft types)
+                - SID/STAR specific parameters and schedules
+                - EUROCONTROL data integration settings
+                
+        Note:
+            - Captures all UI control states and file references
+            - Includes phase altitude configuration for runways/procedures
+            - Preserves aircraft type selections and flight parameters
+            - Safe extraction using getattr with defaults for optional attributes
+        """
         config = {}
         
         # Files loaded
@@ -2763,7 +3681,24 @@ class TopStrip(QWidget):
         return config
     
     def _apply_proc_config(self, tab_widget, config_data: Dict) -> bool:
-        """Apply configuration to Procedures tab."""
+        """
+        Apply saved configuration to Procedures tab, restoring complete state.
+        
+        Args:
+            tab_widget (QWidget): Procedures tab widget to apply configuration to
+            config_data (Dict): Configuration data to restore
+            
+        Returns:
+            bool: True if configuration applied successfully
+            
+        Note:
+            - Clears existing procedures and waypoint files from backend and GUI
+            - Restores all parameter values including flight counts and constraints
+            - Reloads procedure and waypoint files with proper backend registration
+            - Restores origin/destination airport configurations
+            - Handles signal blocking to prevent premature UI updates
+            - Maintains phase altitude and schedule configurations
+        """
         try:
             # Clear existing files from GUI lists and backend first
             tab_widget.lst_wpt.clear()
@@ -3042,7 +3977,24 @@ class TopStrip(QWidget):
         }
     
     def _extract_hs_config(self, tab_widget) -> Dict:
-        """Extract Historic Sampling tab configuration."""
+        """
+        Extract comprehensive Historic Sampling tab configuration.
+        
+        Args:
+            tab_widget (QWidget): Historic Sampling tab widget
+            
+        Returns:
+            Dict: Complete configuration including:
+                - Data files (flights, filed, actual, FIR)
+                - ML model parameters (XGBoost, KDE, derivative settings)
+                - Trajectory generation parameters
+                - Filtering and sampling configurations
+                
+        Note:
+            - Captures all machine learning model hyperparameters
+            - Includes file paths for EUROCONTROL data sources
+            - Preserves trajectory generation and filtering settings
+        """
         config = {}
         
         # Data files
@@ -3389,7 +4341,24 @@ class TopStrip(QWidget):
             return False
     
     def _extract_gc_config(self, tab_widget) -> Dict:
-        """Extract Geometric Conflicts tab configuration."""
+        """
+        Extract Geometric Conflicts tab configuration.
+        
+        Args:
+            tab_widget (QWidget): Geometric Conflicts tab widget
+            
+        Returns:
+            Dict: Complete configuration including:
+                - Separation minima settings (horizontal/vertical)
+                - Absolute conflict parameters (aircraft types, positions, flight levels)
+                - Relative conflict parameters and flight geometry
+                - Conflict detection thresholds and timing parameters
+                
+        Note:
+            - Captures both absolute and relative conflict generation modes
+            - Includes aircraft positioning (coordinates or waypoint-based)
+            - Preserves flight level ranges and speed configurations
+        """
         config = {}
         
         # Minima panel settings
@@ -3776,7 +4745,20 @@ class TopStrip(QWidget):
         dialog.exec()
 
     def _manage_cache(self):
-        """Open a dialog to manage cache files."""
+        """
+        Open cache management dialog for viewing and deleting cache files.
+        
+        Note:
+            - Retrieves current cache information from traffixgen backend
+            - Shows error dialog if cache access fails
+            - Displays informational message if no cache files exist
+            - Opens CacheManagerDialog for interactive cache management
+            - Handles backend communication errors gracefully
+            - Allows users to delete individual or all cache files
+            
+        Raises:
+            QMessageBox: Warning dialogs for cache access errors or no files found
+        """
         try:
             # Get cache information from TraffixGen
             from . import traffixgen
@@ -3801,58 +4783,111 @@ class TopStrip(QWidget):
 # Config Manager Dialog Class
 class ConfigManagerDialog(QDialog):
     """
-    Dialog for comprehensive management of saved SATG configurations.
+    Advanced configuration management dialog for comprehensive SATG session persistence.
     
-    This dialog provides a centralized interface for managing all saved SATG
-    configurations including creation, loading, deletion, and organization of
-    configuration files. The dialog supports both legacy and modern configuration
-    formats with automatic backward compatibility conversion.
+    This sophisticated dialog provides centralized management for all saved SATG
+    configurations, supporting complete session state persistence across all tabs
+    and operational modes. The dialog handles configuration lifecycle management
+    including creation, loading, deletion, preview, and organization of complex
+    multi-tab configuration files with full backward compatibility support.
     
-    The Configuration Manager handles the complete lifecycle of configuration
-    persistence, ensuring users can save their complex filter settings, model
-    parameters, and interface configurations for reuse across sessions. All
-    configurations are stored as JSON files with human-readable formatting.
+    The Configuration Manager serves as the central hub for SATG workflow persistence,
+    enabling users to save intricate filter settings, model parameters, aircraft
+    configurations, and interface states for seamless reuse across training sessions.
+    Advanced features include configuration preview, validation, backup management,
+    and automatic format conversion for legacy configurations.
     
-    Key Features:
-    - List all available saved configurations with creation timestamps
-    - Load existing configurations with full validation and error handling
-    - Delete unwanted configurations with confirmation dialogs
-    - Preview configuration contents before loading
-    - Automatic backup creation before overwriting existing configurations
-    - Backward compatibility support for legacy configuration formats
-    - Comprehensive error handling for corrupted or invalid files
+    Key Management Features:
+    - Comprehensive configuration listing with metadata (creation dates, file sizes)
+    - Interactive configuration loading with full validation and error recovery
+    - Safe configuration deletion with confirmation dialogs and backup creation
+    - Real-time configuration preview with structured content display
+    - Automatic backup creation before destructive operations
+    - Legacy configuration format detection and automatic conversion
+    - Robust error handling for corrupted, incomplete, or invalid configuration files
     
-    Configuration Content:
-    - All tab settings (Realistic Replay, Historic Sampling, Conflicts, Procedures)
-    - Filter configurations including airspace, altitude, and temporal constraints
-    - Model training parameters and machine learning settings
-    - File paths for data sources with validation
-    - UI state including widget values and selections
-    - Cache management settings and optimization preferences
+    Supported Configuration Content:
+    - Complete tab settings across all SATG operational modes (RL, HS, GC, RC, Proc)
+    - Advanced filter configurations with airspace, altitude, and temporal constraints
+    - Aircraft type selections and performance model parameters
+    - Geometric conflict parameters and separation minima settings
+    - Procedure configurations including SID/STAR settings and waypoint definitions
+    - Random conflict generation parameters and spatial distribution settings
+    - User interface preferences and window state information
     
-    Backward Compatibility:
-    - Automatically detects legacy configuration formats
-    - Converts old filter structures (exclude -> include semantics)
-    - Migrates deprecated parameter names to current standards
-    - Preserves user data during format upgrades
-    - Provides informative messages about configuration updates
+    File Management Operations:
+    - JSON-based configuration storage with human-readable formatting
+    - Automatic file validation and integrity checking on load operations
+    - Configuration metadata tracking including creation and modification timestamps
+    - Safe file operations with atomic writes and rollback capabilities
+    - Duplicate detection and resolution for configuration name conflicts
+    - Bulk operations for configuration organization and maintenance
     
-    Args:
-        config_dir (str): Directory containing saved configuration files
-        config_files (List[str]): List of available configuration filenames
-        parent (QWidget, optional): Parent widget for proper dialog behavior
+    The dialog integrates seamlessly with the SATG main window configuration system
+    to provide transparent persistence across all operational modes and training
+    scenarios, ensuring users can maintain consistent setups across sessions.
     
     Attributes:
-        config_dir (str): Path to configuration storage directory
-        config_files (List[str]): Current list of available configuration files
-        config_list (QListWidget): Widget displaying available configurations
-        selected_config (str): Currently selected configuration filename
-    
-    Returns:
-        str: Filename of selected configuration when loading
-        None: When dialog is cancelled or no selection made
-    
+        config_dir (str): Directory path containing saved configuration files
+        config_files (List[str]): List of available configuration filenames
+        config_list (QListWidget): Interactive list widget for configuration selection
+        
+    Args:
+        config_dir (str): Path to directory containing configuration files
+        config_files (List[str]): List of configuration filenames to display
+        parent (QWidget, optional): Parent widget for proper dialog modal behavior
+        
+    Methods:
+        refresh_list(): Updates configuration list display with current files
+        load_config(): Loads selected configuration with validation
+        delete_config(): Safely deletes selected configuration with confirmation
+        preview_config(): Displays configuration content in preview window
+        
     Examples:
+        # Open configuration manager for saved configurations
+        config_dir = os.path.join("satg_data", "configSaves")
+        config_files = [f for f in os.listdir(config_dir) if f.endswith('.json')]
+        dialog = ConfigManagerDialog(config_dir, config_files, parent=self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Configuration operations completed successfully
+            self.refresh_configuration_display()
+    
+    Note:
+        The dialog requires valid configuration directory structure and handles
+        all file operations safely with proper error recovery. Configuration
+        loading automatically validates content and provides detailed error
+        messages for troubleshooting invalid or corrupted configuration files.
+        
+        Configuration Content includes:
+        - Model training parameters and machine learning settings
+        - File paths for data sources with validation
+        - UI state including widget values and selections
+        - Cache management settings and optimization preferences
+        
+        Backward Compatibility:
+        - Automatically detects legacy configuration formats
+        - Converts old filter structures (exclude -> include semantics)
+        - Migrates deprecated parameter names to current standards
+        - Preserves user data during format upgrades
+        - Provides informative messages about configuration updates
+        
+        Args:
+            config_dir (str): Directory containing saved configuration files
+            config_files (List[str]): List of available configuration filenames
+            parent (QWidget, optional): Parent widget for proper dialog behavior
+        
+        Attributes:
+            config_dir (str): Path to configuration storage directory
+            config_files (List[str]): Current list of available configuration files
+            config_list (QListWidget): Widget displaying available configurations
+            selected_config (str): Currently selected configuration filename
+        
+        Returns:
+            str: Filename of selected configuration when loading
+            None: When dialog is cancelled or no selection made
+        
+        Examples:
         # Create dialog with current configuration state
         dialog = ConfigManagerDialog(
             config_dir="./configs",
@@ -3866,13 +4901,14 @@ class ConfigManagerDialog(QDialog):
             if selected_file:
                 self._load_configuration(selected_file)
     
-    Note:
-        The dialog automatically handles configuration format migrations and
-        provides detailed error messages for invalid or corrupted configuration
-        files. All operations include confirmation dialogs to prevent accidental
-        data loss, and the dialog maintains consistency with the main application's
-        styling and behavior patterns.
-    """
+        
+        Note:
+            The dialog automatically handles configuration format migrations and
+            provides detailed error messages for invalid or corrupted configuration
+            files. All operations include confirmation dialogs to prevent accidental
+            data loss, and the dialog maintains consistency with the main application's
+            styling and behavior patterns.
+        """
     
     def __init__(self, config_dir: str, config_files: List[str], parent=None):
         super().__init__(parent)
@@ -3956,7 +4992,18 @@ class ConfigManagerDialog(QDialog):
         return current_item.data(Qt.ItemDataRole.UserRole)
     
     def _rename_config(self):
-        """Rename the selected configuration."""
+        """
+        Rename the selected configuration file with user input.
+        
+        Note:
+            - Gets currently selected configuration file from list
+            - Extracts current name and preserves tab type suffix
+            - Prompts user for new configuration name via input dialog
+            - Reconstructs filename with proper tab type suffix
+            - Performs file system rename operation
+            - Refreshes configuration list to show updated name
+            - Handles file conflicts and operation errors gracefully
+        """
         config_file = self._get_selected_config()
         if not config_file:
             return
@@ -3996,7 +5043,18 @@ class ConfigManagerDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to rename configuration:\n{str(e)}")
     
     def _duplicate_config(self):
-        """Duplicate the selected configuration."""
+        """
+        Create a duplicate copy of the selected configuration file.
+        
+        Note:
+            - Gets currently selected configuration file from list
+            - Extracts name and preserves tab type suffix for consistency
+            - Prompts user for new name with "_copy" suffix as default
+            - Copies entire configuration file to new location
+            - Preserves all configuration settings in the duplicate
+            - Refreshes configuration list to show new duplicate
+            - Handles file operations and naming conflicts gracefully
+        """
         config_file = self._get_selected_config()
         if not config_file:
             return
@@ -4142,6 +5200,17 @@ class CacheManagerDialog(QDialog):
         self.refresh_list()
     
     def _setup_ui(self):
+        """
+        Setup the cache management dialog user interface.
+        
+        Note:
+            - Creates cache information display with total size and file count
+            - Sets up list widget for cache files with extended selection mode
+            - Adds action buttons for refresh, delete selected, and clear all
+            - Connects button click events to appropriate handler methods
+            - Applies consistent styling for information display
+            - Enables multiple file selection for batch operations
+        """
         layout = QVBoxLayout(self)
         
         # Info section
@@ -4195,7 +5264,17 @@ class CacheManagerDialog(QDialog):
         self._update_button_states()
     
     def refresh_list(self):
-        """Refresh the cache files list."""
+        """
+        Refresh the cache files list with current cache information.
+        
+        Note:
+            - Retrieves latest cache information from traffixgen backend
+            - Clears existing list and rebuilds with current data
+            - Displays file names with size, type, and modification time
+            - Stores complete file information in list item data
+            - Updates button states based on new selection
+            - Handles backend communication errors gracefully
+        """
         try:
             from . import traffixgen
             self.cache_info = traffixgen.get_cache_info()
@@ -4221,16 +5300,35 @@ class CacheManagerDialog(QDialog):
             QMessageBox.warning(self, "Error", f"Error refreshing cache list: {e}")
     
     def _get_selected_files(self):
-        """Get list of selected cache file info."""
+        """
+        Get list of selected cache file information from the list widget.
+        
+        Returns:
+            List[Dict]: List of file information dictionaries for selected items
+                       Each dict contains: {'file': str, 'size_mb': float, 'type': str, 'modified': float}
+                       
+        Note:
+            - Extracts file info stored in UserRole data of selected list items
+            - Returns empty list if no items are selected
+            - File info includes name, size, type, and modification timestamp
+        """
         selected_files = []
         for item in self.files_list.selectedItems():
             file_info = item.data(Qt.ItemDataRole.UserRole)
             if file_info:
                 selected_files.append(file_info)
         return selected_files
-    
+
     def _update_button_states(self):
-        """Update button states based on selection."""
+        """
+        Update button states based on current selection and file availability.
+        
+        Note:
+            - Enables "Delete Selected" button only when files are selected
+            - Enables "Clear All" button only when cache files exist
+            - Called automatically when selection changes
+            - Provides appropriate UI feedback for available actions
+        """
         has_selection = len(self.files_list.selectedItems()) > 0
         has_files = self.files_list.count() > 0
         
@@ -4238,7 +5336,18 @@ class CacheManagerDialog(QDialog):
         self.clear_all_btn.setEnabled(has_files)
     
     def _delete_selected(self):
-        """Delete selected cache files."""
+        """
+        Delete selected cache files with confirmation dialog.
+        
+        Note:
+            - Gets currently selected files from the list widget
+            - Shows confirmation dialog with file names to be deleted
+            - Uses traffixgen backend to perform actual file deletion
+            - Provides individual error reporting for failed deletions
+            - Refreshes list display after successful deletion
+            - Shows success message with count of deleted files
+            - Action cannot be undone - files are permanently removed
+        """
         selected_files = self._get_selected_files()
         if not selected_files:
             return
@@ -4301,7 +5410,67 @@ class CacheManagerDialog(QDialog):
 
 # Aircraft Type Selection Dialog
 class AircraftTypeDialog(QDialog):
-    """Dialog for selecting aircraft types from available performance models."""
+    """
+    Advanced aircraft type selection dialog with performance model integration.
+    
+    This comprehensive dialog provides an intelligent interface for selecting aircraft
+    types from the active BlueSky performance model, supporting multiple selection
+    modes and automatic type validation. The dialog integrates with OpenAP, BADA,
+    and legacy performance models to provide accurate aircraft type availability
+    and enables informed selection for realistic scenario generation.
+    
+    The dialog features automatic performance model detection and aircraft type
+    extraction, providing users with comprehensive lists of supported aircraft
+    types for scenario configuration. Multi-selection capabilities enable users
+    to configure diverse aircraft mixes for training scenarios while ensuring
+    compatibility with the active BlueSky performance model configuration.
+    
+    Key Features:
+    - Automatic performance model integration and aircraft type discovery
+    - Multi-selection interface with checkbox controls for aircraft type selection
+    - Current selection preservation and modification capabilities
+    - Alphabetical sorting and organized display for easy aircraft type location
+    - Real-time validation against active performance model capabilities
+    - Comprehensive aircraft type coverage across commercial and regional aircraft
+    
+    Performance Model Support:
+    - OpenAP: Advanced performance model with detailed aircraft characteristics
+    - BADA: Industry-standard aircraft performance database integration
+    - Legacy Models: Backward compatibility with older BlueSky installations
+    - Fallback Types: Common aircraft types for robust operation across configurations
+    
+    Attributes:
+        selected_types (List[str]): Currently selected aircraft type designators
+        available_types (List[str]): All aircraft types available from performance model
+        checkboxes (Dict[str, QCheckBox]): Checkbox controls for aircraft type selection
+        
+    Args:
+        current_types (str, optional): Comma-separated string of currently selected types
+        parent (QWidget, optional): Parent widget for proper dialog modal behavior
+        
+    Returns:
+        str: Comma-separated string of selected aircraft types on acceptance
+        
+    Examples:
+        # Open dialog with current aircraft type selection
+        current = "A320,B738,A350"
+        dialog = AircraftTypeDialog(current, parent=self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_types = dialog.get_selected_types()
+            # Update configuration with new aircraft type selection
+        
+        # Open dialog for new aircraft type selection
+        dialog = AircraftTypeDialog(parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            aircraft_config = dialog.get_selected_types()
+    
+    Note:
+        The dialog automatically queries the active BlueSky performance model
+        for aircraft type availability. Selection is validated against model
+        capabilities to ensure scenario compatibility and operational accuracy
+        across different BlueSky configuration and performance model installations.
+    """
     
     def __init__(self, current_types: str = "", parent=None):
         super().__init__(parent)
@@ -6429,6 +7598,91 @@ class EurocontrolFilterDialog(QDialog):
 
 
 class PhaseAltitudeConfigDialog(QDialog):
+    """
+    Advanced dialog for configuring flight phase altitude ranges with track-by-track analysis.
+    
+    This sophisticated interface provides comprehensive flight phase altitude configuration
+    capabilities with individual track analysis, visual altitude distribution displays,
+    and intelligent phase boundary suggestions based on actual flight data characteristics.
+    The dialog enables precise flight phase definition for accurate machine learning model
+    training and realistic synthetic traffic generation scenarios.
+    
+    The Phase Altitude Configuration system analyzes processed flight track data to provide
+    data-driven recommendations for flight phase boundaries while allowing manual override
+    and customization. Each track can be individually analyzed to understand altitude
+    patterns and optimize phase definitions for the specific dataset characteristics.
+    
+    Key Features:
+    - Track-by-track flight phase altitude configuration with individual analysis
+    - Visual altitude distribution analysis with graphical representation
+    - Intelligent phase boundary suggestions based on actual flight data patterns
+    - Real-time altitude range validation and feasibility checking
+    - Integration with processed track data for accurate phase classification
+    - Advanced visualization showing altitude distributions and phase transitions
+    - Comprehensive validation ensuring logical phase progression and operational realism
+    
+    Configuration Capabilities:
+    - Individual Track Analysis: Examine altitude patterns for each flight track separately
+    - Phase Boundary Definition: Set precise altitude ranges for takeoff, climb, cruise, descent, approach
+    - Visual Distribution Analysis: Graphical display of altitude distributions and phase characteristics
+    - Data-Driven Suggestions: Intelligent recommendations based on actual flight data patterns
+    - Manual Override: Allow custom phase definitions when automatic suggestions need adjustment
+    - Validation System: Ensure phase boundaries are logically consistent and operationally realistic
+    
+    Track Navigation and Analysis:
+    - Sequential Track Review: Navigate through individual flight tracks for detailed analysis
+    - Callsign Mapping: Integration with flight identification and callsign data
+    - Track Data Integration: Direct access to processed flight track altitude and position data
+    - Configuration Persistence: Maintain individual track configurations throughout session
+    - Bulk Configuration: Apply settings across multiple tracks with validation
+    
+    Visualization Features:
+    - Altitude Distribution Graphs: Visual representation of altitude patterns for each track
+    - Phase Boundary Markers: Clear indication of current phase altitude boundaries
+    - Data Quality Indicators: Visual feedback on track data completeness and quality
+    - Real-time Updates: Immediate visual feedback when adjusting phase boundaries
+    - Statistical Analysis: Display altitude statistics and distribution characteristics
+    
+    Attributes:
+        current_altitudes (Dict): Current flight phase altitude configuration settings
+        track_data (Dict): Processed flight track data with callsigns as keys
+        callsign_to_flight_id (Dict): Mapping from aircraft callsigns to flight identifiers
+        track_configurations (Dict): Per-track phase configurations stored in memory
+        current_track_index (int): Index of currently displayed track for navigation
+        track_names (List[str]): List of available track callsigns for analysis
+    
+    Args:
+        current_altitudes (Dict): Current phase altitude settings for initialization
+        processed_track_data (Dict): Flight track data with altitude and position information
+        callsign_to_flight_id (Dict): Mapping from callsigns to flight identifiers
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Examples:
+        # Configure phase altitudes with track analysis
+        track_data = {
+            'AAL123': {'altitudes': [0, 1500, 25000, 35000], 'phases': [...]}
+        }
+        callsign_map = {'AAL123': 'flight_001'}
+        current_config = {
+            'takeoff': (0, 1500), 'climb': (1500, 25000),
+            'cruise': (25000, 40000), 'descent': (25000, 5000),
+            'approach': (5000, 0)
+        }
+        
+        dialog = PhaseAltitudeConfigDialog(
+            current_config, track_data, callsign_map, parent=self
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated_altitudes = dialog.get_altitude_configuration()
+            self._apply_phase_altitudes(updated_altitudes)
+    
+    Note:
+        The dialog operates in modal mode to ensure focused configuration without conflicts.
+        All altitude configurations are validated for logical consistency and operational
+        realism. The track-by-track analysis provides detailed insights into flight data
+        characteristics and enables data-driven phase boundary optimization for machine learning.
+    """
+    
     def __init__(self, current_altitudes, processed_track_data, callsign_to_flight_id, parent=None):
         super().__init__(parent)
         self.current_altitudes = current_altitudes.copy()
@@ -7409,7 +8663,77 @@ class PhaseAltitudeConfigDialog(QDialog):
 
 
 class PhaseVisualizationWidget(QWidget):
-    """Simplified widget to draw the flight phase visualization graph"""
+    """
+    Advanced visualization widget for displaying flight phase distributions and altitude analysis.
+    
+    This sophisticated visualization component provides comprehensive graphical representation
+    of flight phase data including altitude ranges, phase distributions, and operational
+    characteristics for flight data analysis and filtering configuration. The widget enables
+    users to visualize flight phase patterns and make informed decisions about filtering
+    parameters for machine learning model training and traffic generation.
+    
+    The Phase Visualization system uses color-coded graphical representations to display
+    flight phase distributions across different altitude ranges, providing immediate visual
+    feedback about data characteristics and helping users understand the operational patterns
+    present in their flight datasets for optimal filtering configuration.
+    
+    Visualization Features:
+    - Color-coded flight phase representation with distinct phase identification
+    - Altitude range visualization showing phase distribution across flight levels
+    - Interactive phase analysis with detailed statistics and operational insights
+    - Real-time updates based on current filtering and data selection parameters
+    - Professional graphical presentation with clear legends and labeling
+    - Integrated data analysis providing phase statistics and operational metrics
+    
+    Flight Phase Categories:
+    - Takeoff Phase: Ground operations and initial climb (Brown color coding)
+    - Climb Phase: Ascending flight from departure to cruise altitude (Orange-red coding)
+    - Cruise Phase: Level flight at optimal altitude (Orange color coding)  
+    - Descent Phase: Controlled descent from cruise to approach altitude (Blue coding)
+    - Approach Phase: Final approach and landing operations (Purple color coding)
+    
+    Data Analysis Capabilities:
+    - Phase Distribution Analysis: Statistical breakdown of flight phases in dataset
+    - Altitude Range Statistics: Operational altitude ranges for each flight phase
+    - Operational Insights: Flight pattern analysis and operational characteristics
+    - Filter Impact Visualization: Show effects of filtering parameters on phase distribution
+    - Data Quality Assessment: Identify data completeness and phase coverage
+    
+    Attributes:
+        phase_ranges (Dict): Current flight phase altitude range data for visualization
+        phase_colors (Dict[str, str]): Color coding scheme for different flight phases
+                                     - takeoff: #8B4513 (Brown)
+                                     - climb: #FF6B35 (Orange-red)  
+                                     - cruise: #F7931E (Orange)
+                                     - descent: #4A90E2 (Blue)
+                                     - approach: #7B68EE (Purple)
+    
+    Args:
+        parent (QWidget, optional): Parent widget for proper visualization integration
+    
+    Returns:
+        None: Widget initialization creates visualization canvas and sets up rendering
+    
+    Examples:
+        # Create phase visualization for flight data analysis
+        viz_widget = PhaseVisualizationWidget(parent=self)
+        
+        # Update with current phase data
+        phase_data = {
+            'takeoff': {'min_alt': 0, 'max_alt': 1500, 'count': 45},
+            'climb': {'min_alt': 1500, 'max_alt': 25000, 'count': 120},
+            'cruise': {'min_alt': 25000, 'max_alt': 42000, 'count': 200}
+        }
+        viz_widget.update_phases(phase_data)
+        
+        # Widget automatically renders updated visualization
+    
+    Note:
+        The visualization widget provides real-time updates and professional graphical
+        presentation for flight phase analysis. Color coding follows aviation industry
+        standards for intuitive phase identification, and the widget integrates seamlessly
+        with filtering dialogs to provide immediate visual feedback on data characteristics.
+    """
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -7637,62 +8961,124 @@ class PhaseVisualizationWidget(QWidget):
 
 class HistoricSamplingTab(QWidget):
     """
-    Historic Sampling tab for ML-based aircraft generation from EUROCONTROL data.
+    Advanced Historic Sampling interface for machine learning-based synthetic air traffic generation.
     
-    This sophisticated interface provides machine learning-based synthetic air traffic
-    generation using historic EUROCONTROL flight data. The tab supports comprehensive
-    data filtering, model training, and scenario generation with automatic trajectory
-    synthesis based on learned patterns from real flight operations.
+    This sophisticated tab provides comprehensive machine learning-based synthetic air traffic
+    generation using historic EUROCONTROL flight data with advanced filtering, model training,
+    and trajectory synthesis capabilities. The tab represents the cutting-edge of synthetic
+    traffic generation, using learned patterns from real flight operations to create entirely
+    new, realistic flight trajectories that maintain statistical consistency with historic data.
     
-    The Historic Sampling approach uses machine learning models trained on filtered
-    historic flight data to generate realistic synthetic traffic scenarios. Unlike
-    the Realistic Replay tab which uses predetermined scenarios, Historic Sampling
-    creates entirely new flight trajectories based on statistical patterns learned
-    from real operations.
+    The Historic Sampling methodology leverages advanced machine learning algorithms trained
+    on filtered historic flight data to generate synthetic traffic scenarios with realistic
+    flight characteristics. Unlike traditional scenario replay systems, Historic Sampling
+    creates completely new flight trajectories based on statistical patterns and operational
+    constraints learned from comprehensive analysis of real-world flight operations.
     
-    Key Features:
-    - EUROCONTROL data loading with comprehensive format support
-    - Advanced filtering system with airspace, altitude, and temporal constraints
-    - Machine learning model training on filtered flight point data
-    - Synthetic trajectory generation with realistic flight characteristics
-    - Date range selection with automatic bounds detection from data
-    - Aircraft type distribution modeling from historic patterns
-    - Flight phase analysis and altitude profile generation
-    - Performance optimization through intelligent caching systems
+    Core Machine Learning Features:
+    - Advanced EUROCONTROL data integration with multi-format support (flights, filed, actual, FIR)
+    - Sophisticated multi-dimensional filtering system with airspace, altitude, temporal, and aircraft constraints
+    - Machine learning model training on comprehensive flight point datasets (position, altitude, speed, time)
+    - Synthetic trajectory generation with realistic flight characteristics and operational constraints
+    - Statistical pattern recognition for aircraft type distribution and route preferences
+    - Flight phase analysis and altitude profile modeling based on operational data
+    - Performance optimization through intelligent caching and vectorized data processing
     
-    Data Processing Pipeline:
-    1. Load EUROCONTROL flight data files (flights, filed, actual, FIR)
-    2. Apply comprehensive filters to select relevant flight data
-    3. Process flight points for model training (not just metadata)
-    4. Train machine learning models on filtered trajectory data
-    5. Generate synthetic scenarios with learned flight characteristics
-    6. Export scenarios for BlueSky simulation with proper formatting
+    Advanced Data Processing Pipeline:
+    1. Multi-source EUROCONTROL data loading with automatic format detection and validation
+    2. Comprehensive multi-dimensional filtering with airspace boundaries, altitude bands, and temporal windows
+    3. Flight point processing and feature extraction for machine learning model training
+    4. Advanced statistical analysis of flight patterns, route preferences, and operational characteristics
+    5. Machine learning model training on filtered trajectory datasets with cross-validation
+    6. Synthetic trajectory generation with learned flight characteristics and operational realism
+    7. Scenario file creation with BlueSky integration for immediate simulation execution
     
-    Filter System:
-    - Date Range: Select specific time periods from available data
-    - Airspace: Include specific FIR regions using geometric calculations
-    - Altitude: Constrain flight levels for different operational phases
-    - Aircraft Types: Focus on specific aircraft categories or models
-    - Flight Phases: Filter by takeoff, climb, cruise, descent, approach
+    Advanced Filtering Capabilities:
+    - Geographic airspace filtering with polygon-based boundary definitions and coordinate systems
+    - Multi-level altitude filtering with flight level ranges and vertical profile constraints
+    - Temporal filtering with date ranges, time windows, and operational period selection
+    - Aircraft type filtering with performance category grouping and operational constraints
+    - Route-based filtering with departure/arrival airport selection and waypoint constraints
+    - Statistical filtering based on flight frequency, duration, and operational patterns
     
-    Performance Features:
-    - File path caching for rapid dialog reopening
-    - Summary data caching with intelligent invalidation
-    - Vectorized flight point filtering with numpy optimization
-    - Progress dialogs with proper UI thread management
-    - Parquet caching for processed data persistence
+    Machine Learning Integration:
+    - TraffixGen backend integration for advanced ML-based trajectory synthesis
+    - Feature engineering from multi-dimensional flight point data (4D trajectories)
+    - Statistical model training with cross-validation and performance metrics
+    - Synthetic data generation with learned operational patterns and constraints
+    - Quality assurance through statistical validation against original data distributions
+    - Model performance monitoring and continuous improvement capabilities
     
-    Attributes:
-        _flights_file (str): Path to EUROCONTROL flights data file
-        _filed_file (str): Path to filed flight plans data file  
-        _actual_file (str): Path to actual trajectory data file
-        _fir_file (str): Path to FIR boundary definition file
-        _model_trained (bool): Flag indicating if ML models are trained
-        _synthetic_data (list): Generated synthetic flight data
-        _data_filters (dict): Current filter configuration
-        eurocontrol_filters (dict): Comprehensive filter settings
-        date_from (QDateEdit): Start date selection widget
-        date_to (QDateEdit): End date selection widget
+    Performance Optimization Features:
+    - Intelligent file path caching for Configure Filters dialog performance enhancement
+    - Vectorized flight point filtering using NumPy optimization for large datasets
+    - Bounding box pre-filtering for geometric calculations and spatial query acceleration
+    - Progress dialog integration with proper threading for responsive user interface
+    - Memory-efficient data processing for handling large-scale EUROCONTROL datasets
+    - Parallel processing support for multi-core acceleration of ML training operations
+    
+    User Interface Components:
+    - Date range selection with automatic bounds detection from loaded data sources
+    - Advanced filter configuration with real-time validation and constraint preview
+    - Progress monitoring for data loading, filtering, and model training operations
+    - Configuration persistence with comprehensive save/load functionality
+    - Integration with SATG configuration management for session state preservation
+    - Real-time feedback and status updates throughout the ML pipeline execution
+    
+    The Historic Sampling tab represents the most advanced synthetic traffic generation
+    capability in SATG, providing researchers and training organizations with cutting-edge
+    machine learning tools for creating realistic, diverse training scenarios based on
+    comprehensive analysis of real-world flight operations and traffic patterns.
+    
+    Args:
+        parent (QWidget, optional): Parent widget, typically SATGWindow instance
+        
+    Examples:
+        # Create Historic Sampling tab with ML capabilities
+        hs_tab = HistoricSamplingTab(parent=satg_window)
+        tab_widget.addTab(hs_tab, "Historic Sampling")
+        
+        # Tab provides complete ML-based synthetic traffic generation
+        # with advanced filtering and model training capabilities
+    
+    Note:
+        Historic Sampling requires TraffixGen backend integration for ML functionality
+        and supports large-scale EUROCONTROL data processing with performance
+        optimizations for real-world operational datasets and training requirements.
+        
+        Workflow includes:
+        1. Data source selection and validation
+        2. Filter configuration and preview
+        3. Model training parameter optimization
+        4. Batch processing with progress tracking
+        5. Quality validation and performance metrics
+        6. Export scenarios for BlueSky simulation with proper formatting
+        
+        Filter System:
+        - Date Range: Select specific time periods from available data
+        - Airspace: Include specific FIR regions using geometric calculations
+        - Altitude: Constrain flight levels for different operational phases
+        - Aircraft Types: Focus on specific aircraft categories or models
+        - Flight Phases: Filter by takeoff, climb, cruise, descent, approach
+        
+        Performance Features:
+        - File path caching for rapid dialog reopening
+        - Summary data caching with intelligent invalidation
+        - Vectorized flight point filtering with numpy optimization
+        - Progress dialogs with proper UI thread management
+        - Parquet caching for processed data persistence
+        
+        Attributes:
+            _flights_file (str): Path to EUROCONTROL flights data file
+            _filed_file (str): Path to filed flight plans data file  
+            _actual_file (str): Path to actual trajectory data file
+            _fir_file (str): Path to FIR boundary definition file
+            _model_trained (bool): Flag indicating if ML models are trained
+            _synthetic_data (list): Generated synthetic flight data
+            _data_filters (dict): Current filter configuration
+            eurocontrol_filters (dict): Comprehensive filter settings
+            date_from (QDateEdit): Start date selection widget
+            date_to (QDateEdit): End date selection widget
         num_flights_spin (QSpinBox): Number of flights to generate
     
     Examples:
@@ -9161,7 +10547,86 @@ class HistoricSamplingTab(QWidget):
 
 # HistoricSamplingFilterDialog - Filter configuration dialog for historic sampling
 class HistoricSamplingFilterDialog(QDialog):
-    """Dialog for configuring Historic data filtering options - identical to EurocontrolFilterDialog except no polygon tab"""
+    """
+    Specialized dialog for configuring Historic Sampling flight data filtering with ML optimization.
+    
+    This advanced filtering interface provides comprehensive flight data filtering capabilities
+    specifically optimized for Historic Sampling machine learning workflows. The dialog offers
+    identical functionality to EurocontrolFilterDialog but excludes polygon-based filtering
+    to focus on the most relevant filter types for machine learning model training and
+    synthetic traffic generation from historic flight data.
+    
+    The Historic Sampling Filter Dialog is designed specifically for machine learning workflows
+    where precise control over training data characteristics is essential. By focusing on
+    geographic, temporal, altitude, and aircraft type filters, the dialog provides the most
+    relevant filtering capabilities for creating high-quality training datasets from historic
+    flight operations data.
+    
+    Key Features:
+    - Geographic Filtering: Precise latitude/longitude bounding box configuration
+    - Temporal Filtering: Date and time range selection for historic data periods  
+    - Altitude Filtering: Flight level range configuration for different operational phases
+    - Aircraft Type Filtering: Specific aircraft model and category selection
+    - Airspace Integration: FIR boundary-based filtering for regional data analysis
+    - Summary Data Integration: Real-time filtering impact analysis and statistics
+    - ML-Optimized Interface: Streamlined for machine learning data preparation workflows
+    
+    Filter Categories:
+    - Geographic Bounds: Latitude/longitude ranges for regional flight data selection
+    - Temporal Windows: Date/time ranges for historic period analysis
+    - Altitude Constraints: Flight level filtering for operational phase focus
+    - Aircraft Selection: Type-based filtering for aircraft category analysis
+    - Airspace Regions: FIR-based geographic filtering with boundary precision
+    - Data Quality: Integration with summary statistics for filtering impact assessment
+    
+    Machine Learning Optimization:
+    - Training Data Focus: Optimized filter selection for ML model training requirements
+    - Data Distribution Analysis: Real-time statistics showing filtering impact on data characteristics
+    - Quality Metrics: Integration with data quality assessment and completeness indicators
+    - Batch Processing: Efficient filtering for large historic datasets with performance optimization
+    - Validation Integration: Filter validation ensuring adequate data volume for training
+    
+    Attributes:
+        current_filters (Dict): Current filter configuration with geographic, temporal, altitude constraints
+                              - lat_min/lat_max: Latitude bounding box limits
+                              - lon_min/lon_max: Longitude bounding box limits  
+                              - fl_min/fl_max: Flight level range constraints
+                              - include_airspace: Selected FIR regions for analysis
+                              - time_start/time_end: Temporal filtering window
+                              - aircraft_types: Selected aircraft models and categories
+    
+    Args:
+        current_filters (Dict, optional): Existing filter configuration for initialization
+        fir_file_path (str, optional): Path to FIR boundary definition file for airspace filtering
+        summary_data (Dict, optional): Dataset summary statistics for filtering impact analysis
+        parent (QWidget, optional): Parent widget for proper dialog behavior
+    
+    Examples:
+        # Configure filters for historic sampling ML training
+        current_config = {
+            'lat_min': 40.0, 'lat_max': 50.0,
+            'lon_min': -10.0, 'lon_max': 10.0,
+            'fl_min': 100, 'fl_max': 400,
+            'aircraft_types': ['A320', 'B737']
+        }
+        
+        dialog = HistoricSamplingFilterDialog(
+            current_filters=current_config,
+            fir_file_path="/path/to/fir_boundaries.json",
+            summary_data=dataset_stats,
+            parent=self
+        )
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            ml_filters = dialog.get_filters()
+            self._apply_ml_training_filters(ml_filters)
+    
+    Note:
+        This dialog is specifically designed for Historic Sampling workflows and excludes
+        polygon-based filtering to focus on the most relevant filter types for machine
+        learning applications. Integration with summary data provides real-time feedback
+        on filtering impact and ensures adequate data volume for effective model training.
+    """
     
     def __init__(self, current_filters=None, fir_file_path=None, summary_data=None, parent=None):
         super().__init__(parent)
@@ -10268,6 +11733,58 @@ class HistoricSamplingFilterDialog(QDialog):
 # --- GC tab (Geometric Conflicts) ------------------------------------------
 
 class GCMinimaPanel(QGroupBox):
+    """
+    Separation minima configuration panel for Geometric Conflict generation parameters.
+    
+    This specialized control panel provides precision configuration for horizontal
+    and vertical separation minima used in geometric conflict scenario generation.
+    The panel enables users to set loss-of-separation thresholds that define when
+    aircraft conflicts occur, supporting realistic conflict detection parameters
+    that match operational air traffic management separation requirements.
+    
+    The panel integrates with SATG's geometric conflict generation system to provide
+    consistent separation standards across conflict scenarios, ensuring generated
+    conflicts represent realistic operational situations with appropriate separation
+    minima for training effectiveness and scenario authenticity.
+    
+    Configuration Parameters:
+    - Horizontal Separation: Distance threshold in nautical miles for lateral conflicts
+    - Vertical Separation: Altitude threshold in feet for vertical conflict detection
+    - Precision Controls: Fine-grained adjustment with appropriate step increments
+    - Operational Ranges: Realistic value ranges matching aviation separation standards
+    - Real-time Updates: Immediate application to conflict generation algorithms
+    
+    The separation minima configured through this panel serve as baseline thresholds
+    for conflict detection algorithms throughout SATG's geometric conflict generation
+    system, ensuring consistent and realistic conflict scenario creation.
+    
+    Attributes:
+        _hsep (QDoubleSpinBox): Horizontal separation control in nautical miles
+        _vsep (QSpinBox): Vertical separation control in feet
+        
+    Methods:
+        hsep_value() -> float: Returns current horizontal separation value
+        vsep_value() -> int: Returns current vertical separation value
+        
+    Args:
+        parent (QWidget, optional): Parent widget for proper panel integration
+        
+    Examples:
+        # Create separation minima panel for conflict configuration
+        minima_panel = GCMinimaPanel(parent=self)
+        
+        # Get current separation values for conflict generation
+        h_sep = minima_panel.hsep_value()  # Horizontal separation in NM
+        v_sep = minima_panel.vsep_value()  # Vertical separation in feet
+        
+        # Panel automatically updates conflict generation parameters
+    
+    Note:
+        Default values (5.0 NM horizontal, 1000 ft vertical) comply with ICAO
+        standard separation minima for controlled airspace operations. Values
+        should reflect realistic operational separation requirements for training
+        scenario authenticity and controller training effectiveness.
+    """
     def __init__(self, parent=None):
         super().__init__("Separation minima", parent)
         layout = QFormLayout(self)
@@ -10298,6 +11815,67 @@ class GCMinimaPanel(QGroupBox):
 
 
 class GCAbsolutePage(QWidget):
+    """
+    Advanced interface for absolute Geometric Conflicts generation with CPA-based algorithms.
+    
+    This sophisticated page provides comprehensive configuration for absolute geometric
+    conflict scenarios using Closest Point of Approach (CPA) algorithms and legacy
+    conflict generation methods. The page enables precise control over conflict timing,
+    geometry, and aircraft positioning for creating realistic loss of separation
+    scenarios in air traffic management research and training applications.
+    
+    The Absolute Conflicts approach uses traditional CPA-based methods where conflicts
+    are defined by specific geometric parameters including minimum separation distances,
+    approach angles, and timing constraints. This method provides deterministic conflict
+    scenarios with precise control over all conflict characteristics and resolution dynamics.
+    
+    Key Features:
+    - Legacy CPA (Closest Point of Approach) conflict generation algorithms
+    - Comprehensive geometric parameter configuration and validation
+    - Multiple conflict scenario templates with customizable parameters  
+    - Integration with separation minima panel for realistic separation standards
+    - Advanced timing controls for conflict initiation and resolution
+    - Aircraft trajectory optimization for realistic conflict geometry
+    - Validation system ensuring feasible and safe conflict scenarios
+    
+    CPA Configuration Options:
+    - Minimum Separation Distance: Configure horizontal and vertical separation minima
+    - Approach Geometry: Set aircraft approach angles and trajectories
+    - Timing Parameters: Control conflict onset, duration, and resolution timing
+    - Aircraft Parameters: Configure speed, altitude, and performance characteristics
+    - Conflict Severity: Adjust separation violations and conflict intensity
+    - Resolution Constraints: Set parameters for conflict resolution scenarios
+    
+    Validation Features:
+    - Geometric Feasibility: Ensure conflict scenarios are physically achievable
+    - Safety Verification: Validate separation minima and safety parameters
+    - Performance Constraints: Check aircraft performance limitations
+    - Airspace Compliance: Verify scenarios meet airspace operational requirements
+    - Realism Validation: Ensure conflicts represent realistic operational scenarios
+    
+    Attributes:
+        _minima (GCMinimaPanel): Reference to separation minima configuration panel
+    
+    Args:
+        minima_panel (GCMinimaPanel): Separation minima configuration interface
+        parent (QWidget, optional): Parent widget for proper page integration
+    
+    Examples:
+        # Create absolute conflicts page with minima configuration
+        minima_panel = GCMinimaPanel()
+        abs_page = GCAbsolutePage(minima_panel, parent=self)
+        
+        # Configure CPA-based conflict scenarios
+        # Set geometric parameters and timing constraints
+        # Generate realistic absolute conflict scenarios
+    
+    Note:
+        The Absolute Page uses legacy CPA methods that provide deterministic
+        conflict scenarios with precise geometric control. Integration with
+        the minima panel ensures all generated conflicts respect current
+        separation standards and operational requirements for realistic training scenarios.
+    """
+    
     def __init__(self, minima_panel: GCMinimaPanel, parent=None):
         super().__init__(parent)
         self._minima = minima_panel
@@ -10790,6 +12368,69 @@ class GCAbsolutePage(QWidget):
 
 
 class GCRelativePage(QWidget):
+    """
+    Advanced interface for relative Geometric Conflicts generation with target-based algorithms.
+    
+    This sophisticated page provides modern relative conflict generation capabilities
+    using target aircraft-based algorithms for creating realistic loss of separation
+    scenarios. The relative approach enables more flexible and realistic conflict
+    scenarios by defining conflicts relative to specific target aircraft rather
+    than using fixed geometric parameters, resulting in more natural conflict dynamics.
+    
+    The Relative Conflicts system represents a modern approach to conflict generation
+    where conflicts are defined in relation to existing aircraft (targets) in the
+    simulation. This method provides more realistic conflict scenarios that adapt
+    to current traffic conditions and create natural-looking separation violations
+    that reflect real-world operational challenges.
+    
+    Key Features:
+    - Target Aircraft Selection: Choose existing aircraft as conflict reference points
+    - Relative Positioning: Define conflict aircraft positions relative to targets
+    - Dynamic Conflict Generation: Adapt conflicts to current simulation conditions
+    - Realistic Trajectory Calculation: Generate natural aircraft trajectories for conflicts
+    - Advanced Timing Controls: Sophisticated conflict initiation and resolution timing
+    - Integration with separation minima for operational realism
+    - Validation system ensuring feasible relative positioning and dynamics
+    
+    Target-Based Configuration:
+    - Target Selection: Choose reference aircraft for conflict generation
+    - Relative Positioning: Define conflict aircraft positions relative to targets
+    - Approach Vectors: Configure relative approach angles and trajectories
+    - Timing Coordination: Synchronize conflict timing with target aircraft movements
+    - Separation Parameters: Set relative separation distances and violation characteristics
+    - Resolution Dynamics: Configure relative resolution trajectories and timing
+    
+    Advanced Features:
+    - Multi-Target Conflicts: Generate conflicts involving multiple target aircraft
+    - Trajectory Prediction: Use target aircraft trajectory prediction for realistic conflicts
+    - Dynamic Adaptation: Adjust conflict parameters based on target aircraft behavior
+    - Operational Realism: Ensure conflicts reflect realistic air traffic management scenarios
+    - Performance Optimization: Efficient algorithms for real-time conflict generation
+    
+    Attributes:
+        _minima (GCMinimaPanel): Reference to separation minima configuration panel
+    
+    Args:
+        minima_panel (GCMinimaPanel): Separation minima configuration interface
+        parent (QWidget, optional): Parent widget for proper page integration
+    
+    Examples:
+        # Create relative conflicts page with target selection
+        minima_panel = GCMinimaPanel()
+        rel_page = GCRelativePage(minima_panel, parent=self)
+        
+        # Configure target-based conflict scenarios
+        # Select reference aircraft and set relative parameters
+        # Generate adaptive realistic conflict scenarios
+    
+    Note:
+        The Relative Page uses modern target-based algorithms that provide
+        more realistic and adaptive conflict scenarios compared to traditional
+        CPA methods. Integration with the minima panel and dynamic adaptation
+        to current traffic conditions ensures conflicts represent realistic
+        operational challenges for advanced air traffic management training.
+    """
+    
     def __init__(self, minima_panel: GCMinimaPanel, parent=None):
         super().__init__(parent)
         self._minima = minima_panel
@@ -11586,7 +13227,64 @@ class GCTab(QWidget):
 # --- RC tab (Random Conflicts) ---------------------------------------------
 
 class RCTab(QWidget):
-    """Random Conflicts (RC) - Modern geometric conflicts in a circle region."""
+    """
+    Random Conflicts (RC) tab providing advanced geometric conflict generation in defined airspace areas.
+    
+    This comprehensive interface enables the creation of sophisticated randomized conflict
+    scenarios within circular or polygonal airspace boundaries, supporting diverse conflict
+    types, aircraft configurations, and operational parameters for advanced air traffic
+    control training scenarios. The tab provides extensive customization options for
+    conflict geometry, timing, aircraft selection, and spatial distribution.
+    
+    The RC tab specializes in generating multiple randomized conflicts with precise spatial
+    and temporal distribution control, enabling comprehensive training scenarios that
+    simulate realistic traffic density and conflict patterns. Advanced configuration
+    options support complex training requirements with varied conflict types, aircraft
+    performance characteristics, and operational constraints.
+    
+    Key Features:
+    - Multi-conflict generation with randomized spatial distribution within defined areas
+    - Support for circular and polygonal airspace boundary definitions
+    - Comprehensive conflict type selection (head-on, crossing, overtaking scenarios)
+    - Advanced aircraft parameter configuration with performance model integration
+    - Altitude mode selection for vertical separation training scenarios
+    - Reproducible scenario generation with seed control for training consistency
+    - Integration with BlueSky polygon system for complex airspace modeling
+    
+    Configuration Categories:
+    - Batch Settings: Global parameters for multi-conflict scenario generation
+    - Spatial Distribution: Circular or polygonal area definitions for conflict placement
+    - Conflict Types: Head-on, crossing, and overtaking conflict geometry selection
+    - Aircraft Configuration: Type selection, altitude profiles, and speed parameters
+    - Timing Control: Conflict timing synchronization and time-to-CPA management
+    - Randomization: Seed control for reproducible scenario generation patterns
+    
+    Operational Modes:
+    - Absolute Conflicts: CPA-based geometric conflict generation with precise positioning
+    - Relative Conflicts: Target-intruder conflict scenarios with dynamic positioning
+    - Mixed Mode: Alternating between absolute and relative conflict generation
+    - Area Types: Circular regions with center/radius or polygon-based irregular areas
+    
+    The tab integrates with SATG's geometric conflict system and BlueSky's airspace
+    management to provide realistic conflict scenarios within operationally accurate
+    spatial boundaries for comprehensive air traffic control training applications.
+    
+    Args:
+        parent (QWidget, optional): Parent widget, typically SATGWindow instance
+        
+    Examples:
+        # Create RC tab as part of SATG tabbed interface
+        rc_tab = RCTab(parent=satg_window)
+        tab_widget.addTab(rc_tab, "Random Conflicts")
+        
+        # Tab provides complete interface for randomized conflict generation
+        # with extensive parameter control and airspace integration
+    
+    Note:
+        The RC tab requires proper BlueSky integration for polygon support and
+        aircraft performance model access. Generated scenarios are compatible
+        with standard BlueSky scenario loading and execution systems.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -12475,9 +14173,72 @@ class RCTab(QWidget):
         
 # --- Procedure Tab ----------------------------------------------------------
 class ProcTab(QWidget):
-    """Procedural traffic: load waypoint/procedure .scn files, then spawn flights
-    that are auto-assigned a random procedure. Spawns occur in a sector around
-    the first fix, toward the fix (inbound), with per-procedure min time spacing.
+    """
+    Advanced Procedural Traffic Generation interface for SID/STAR-based scenarios.
+    
+    This sophisticated tab provides comprehensive procedural traffic generation using
+    Standard Instrument Departures (SIDs) and Standard Terminal Arrival Routes (STARs)
+    with advanced scheduling capabilities, rate management, and realistic flight
+    spawning based on actual airport procedure configurations. The tab enables
+    creation of realistic traffic scenarios that follow published procedures.
+    
+    The Procedural Traffic system loads waypoint definition files and procedure
+    configuration files to create complex traffic scenarios with proper procedure
+    adherence. Aircraft are automatically assigned appropriate procedures based on
+    sophisticated scheduling algorithms that maintain realistic traffic patterns
+    and separation requirements.
+    
+    Core Functionality:
+    - Waypoint Definition Loading: Import waypoint coordinates and navigation data
+    - Procedure File Processing: Load SID/STAR procedure definitions with routing
+    - Automatic Aircraft Assignment: Intelligent procedure assignment based on traffic flow
+    - Rate Management: Configure spawning rates and timing patterns for procedures
+    - Schedule Configuration: Advanced scheduling with time-based traffic variations
+    - Inbound Traffic Generation: Realistic approach and arrival traffic patterns
+    
+    Traffic Generation Features:
+    - Sector-based spawning around procedure entry points
+    - Inbound trajectory calculation toward initial fixes  
+    - Minimum time spacing enforcement between aircraft
+    - Random procedure assignment with weighted selection
+    - Realistic aircraft type assignment based on procedure characteristics
+    - Schedule-based traffic variation throughout simulation periods
+    
+    Attributes:
+        _wpt_files (List[str]): List of waypoint definition scenario files
+        _proc_files (List[str]): List of procedure scenario files with routing
+        _sid_rate_rows (Dict): SID procedure rate configuration widgets
+        _sid_schedule_data (Dict): Comprehensive SID scheduling parameters
+        _star_rate_rows (Dict): STAR procedure rate configuration widgets  
+        _star_schedule_data (Dict): Comprehensive STAR scheduling parameters
+        _star_rate_values (Dict): Current and target STAR rate values
+        _star_rate_groups (Dict): Grouped STAR procedures for coordinated scheduling
+        _star_basis_index (int): Current basis index for STAR rate calculations
+    
+    Returns:
+        None: Tab initialization creates UI elements and loads default configurations
+    
+    Examples:
+        # Tab is created as part of main SATG window
+        proc_tab = ProcTab(parent_window)
+        
+        # Typical workflow:
+        # 1. Load waypoint definition files (DEFWPT scenarios)
+        # 2. Load procedure files with %0 placeholders and PROCNAME definitions
+        # 3. Configure SID and STAR rates and schedules
+        # 4. Generate procedural traffic scenarios
+        # 5. Execute scenarios in BlueSky simulation
+        
+        # Rate configuration supports dynamic scheduling
+        # Schedule data includes time-based variations
+        # Spawning maintains proper separation and realism
+    
+    Note:
+        Procedural traffic generation requires properly formatted scenario files
+        with waypoint definitions (DEFWPT commands) and procedure specifications
+        including PROCNAME identifiers and routing information. The tab maintains
+        compatibility with standard BlueSky scenario file formats and provides
+        sophisticated traffic management for complex airport operations.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -14104,7 +15865,56 @@ class ProcTab(QWidget):
 
 # --- Help tab -------------------------------------------------------------
 class HelpTab(QWidget):
-    """Read-only help inside the GUI with clear descriptions and examples."""
+    """
+    Comprehensive built-in help system providing detailed SATG documentation and guidance.
+    
+    This read-only help interface provides complete documentation for all SATG
+    functionality including feature descriptions, workflow guidance, configuration
+    examples, and troubleshooting information. The help system is integrated
+    directly into the GUI to provide immediate access to documentation without
+    requiring external resources or internet connectivity.
+    
+    The Help Tab serves as a comprehensive reference for all SATG capabilities,
+    providing both overview information for new users and detailed technical
+    documentation for advanced users. All content is presented in a clear,
+    structured format with practical examples and step-by-step guidance.
+    
+    Content Structure:
+    - SATG Overview: Introduction to synthetic air traffic generation concepts
+    - Feature Documentation: Detailed descriptions of all tab functionalities
+    - Workflow Guides: Step-by-step procedures for common tasks
+    - Configuration Examples: Practical examples for different use cases
+    - Troubleshooting: Common issues and resolution strategies
+    - Technical Reference: Advanced configuration and integration details
+    
+    Help Topics Covered:
+    - Historic Sampling: Machine learning-based traffic generation
+    - Realistic Replay: Scenario-based historical traffic reproduction  
+    - Geometric Conflicts: Advanced conflict detection and resolution scenarios
+    - Random Conflicts: Stochastic conflict generation for training
+    - Procedural Traffic: SID/STAR-based realistic airport operations
+    - Configuration Management: Session persistence and optimization
+    
+    Attributes:
+        txt (QTextEdit): Read-only text widget displaying help content
+        help_text (str): Comprehensive help documentation content
+    
+    Args:
+        parent (QWidget, optional): Parent widget for proper tab integration
+    
+    Examples:
+        # Tab is automatically created as part of main SATG window
+        help_tab = HelpTab(parent_window)
+        
+        # Help content is immediately available for reference
+        # No configuration required - provides instant documentation access
+    
+    Note:
+        The Help Tab provides offline documentation ensuring users have access
+        to complete SATG guidance regardless of network connectivity. Content
+        is regularly updated to reflect current SATG capabilities and includes
+        practical examples for all major features and workflows.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
@@ -14180,54 +15990,111 @@ class HelpTab(QWidget):
 
 class SATGWindow(QWidget):
     """
-    Main window for the Synthetic Air Traffic Generation (SATG) GUI plugin.
+    Primary window class for the comprehensive Synthetic Air Traffic Generation (SATG) GUI plugin.
     
-    This class provides the primary interface for all SATG functionality including
-    historic sampling, realistic replay, conflict generation, and procedure management.
-    The window uses a tabbed interface with intelligent visual indicator management
-    and comprehensive configuration persistence.
+    This sophisticated main window serves as the central hub for all SATG functionality,
+    providing an integrated tabbed interface for synthetic air traffic generation, conflict
+    simulation, machine learning-based trajectory synthesis, and comprehensive procedure
+    management. The window architecture supports advanced configuration persistence,
+    intelligent caching systems, and seamless integration with BlueSky simulation
+    environments for comprehensive air traffic management training scenarios.
     
-    The window manages multiple specialized tabs, each focused on specific aspects
-    of air traffic generation:
-    - Help: Documentation and usage examples
-    - Realistic Replay: Scenario-based traffic generation with conflict simulation
-    - Historic Sampling: ML-based aircraft generation from EUROCONTROL data
-    - Geometric Conflicts: Advanced conflict detection and resolution algorithms
-    - Random Conflicts: Stochastic conflict generation and analysis
-    - Procedures: SID/STAR procedure creation and management
+    The SATGWindow orchestrates multiple specialized operational tabs, each providing
+    focused interfaces for specific aspects of synthetic air traffic generation and
+    simulation training requirements. The integrated design ensures consistent behavior
+    across all operational modes while maintaining specialized functionality for
+    advanced training scenario development and execution.
     
-    Features:
-    - Tabbed interface with consistent styling and behavior
-    - Visual indicator management across tabs (circles, CPA references)
-    - Configuration management with save/load functionality
-    - Cache management with intelligent validation
-    - Performance optimizations including file path caching
-    - Progress dialog integration with proper UI threading
+    Comprehensive Tab Architecture:
+    - Help Tab: Extensive documentation, usage examples, and operational guidance
+    - Realistic Replay Tab: Scenario-based traffic generation with historical flight replay
+    - Historic Sampling Tab: Advanced ML-based synthetic aircraft generation from EUROCONTROL data
+    - Geometric Conflicts Tab: Sophisticated conflict detection algorithms and resolution training
+    - Random Conflicts Tab: Stochastic conflict generation with statistical analysis capabilities
+    - Procedures Tab: Comprehensive SID/STAR procedure creation, editing, and management system
+    
+    Advanced Window Management Features:
+    - Sophisticated tabbed interface architecture with consistent styling and behavioral patterns
+    - Intelligent visual indicator management system across all tabs (geometric references, CPA indicators)
+    - Comprehensive configuration persistence system with automatic state management and recovery
+    - Advanced cache management with intelligent validation, file integrity checking, and performance optimization
+    - Multi-threaded progress dialog integration with proper UI threading and responsive interfaces
+    - Performance optimization systems including intelligent file path caching and vectorized operations
+    
+    Configuration Management System:
+    - Complete session state persistence across all operational tabs and training modes
+    - JSON-based configuration storage with human-readable formatting and validation
+    - Automatic backup creation and recovery mechanisms for configuration protection
+    - Backward compatibility support for legacy configuration formats and migration
+    - Configuration versioning and validation with detailed error reporting and recovery
+    - Bulk configuration operations with import/export capabilities for training management
+    
+    Cache Management and Performance Optimization:
+    - Intelligent file path caching for Configure Filters dialog performance enhancement
+    - Cache validation using file modification times and integrity checking algorithms
+    - Memory-efficient data processing for large-scale EUROCONTROL dataset operations
+    - Vectorized flight point filtering with NumPy optimization for computational acceleration
+    - Multi-threaded processing support for CPU-intensive operations and model training
+    - Progress monitoring with responsive UI updates and cancellation support
+    
+    Integration Architecture:
+    - Seamless BlueSky simulator integration with command system and state synchronization
+    - TraffixGen backend integration for advanced machine learning capabilities
+    - EUROCONTROL data processing with comprehensive format support and validation
+    - Geographic information system integration for airspace boundary management
+    - Aircraft performance model integration with automatic type detection and validation
+    
+    The SATGWindow represents the culmination of sophisticated air traffic simulation
+    interface design, providing researchers, training organizations, and air traffic
+    management professionals with comprehensive tools for advanced scenario development,
+    machine learning-based traffic synthesis, and comprehensive training program support.
     
     Attributes:
-        help_tab (HelpTab): Documentation and usage information
-        rl_tab (RLTab): Realistic Replay traffic generation interface
-        hs_tab (HistoricSamplingTab): Historic Sampling ML-based generation
-        gc_tab (GCTab): Geometric conflict detection and resolution
-        rc_tab (RCTab): Random conflict generation and analysis
-        proc_tab (ProcTab): Procedure creation and management
-        tabs (QTabWidget): Main tab container widget
-        top (TopStrip): Configuration and cache management controls
-    
-    Note:
-        This window uses lazy initialization and should only be created after
-        QApplication is available. Visual indicators are automatically managed
-        when switching between tabs to prevent display conflicts.
-    
-    Examples:
-        # Window is typically created through the plugin system
-        window = SATGWindow()
-        window.show()
+        help_tab (HelpTab): Comprehensive documentation and operational guidance interface
+        rl_tab (RLTab): Realistic Replay traffic generation with historical scenario support
+        hs_tab (HistoricSamplingTab): Machine learning-based synthetic traffic generation system
+        gc_tab (GCTab): Advanced geometric conflict detection and resolution training interface
+        rc_tab (RCTab): Stochastic conflict generation with statistical analysis capabilities
+        proc_tab (ProcTab): Comprehensive procedure management for SID/STAR operations
+        top_strip (TopStrip): Primary navigation and configuration management interface
+        tab_widget (QTabWidget): Central tabbed interface container with advanced management
         
-        # Tab switching automatically manages visual indicators
-        # Configuration persistence is handled automatically
-        # Cache validation occurs when needed
-    """
+    Args:
+        parent (QWidget, optional): Parent widget for proper window hierarchy and behavior
+        
+    Examples:
+        # Create main SATG window with full functionality
+        satg_window = SATGWindow()
+        satg_window.show()
+        
+        # Window automatically initializes all tabs and configuration systems
+        # providing immediate access to comprehensive SATG functionality
+    
+        
+        Attributes:
+            rc_tab (RCTab): Random conflict generation and analysis
+            proc_tab (ProcTab): Procedure creation and management
+            tabs (QTabWidget): Main tab container widget
+            top (TopStrip): Configuration and cache management controls
+        
+        Examples:
+            # Window is typically created through the plugin system
+            window = SATGWindow()
+            window.show()
+            
+            # Tab switching automatically manages visual indicators
+            # Configuration persistence is handled automatically
+            # Cache validation occurs when needed
+        
+        Note:
+            The SATGWindow requires proper BlueSky integration and QApplication context
+            for full functionality. All configuration and cache operations are handled
+            automatically with comprehensive error recovery and validation systems.
+            
+            This window uses lazy initialization and should only be created after
+            QApplication is available. Visual indicators are automatically managed
+            when switching between tabs to prevent display conflicts.
+        """
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -14357,9 +16224,70 @@ def _get_window():
 # --- plugin hooks -----------------------------------------------------------
 
 def init_plugin():
+    """
+    Initialize SATGGUI plugin for BlueSky simulator GUI integration.
+    
+    This function provides the standard BlueSky plugin initialization interface,
+    returning the plugin metadata required for proper registration and integration
+    with the BlueSky GUI system. The function defines the plugin as a GUI-type
+    plugin with comprehensive synthetic air traffic generation capabilities.
+    
+    Plugin Configuration:
+    - Plugin Name: 'SATGGUI' (Synthetic Air Traffic Generation GUI)
+    - Plugin Type: 'gui' (GUI plugin for graphical interface integration)
+    - Integration Level: Full BlueSky GUI system integration
+    - Capabilities: Complete SATG functionality through advanced tabbed interface
+    
+    Returns:
+        Dict[str, str]: Plugin metadata dictionary with name and type information
+    
+    Examples:
+        # Called automatically by BlueSky during GUI plugin loading
+        metadata = init_plugin()  # Returns {'plugin_name': 'SATGGUI', 'plugin_type': 'gui'}
+    
+    Note:
+        This function is called automatically by BlueSky during startup and
+        GUI plugin discovery. The returned metadata enables proper plugin
+        registration and GUI system integration for SATGGUI functionality.
+    """
     return {'plugin_name': 'SATGGUI', 'plugin_type': 'gui'}
 
 from bluesky import stack as _stack_mod  # ensure decorator import after init
 @_stack_mod.command
 def SATGGUI():
+    """
+    Activate and display the comprehensive SATG GUI interface window.
+    
+    SATGGUI
+    Open the main Synthetic Air Traffic Generation GUI window, providing
+    comprehensive access to all SATG functionality including historic sampling,
+    realistic replay, conflict generation, and procedure management through
+    an integrated tabbed interface with advanced configuration management.
+    
+    This command creates or activates the main SATGGUI window, which serves as
+    the primary interface for all synthetic air traffic generation operations.
+    The window provides sophisticated tools for training scenario development,
+    machine learning-based traffic synthesis, and comprehensive air traffic
+    management simulation with full integration to BlueSky systems.
+    
+    GUI Features Activated:
+    - Historic Sampling: ML-based synthetic aircraft generation from EUROCONTROL data
+    - Realistic Replay: Scenario-based traffic generation with historical flight replay
+    - Geometric Conflicts: Advanced conflict detection algorithms and resolution training
+    - Random Conflicts: Stochastic conflict generation with statistical analysis
+    - Procedures Management: Comprehensive SID/STAR procedure creation and editing
+    - Configuration System: Complete session state persistence and management
+    
+    Examples:
+        # Activate SATG GUI from BlueSky console
+        SATGGUI
+        
+        # GUI window opens with full tabbed interface
+        # providing immediate access to all SATG capabilities
+    
+    Note:
+        The command uses lazy window creation to ensure QApplication is available
+        before GUI initialization. The window maintains all configuration state
+        and provides comprehensive functionality for synthetic air traffic generation.
+    """
     _get_window().show()

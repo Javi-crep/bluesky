@@ -234,7 +234,49 @@ def compute_elapsed_time_per_flight(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 
 def _generate_callsign(ac_operator, ectrl_id):
-    """Generate callsign using the same logic as SATG export"""
+    """
+    Generate realistic aircraft callsign using operator codes and EUROCONTROL identifiers.
+    
+    This function creates aircraft callsigns following aviation industry standards by
+    combining operator codes with EUROCONTROL flight identifiers. The function implements
+    the same callsign generation logic used in SATG export operations to ensure consistency
+    across synthetic traffic generation and realistic callsign patterns in generated scenarios.
+    
+    The callsign generation follows standard aviation practices where operator codes
+    (airline identifiers) are combined with flight numbers derived from EUROCONTROL
+    identifiers. When operator information is unavailable, generic traffic codes are
+    used to maintain realistic callsign formatting.
+    
+    Callsign Generation Logic:
+    - Numeric EUROCONTROL IDs: Combined with operator codes to create standard callsigns
+    - Available Operator Codes: Used as prefix with formatted flight number suffix
+    - Missing Operator Codes: Generic "TFC" (Traffic) prefix used for unidentified operators
+    - Non-numeric IDs: Existing callsigns preserved when already in proper format
+    - Flight Number Formatting: Modulo 9999 with zero-padding for consistent 4-digit numbers
+    
+    Args:
+        ac_operator (str): Aircraft operator code (airline identifier) from EUROCONTROL data
+        ectrl_id (str|int): EUROCONTROL flight identifier for callsign number generation
+        
+    Returns:
+        str: Generated aircraft callsign following aviation industry standards
+             Format examples: "AAL1234", "TFC0567", "BAW2891"
+    
+    Examples:
+        # Generate callsign with known operator
+        callsign = _generate_callsign("AAL", 1234)  # Returns "AAL1234"
+        
+        # Generate callsign without operator (generic)
+        callsign = _generate_callsign("", 5678)     # Returns "TFC5678"
+        
+        # Preserve existing proper callsign format
+        callsign = _generate_callsign("BAW", "BAW123")  # Returns "BAW123"
+    
+    Note:
+        This function maintains consistency with SATG export callsign generation to ensure
+        synthetic traffic scenarios have realistic and consistent aircraft identification.
+        The modulo operation ensures flight numbers stay within typical aviation ranges.
+    """
     ectrl_id_str = str(ectrl_id)
     ac_operator_str = str(ac_operator)
     
@@ -253,7 +295,56 @@ def _generate_callsign(ac_operator, ectrl_id):
 # ============================================================================
 
 def exponential_average(x: np.ndarray, alpha: float = 0.3):
-    """Simple exponential smoothing for trajectory data."""
+    """
+    Apply exponential smoothing to trajectory data for noise reduction and trend analysis.
+    
+    This function implements simple exponential smoothing (Single Exponential Smoothing)
+    to process noisy trajectory data and extract underlying trends. The algorithm is
+    particularly effective for smoothing flight path coordinates, altitude profiles,
+    and speed variations while preserving important trajectory characteristics for
+    machine learning model training and synthetic traffic generation.
+    
+    Exponential smoothing assigns exponentially decreasing weights to historical
+    observations, with more recent data points having greater influence on the
+    smoothed output. This approach is ideal for trajectory data where recent
+    positions are most relevant for predicting future flight behavior.
+    
+    Algorithm Implementation:
+    - First value: Direct assignment (y_hat[0] = x[0])
+    - Subsequent values: Weighted combination of current observation and previous smoothed value
+    - Weight distribution: α for current observation, (1-α) for previous smoothed value
+    - Recursive calculation: y_hat[t] = α * x[t] + (1-α) * y_hat[t-1]
+    
+    Args:
+        x (np.ndarray): Input trajectory data array requiring smoothing
+                       (e.g., latitude, longitude, altitude, or speed values)
+        alpha (float, optional): Smoothing parameter controlling responsiveness (0 < α ≤ 1)
+                               - Higher values (α → 1): More responsive to recent changes
+                               - Lower values (α → 0): Smoother output with less noise
+                               Default: 0.3 (balanced smoothing for trajectory data)
+    
+    Returns:
+        np.ndarray: Exponentially smoothed trajectory data with same shape as input
+                   Values preserve temporal relationships while reducing noise
+    
+    Examples:
+        # Smooth noisy altitude data
+        altitude_raw = np.array([35000, 35050, 34980, 35020, 35100])
+        altitude_smooth = exponential_average(altitude_raw, alpha=0.3)
+        
+        # Smooth GPS coordinates with high responsiveness
+        lat_coords = np.array([52.3676, 52.3677, 52.3675, 52.3678])
+        lat_smooth = exponential_average(lat_coords, alpha=0.7)
+        
+        # Heavy smoothing for noisy speed data
+        speed_data = np.array([250, 245, 255, 248, 252])
+        speed_smooth = exponential_average(speed_data, alpha=0.1)
+    
+    Note:
+        The function preserves array shape and data type while applying smoothing.
+        First data point is always preserved exactly to maintain trajectory origin.
+        Optimal α values depend on data noise characteristics and desired smoothing level.
+    """
     y_hat = np.zeros_like(x, dtype=float)
     y_hat[0] = x[0]
     for t in range(1, len(x)):
@@ -261,7 +352,56 @@ def exponential_average(x: np.ndarray, alpha: float = 0.3):
     return y_hat
 
 def compute_elapsed_time_per_flight(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute elapsed time for each flight starting from 0."""
+    """
+    Compute normalized elapsed time for each flight trajectory starting from zero.
+    
+    This function calculates elapsed time for flight trajectories by normalizing
+    each flight's time series to start from zero. The function groups flights by
+    their EUROCONTROL ID and computes relative time offsets, enabling consistent
+    temporal analysis across different flights with varying departure times.
+    
+    The elapsed time calculation is essential for machine learning model training
+    and trajectory analysis where temporal patterns need to be compared across
+    flights without being influenced by absolute departure times. This normalization
+    enables pattern recognition in flight phase timing and trajectory development.
+    
+    Time Normalization Process:
+    1. Group flight data by unique EUROCONTROL flight identifiers
+    2. Find minimum timestamp for each flight (flight start time)
+    3. Calculate elapsed time as offset from flight start for each data point
+    4. Add normalized elapsed time column while preserving original data
+    
+    Args:
+        df (pd.DataFrame): Flight trajectory data containing:
+                          - 'ECTRL ID': Unique flight identifier for grouping
+                          - 'Time Over': Absolute timestamps for trajectory points
+                          - Additional trajectory data (preserved in output)
+    
+    Returns:
+        pd.DataFrame: Enhanced dataframe with added 'elapsed_time' column
+                     containing normalized time values starting from 0 for each flight
+                     All original columns are preserved
+    
+    Examples:
+        # Normalize flight timing for ML training
+        flight_data = pd.DataFrame({
+            'ECTRL ID': ['FL001', 'FL001', 'FL002', 'FL002'],
+            'Time Over': [1000, 1100, 2000, 2150],
+            'Altitude': [35000, 36000, 33000, 34000]
+        })
+        
+        normalized_data = compute_elapsed_time_per_flight(flight_data)
+        # Result: elapsed_time column shows [0, 100, 0, 150]
+        
+        # Prepare trajectory data for temporal analysis
+        trajectories_df = compute_elapsed_time_per_flight(raw_flight_data)
+        analyze_flight_phases(trajectories_df['elapsed_time'])
+    
+    Note:
+        The function creates a copy of input data to avoid modifying the original
+        dataframe. Elapsed time units match the input 'Time Over' column units.
+        Function is optimized for large datasets using pandas groupby operations.
+    """
     df = df.copy()
     df["elapsed_time"] = df.groupby("ECTRL ID")["Time Over"].transform(lambda x: (x - x.min()))
     return df
@@ -286,7 +426,67 @@ class FlightTrajectory:
         return self.data[key]
 
 def fit_simple_distribution(data):
-    """Simplified distribution fitting for OD pairs and aircraft types."""
+    """
+    Fit empirical probability distribution to discrete categorical flight data.
+    
+    This function creates empirical probability distributions for discrete categorical
+    flight operations data such as origin-destination pairs, aircraft types, operator
+    codes, and route identifiers. The function analyzes frequency patterns in the
+    input data to create a sampling distribution that preserves the statistical
+    characteristics of real flight operations for synthetic traffic generation.
+    
+    The empirical distribution approach is optimal for categorical flight data where
+    traditional parametric distributions are not applicable. By analyzing frequency
+    patterns in real flight operations data, the function creates realistic sampling
+    distributions that maintain operational authenticity in synthetic scenarios.
+    
+    Distribution Fitting Process:
+    1. Analyze unique categorical values and their occurrence frequencies
+    2. Calculate empirical probability distribution based on observed frequencies
+    3. Create sampling interface for generating synthetic data with preserved statistics
+    4. Return distribution object with sampling capabilities for synthetic generation
+    
+    Key Features:
+    - Frequency Analysis: Count occurrences of each unique categorical value
+    - Probability Calculation: Convert frequencies to probability distribution
+    - Preservation of Statistics: Maintain original data distribution characteristics
+    - Sampling Interface: Enable realistic synthetic data generation
+    - Categorical Optimization: Designed specifically for discrete flight operations data
+    
+    Args:
+        data (array-like): Categorical flight operations data for distribution fitting
+                          Examples: ['KJFK-EGLL', 'LFPG-KJFK', 'EHAM-LEMD', ...]
+                                   ['A320', 'B737', 'A330', 'B787', ...]
+                                   ['AAL', 'BAW', 'AFR', 'KLM', ...]
+    
+    Returns:
+        EmpiricalDistribution: Distribution object with sampling capabilities
+                              - values: Array of unique categorical values
+                              - probs: Corresponding probability distribution
+                              - sample(size): Method for generating synthetic samples
+    
+    Examples:
+        # Fit distribution to origin-destination pairs
+        od_pairs = ['KJFK-EGLL', 'LFPG-KJFK', 'KJFK-EGLL', 'EHAM-LEMD']
+        od_distribution = fit_simple_distribution(od_pairs)
+        synthetic_routes = od_distribution.sample(size=10)
+        
+        # Fit distribution to aircraft types
+        aircraft_types = ['A320', 'B737', 'A320', 'A330', 'B737', 'A320']
+        ac_distribution = fit_simple_distribution(aircraft_types)
+        synthetic_aircraft = ac_distribution.sample(size=5)
+        
+        # Fit distribution to operator codes
+        operators = ['AAL', 'BAW', 'AAL', 'AFR', 'BAW', 'AAL', 'KLM']
+        op_distribution = fit_simple_distribution(operators)
+        synthetic_operators = op_distribution.sample(size=3)
+    
+    Note:
+        The function is optimized for categorical flight operations data and creates
+        empirical distributions that preserve the statistical characteristics of
+        real-world flight patterns. The sampling method enables generation of
+        synthetic data with authentic operational distribution patterns.
+    """
     from scipy import stats
     
     # For discrete data (OD pairs, aircraft types), use empirical distribution
@@ -760,7 +960,66 @@ class FlightTrajectorySampler:
 # ============================================================================
 
 def holt_smooth(x: np.ndarray, alpha: float = 0.3, beta: float = 0.1):
-    """Apply Holt exponential smoothing to trajectory data."""
+    """
+    Apply Holt's double exponential smoothing to trajectory data with trend analysis.
+    
+    This function implements Holt's linear exponential smoothing (double exponential
+    smoothing) to process trajectory data while preserving and extrapolating trends.
+    Unlike simple exponential smoothing, Holt's method explicitly models both level
+    and trend components, making it ideal for flight trajectory analysis where
+    directional trends are important for realistic synthetic traffic generation.
+    
+    Holt's method maintains separate smoothing equations for data level and trend,
+    providing superior performance for trajectory data with consistent directional
+    movement such as climb/descent profiles, course changes, and speed variations.
+    The algorithm is particularly effective for flight path prediction and trajectory
+    synthesis in machine learning applications.
+    
+    Algorithm Components:
+    - Level Equation: s[t] = α * x[t] + (1-α) * (s[t-1] + b[t-1])
+    - Trend Equation: b[t] = β * (s[t] - s[t-1]) + (1-β) * b[t-1]  
+    - Output Equation: y[t] = s[t] (current smoothed level)
+    - Initialization: s[0] = x[0], b[0] = x[1] - x[0] (initial trend)
+    
+    Parameters:
+    - Alpha (α): Level smoothing parameter (0 < α ≤ 1)
+    - Beta (β): Trend smoothing parameter (0 < β ≤ 1)
+    
+    Args:
+        x (np.ndarray): Input trajectory data requiring trend-aware smoothing
+                       Examples: altitude profiles, course headings, speed sequences
+        alpha (float, optional): Level smoothing parameter controlling responsiveness to data changes
+                               - Higher values: More responsive to level changes
+                               - Lower values: Smoother level estimates
+                               Default: 0.3 (balanced level smoothing)
+        beta (float, optional): Trend smoothing parameter controlling trend adaptation
+                              - Higher values: More responsive to trend changes  
+                              - Lower values: Smoother trend estimates
+                              Default: 0.1 (conservative trend smoothing)
+    
+    Returns:
+        np.ndarray: Holt-smoothed trajectory data preserving trends and reducing noise
+                   Output maintains temporal relationships with enhanced trend modeling
+    
+    Examples:
+        # Smooth altitude profile with trend preservation
+        altitude_data = np.array([35000, 35100, 35200, 35150, 35250])
+        altitude_smooth = holt_smooth(altitude_data, alpha=0.4, beta=0.2)
+        
+        # Smooth course heading with conservative trend tracking
+        heading_data = np.array([90, 95, 100, 98, 105])
+        heading_smooth = holt_smooth(heading_data, alpha=0.3, beta=0.05)
+        
+        # Smooth speed profile with responsive trend adaptation
+        speed_data = np.array([250, 255, 260, 258, 265])
+        speed_smooth = holt_smooth(speed_data, alpha=0.5, beta=0.3)
+    
+    Note:
+        Holt's method requires at least 2 data points for trend initialization.
+        For single-point arrays, the function returns the input unchanged.
+        The method excels at preserving directional trends while reducing noise,
+        making it ideal for trajectory synthesis and flight path analysis.
+    """
     if len(x) < 2:
         return x
         
@@ -4582,14 +4841,78 @@ def traffixgen_train_synthetic_models(flights_file: str, filed_file: str, actual
         return False
 
 def traffixgen_generate_synthetic_trajectories(n_flights: int, n_points: int) -> List[Dict]:
-    """Generate synthetic flight trajectories using trained models.
+    """
+    Generate synthetic flight trajectories using trained machine learning models.
+    
+    This function creates entirely new synthetic flight trajectories based on
+    patterns learned from historical EUROCONTROL flight data. The generated
+    trajectories maintain statistical consistency with real flight operations
+    while providing completely new flight paths suitable for air traffic
+    management training, simulation scenarios, and research applications.
+    
+    The synthetic trajectory generation uses advanced machine learning models
+    that have been trained on filtered historical flight data to understand
+    operational patterns, routing preferences, and realistic flight dynamics.
+    Generated trajectories include complete flight information with waypoints,
+    aircraft types, origin-destination pairs, and realistic timing.
+    
+    Generation Process:
+    1. Validate trained model availability and readiness
+    2. Generate synthetic trajectories using enhanced sampling algorithms
+    3. Create realistic flight metadata (callsigns, aircraft types, routes)
+    4. Apply operational constraints and validation rules
+    5. Format output for BlueSky scenario integration and analysis
+    
+    Synthetic Flight Features:
+    - Realistic Trajectories: Flight paths based on learned operational patterns
+    - Complete Metadata: Aircraft types, callsigns, origin-destination pairs
+    - Operational Authenticity: Timing and routing consistent with real operations
+    - Scenario Integration: Direct compatibility with BlueSky simulation scenarios
+    - Quality Validation: Generated flights meet operational and safety requirements
+    
+    Model Requirements:
+    - Trained Models: Function requires successful completion of model training
+    - Filtered Data: Models must be trained on appropriately filtered flight data
+    - Model Validation: Trained models must pass quality and performance validation
+    - Data Availability: Sufficient historical data required for realistic generation
     
     Args:
-        n_flights: Number of flights to generate
-        n_points: Number of points per trajectory
-        
+        n_flights (int): Number of synthetic flights to generate
+                        Range: 1-1000 (recommended for performance and memory)
+        n_points (int): Number of trajectory points per flight
+                       Range: 10-200 (typical flight complexity)
+                       Higher values create more detailed flight paths
+    
     Returns:
-        List of flight dictionaries with trajectory data
+        List[Dict]: List of synthetic flight dictionaries containing:
+                   - 'id': Unique flight identifier for tracking
+                   - 'callsign': Generated realistic aircraft callsign
+                   - 'aircraft_type': Selected aircraft model from training data
+                   - 'origin': Departure airport code (ICAO format)
+                   - 'destination': Arrival airport code (ICAO format)
+                   - 'waypoints': List of trajectory points with lat/lon/alt/time
+                   - 'synthetic': Flag marking data as synthetically generated
+                   - 'generated_at': Generation timestamp for tracking
+    
+    Examples:
+        # Generate small set of synthetic flights for testing
+        flights = traffixgen_generate_synthetic_trajectories(10, 50)
+        if flights:
+            print(f"Generated {len(flights)} synthetic flights")
+            
+        # Generate detailed synthetic scenario
+        detailed_flights = traffixgen_generate_synthetic_trajectories(25, 100)
+        for flight in detailed_flights:
+            print(f"Flight {flight['callsign']}: {flight['origin']} -> {flight['destination']}")
+            
+        # Generate synthetic traffic for simulation
+        traffic_data = traffixgen_generate_synthetic_trajectories(100, 75)
+    
+    Note:
+        This function requires successful completion of model training using
+        traffixgen_train_synthetic_models() before synthetic generation can proceed.
+        Generated trajectories are optimized for BlueSky integration and maintain
+        operational realism based on the quality of training data and filtering.
     """
     global _enhanced_sampler
     
@@ -4728,10 +5051,74 @@ def traffixgen_export_synthetic_to_satg(synthetic_data: List[Dict]) -> bool:
         return False
 
 def get_synthetic_model_status() -> Dict:
-    """Get status of synthetic model training and data.
+    """
+    Retrieve comprehensive status information about synthetic model training and readiness.
+    
+    This function provides detailed status information about the machine learning
+    models used for synthetic trajectory generation, including training completion
+    status, model performance metrics, data availability, and generation readiness.
+    The status information is essential for GUI components and automated systems
+    to determine synthetic generation capabilities.
+    
+    The status reporting system analyzes all aspects of the synthetic generation
+    pipeline including model training completion, data quality validation,
+    performance characteristics, and operational readiness for trajectory synthesis.
+    This comprehensive status enables informed decision-making about synthetic
+    traffic generation operations.
+    
+    Status Information Components:
+    - Training Status: Model training completion and validation results
+    - Performance Metrics: Model accuracy and generation quality indicators
+    - Data Availability: Training dataset characteristics and completeness
+    - Generation Readiness: System capability for synthetic trajectory creation
+    - Error Diagnostics: Detailed information about any training or validation issues
+    - Resource Usage: Memory and computational requirements for generation operations
+    
+    Model Validation Metrics:
+    - Training Completion: Boolean indicating successful model training
+    - Quality Scores: Performance metrics for trajectory generation accuracy
+    - Data Coverage: Analysis of training data representativeness and completeness
+    - Generation Capability: Available generation options and parameter ranges
+    - System Resources: Memory usage and computational requirements
     
     Returns:
-        Dictionary with model status information
+        Dict: Comprehensive model status information containing:
+              - 'models_trained': Boolean indicating if models are ready for generation
+              - 'training_completed': Timestamp of training completion (if applicable)
+              - 'data_size': Number of flights used for model training
+              - 'model_performance': Dictionary with accuracy and quality metrics
+              - 'generation_ready': Boolean indicating readiness for synthetic generation
+              - 'supported_aircraft_types': List of aircraft types available for generation
+              - 'supported_routes': Number of origin-destination pairs in training data
+              - 'error_status': Error information if models are not ready
+              - 'memory_usage': Current memory usage for model storage
+              - 'last_validation': Timestamp of most recent model validation
+    
+    Examples:
+        # Check model readiness for GUI display
+        status = get_synthetic_model_status()
+        if status['models_trained']:
+            enable_generation_controls()
+            display_model_metrics(status['model_performance'])
+        
+        # Validate generation capability before operation
+        model_status = get_synthetic_model_status()
+        if not model_status['generation_ready']:
+            show_training_required_message(model_status['error_status'])
+        
+        # Display comprehensive status in management interface
+        status_info = get_synthetic_model_status()
+        update_status_display(
+            trained=status_info['models_trained'],
+            data_size=status_info['data_size'],
+            aircraft_types=len(status_info['supported_aircraft_types'])
+        )
+    
+    Note:
+        This function provides real-time status information and is safe to call
+        frequently for GUI updates and status monitoring. The function handles
+        all potential model states gracefully and provides comprehensive diagnostics
+        for troubleshooting training and generation issues.
     """
     global _enhanced_sampler
     
@@ -4754,13 +5141,66 @@ def get_synthetic_model_status() -> Dict:
     return status
 
 def traffixgen_create_and_run_synthetic_scenario(scenario_name: str) -> bool:
-    """Create and run a synthetic scenario using loaded SATG data.
+    """
+    Create and execute a synthetic air traffic scenario using processed SATG data.
+    
+    This function orchestrates the complete synthetic scenario creation and execution
+    pipeline, from accessing processed TraffixGen data through SATG integration to
+    running the generated scenario in BlueSky simulation. The function provides
+    seamless integration between TraffixGen data processing and SATG scenario
+    generation capabilities for comprehensive synthetic traffic simulation.
+    
+    The scenario creation process uses Historic Sampling methods from SATG to
+    convert processed flight data into executable BlueSky scenarios. All data
+    processing, filtering, and validation performed by TraffixGen is preserved
+    and utilized in the final scenario generation for realistic traffic patterns.
+    
+    Scenario Generation Pipeline:
+    1. Validate availability of processed SATG-compatible data
+    2. Access Historic Sampling functionality from SATG module
+    3. Create synthetic scenario using SATG_HS_RUN method
+    4. Execute scenario in BlueSky simulation environment
+    5. Provide comprehensive status feedback and error handling
+    
+    Integration Features:
+    - SATG Module Integration: Direct access to Historic Sampling capabilities
+    - Data Preservation: All TraffixGen processing maintained in scenario
+    - BlueSky Compatibility: Generated scenarios ready for immediate simulation
+    - Error Handling: Comprehensive error detection and recovery
+    - Status Reporting: Detailed feedback on scenario creation and execution
     
     Args:
-        scenario_name: Name for the scenario file
-        
+        scenario_name (str): Unique name for the generated scenario file
+                           Used for file identification and BlueSky scenario loading
+                           Should be descriptive and follow naming conventions
+                           Examples: "morning_rush_EDDF", "synthetic_traffic_001"
+    
     Returns:
-        bool: True if scenario created and run successfully
+        bool: Scenario creation and execution status
+              - True: Scenario successfully created and executed in BlueSky
+              - False: Scenario creation failed or execution encountered errors
+    
+    Examples:
+        # Create and run synthetic traffic scenario
+        success = traffixgen_create_and_run_synthetic_scenario("test_scenario_001")
+        if success:
+            print("Synthetic scenario running in BlueSky")
+        else:
+            print("Failed to create or run synthetic scenario")
+        
+        # Create named scenario for specific analysis
+        scenario_created = traffixgen_create_and_run_synthetic_scenario("EDDF_morning_traffic")
+        
+        # Generate multiple scenarios for comparative analysis
+        for i in range(5):
+            scenario_name = f"synthetic_analysis_{i+1:03d}"
+            traffixgen_create_and_run_synthetic_scenario(scenario_name)
+    
+    Note:
+        This function requires successful data loading and processing by TraffixGen
+        before scenario generation can proceed. The function integrates directly
+        with SATG Historic Sampling methods and requires proper SATG module
+        availability for successful scenario creation and BlueSky execution.
     """
     try:
         from . import SATG
@@ -4780,13 +5220,75 @@ def traffixgen_create_and_run_synthetic_scenario(scenario_name: str) -> bool:
         return False
 
 def traffixgen_apply_data_filters(filter_params: Dict) -> bool:
-    """Apply filtering parameters to loaded data before training.
+    """
+    Apply comprehensive data filtering parameters to loaded flight data before model training.
+    
+    This function implements sophisticated data filtering for machine learning model
+    training preparation by applying temporal, spatial, altitude, and aircraft type
+    constraints to loaded EUROCONTROL flight data. The filtering ensures that only
+    relevant and high-quality data is used for synthetic traffic generation model
+    training, improving model accuracy and generation realism.
+    
+    The filtering process operates on both flight metadata and trajectory point data,
+    maintaining data consistency and integrity throughout the filtering pipeline.
+    All filtering uses include-based semantics where specified criteria determine
+    which data is retained for model training purposes.
+    
+    Filtering Pipeline:
+    1. Validate data availability and enhanced sampler readiness
+    2. Create filtered copies of flight and route data for processing
+    3. Apply temporal filtering based on date range specifications
+    4. Apply altitude filtering using flight level constraints
+    5. Apply aircraft type filtering for specific aircraft categories
+    6. Update enhanced sampler with filtered data for training
+    
+    Filter Categories Supported:
+    - Temporal Filters: Date range constraints for historical data selection
+    - Altitude Filters: Flight level ranges for operational phase focus
+    - Aircraft Type Filters: Specific aircraft model and category selection
+    - Route Filters: Origin-destination pair constraints for traffic flow analysis
+    - Quality Filters: Data completeness and validation requirements
     
     Args:
-        filter_params: Dictionary containing filtering parameters
-        
+        filter_params (Dict): Comprehensive filtering configuration containing:
+                            - 'date_range': Tuple of (start_date, end_date) for temporal filtering
+                            - 'altitude_range': Tuple of (min_fl, max_fl) for flight level constraints
+                            - 'ac_filter_mode': Aircraft filtering mode ('All Types' or 'Specific Types')
+                            - 'selected_ac_types': List of aircraft type codes for specific filtering
+                            - 'route_constraints': Optional OD pair filtering specifications
+                            - 'quality_requirements': Data quality and completeness thresholds
+    
     Returns:
-        bool: True if filters applied successfully, False otherwise
+        bool: Filtering operation success status
+              - True: Filters applied successfully, data ready for training
+              - False: Filtering failed due to data issues or invalid parameters
+    
+    Examples:
+        # Apply comprehensive filtering for training preparation
+        filters = {
+            'date_range': ('2023-01-01', '2023-01-31'),
+            'altitude_range': (100, 400),
+            'ac_filter_mode': 'Specific Types',
+            'selected_ac_types': ['A320', 'B737', 'A319']
+        }
+        
+        success = traffixgen_apply_data_filters(filters)
+        if success:
+            print("Data filtered successfully, ready for training")
+        
+        # Apply altitude and aircraft type filtering
+        training_filters = {
+            'altitude_range': (200, 350),
+            'ac_filter_mode': 'Specific Types',
+            'selected_ac_types': ['B738', 'A320']
+        }
+        traffixgen_apply_data_filters(training_filters)
+    
+    Note:
+        This function requires successful data loading and enhanced sampler
+        initialization before filtering can proceed. Filtered data becomes the
+        basis for all subsequent model training operations, making filter selection
+        critical for model quality and synthetic traffic generation realism.
     """
     global _enhanced_sampler
     
@@ -4916,10 +5418,71 @@ def traffixgen_apply_data_filters(filter_params: Dict) -> bool:
         return False
 
 def traffixgen_get_available_options() -> Tuple[List[str], List[str]]:
-    """Get available OD pairs and aircraft types from loaded data.
+    """
+    Retrieve available origin-destination pairs and aircraft types from loaded flight data.
+    
+    This function analyzes the currently loaded and processed flight data to extract
+    comprehensive lists of available origin-destination (OD) pairs and aircraft types
+    that can be used for filtering, analysis, and synthetic traffic generation. The
+    function provides essential information for GUI components to populate selection
+    interfaces and configure generation parameters.
+    
+    The analysis examines all loaded flight data to identify unique combinations
+    and types available in the dataset, enabling informed selection of generation
+    parameters and filtering options. This information is crucial for users to
+    understand the scope and characteristics of available flight operations data.
+    
+    Data Analysis Process:
+    1. Validate enhanced sampler availability and data loading status
+    2. Extract unique origin-destination pairs from flight operations data
+    3. Identify available aircraft types and models in the dataset
+    4. Format results for GUI integration and parameter configuration
+    5. Handle multiple data formats and column naming conventions
+    
+    Origin-Destination Processing:
+    - Primary Source: Direct OD column if available in dataset
+    - Alternative Source: Combination of ADEP (departure) and ADES (arrival) columns
+    - Format Standardization: Consistent OD pair representation across data sources
+    - Uniqueness Validation: Elimination of duplicate entries and data cleanup
+    - Sorting: Alphabetical ordering for consistent GUI presentation
+    
+    Aircraft Type Processing:
+    - Type Extraction: Analysis of aircraft type designations in flight data
+    - Standardization: Consistent aircraft type codes and formatting
+    - Validation: Verification of aircraft type validity and operational use
+    - Comprehensive Coverage: All aircraft types present in loaded dataset
     
     Returns:
-        Tuple[List[str], List[str]]: (od_pairs, aircraft_types)
+        Tuple[List[str], List[str]]: Comprehensive flight data options containing:
+            - od_pairs (List[str]): Sorted list of unique origin-destination pairs
+                                  Format: "DEPARTURE-ARRIVAL" (e.g., "KJFK-EGLL")
+            - aircraft_types (List[str]): Sorted list of unique aircraft type codes
+                                        Format: ICAO aircraft type designators
+                                        Examples: ["A320", "B738", "A359", "B777"]
+    
+    Examples:
+        # Get available options for GUI configuration
+        od_pairs, aircraft_types = traffixgen_get_available_options()
+        populate_od_selection_list(od_pairs)
+        populate_aircraft_type_list(aircraft_types)
+        
+        # Check data availability before generation
+        routes, aircraft = traffixgen_get_available_options()
+        if not routes or not aircraft:
+            show_data_loading_required_message()
+        else:
+            print(f"Available: {len(routes)} routes, {len(aircraft)} aircraft types")
+        
+        # Validate generation parameters against available data
+        available_od, available_ac = traffixgen_get_available_options()
+        if selected_route not in available_od:
+            show_invalid_route_error(selected_route)
+    
+    Note:
+        This function requires successful data loading and enhanced sampler
+        initialization before returning meaningful results. Empty lists indicate
+        that data loading is required or that no valid flight data is available
+        for analysis and synthetic generation operations.
     """
     global _enhanced_sampler
     
@@ -4948,13 +5511,85 @@ def traffixgen_get_available_options() -> Tuple[List[str], List[str]]:
         return [], []
 
 def traffixgen_generate_synthetic_trajectories_filtered(gen_params: Dict) -> List[Dict]:
-    """Generate synthetic flight trajectories with filtering parameters.
+    """
+    Generate synthetic flight trajectories with advanced filtering and parameter control.
+    
+    This function creates synthetic flight trajectories using trained machine learning
+    models while applying sophisticated filtering and generation parameters to control
+    the characteristics of generated traffic. The function combines the power of ML-based
+    trajectory synthesis with precise parameter control for creating targeted synthetic
+    traffic scenarios meeting specific operational requirements.
+    
+    The filtered generation process enables creation of synthetic traffic with specific
+    characteristics such as particular aircraft types, route preferences, operational
+    phases, and temporal patterns. This targeted generation is essential for creating
+    focused training scenarios and specialized air traffic management simulations.
+    
+    Generation and Filtering Pipeline:
+    1. Validate trained model availability and generation readiness
+    2. Extract generation parameters (flight count, trajectory complexity)
+    3. Apply filtering constraints to the enhanced sampler
+    4. Generate synthetic trajectories using filtered model parameters
+    5. Apply post-generation validation and quality control
+    6. Format output for BlueSky integration and scenario use
+    
+    Advanced Filtering Capabilities:
+    - Aircraft Type Selection: Generate traffic for specific aircraft categories
+    - Route Constraints: Focus generation on particular origin-destination pairs
+    - Operational Phase Filtering: Target specific flight phases (climb, cruise, descent)
+    - Temporal Constraints: Generate traffic for specific time periods or patterns
+    - Quality Controls: Ensure generated trajectories meet operational requirements
+    
+    Generation Parameter Control:
+    - Flight Quantity: Precise control over number of flights to generate
+    - Trajectory Complexity: Control trajectory point density and detail level
+    - Operational Realism: Maintain realistic flight characteristics and constraints
+    - Scenario Integration: Generate traffic optimized for specific simulation scenarios
     
     Args:
-        gen_params: Dictionary containing all generation and filtering parameters
-        
+        gen_params (Dict): Comprehensive generation and filtering configuration containing:
+                          - 'n_flights': Number of synthetic flights to generate (default: 50)
+                          - 'n_points': Trajectory points per flight (default: 200)
+                          - 'aircraft_filter': Aircraft type constraints for generation
+                          - 'route_filter': Origin-destination pair selection criteria
+                          - 'temporal_filter': Time-based generation constraints
+                          - 'quality_filter': Generation quality and validation requirements
+                          - 'operational_constraints': Flight phase and operational parameter limits
+    
     Returns:
-        List of flight dictionaries with trajectory data
+        List[Dict]: Filtered synthetic flight trajectories containing:
+                   - Complete flight metadata (callsigns, aircraft types, routes)
+                   - Detailed trajectory points with position, altitude, timing
+                   - Operational parameters and constraints
+                   - Generation metadata and quality indicators
+                   - BlueSky scenario integration data
+    
+    Examples:
+        # Generate filtered synthetic traffic for specific aircraft types
+        gen_config = {
+            'n_flights': 25,
+            'n_points': 150,
+            'aircraft_filter': {'types': ['A320', 'B737']},
+            'route_filter': {'focus_routes': ['KJFK-EGLL', 'EDDF-LFPG']}
+        }
+        
+        filtered_flights = traffixgen_generate_synthetic_trajectories_filtered(gen_config)
+        
+        # Generate high-detail synthetic traffic for analysis
+        detailed_config = {
+            'n_flights': 10,
+            'n_points': 300,
+            'quality_filter': {'high_detail': True},
+            'operational_constraints': {'realistic_timing': True}
+        }
+        
+        detailed_flights = traffixgen_generate_synthetic_trajectories_filtered(detailed_config)
+    
+    Note:
+        This function requires successful model training and enhanced sampler
+        initialization before filtered generation can proceed. The filtering
+        capabilities enable precise control over synthetic traffic characteristics
+        for specialized simulation scenarios and targeted analysis applications.
     """
     global _enhanced_sampler
     
@@ -5027,14 +5662,57 @@ def traffixgen_generate_synthetic_trajectories_filtered(gen_params: Dict) -> Lis
         return []
 
 def _apply_generation_filters(sampler: EnhancedFlightTrajectorySampler, gen_params: Dict) -> EnhancedFlightTrajectorySampler:
-    """Apply filtering parameters to the sampler data.
+    """
+    Apply comprehensive filtering parameters to enhanced sampler for targeted generation.
+    
+    This internal function implements sophisticated filtering logic for the enhanced
+    flight trajectory sampler, enabling precise control over synthetic traffic generation
+    characteristics. The function creates a filtered version of the sampler that
+    generates trajectories meeting specific operational, temporal, and aircraft
+    type requirements for specialized simulation scenarios.
+    
+    The filtering process operates directly on the sampler's training data to ensure
+    that generated synthetic trajectories reflect only the filtered characteristics.
+    This approach provides more accurate and targeted synthetic traffic compared to
+    post-generation filtering while maintaining model quality and realism.
+    
+    Filter Application Process:
+    1. Create filtered copy of enhanced sampler to preserve original
+    2. Apply aircraft type filtering to training data and generation models
+    3. Apply route filtering for origin-destination pair constraints
+    4. Apply temporal filtering for time-based traffic pattern focus
+    5. Apply operational constraints for flight phase and performance filtering
+    6. Validate filtered sampler integrity and generation capability
     
     Args:
-        sampler: The original enhanced sampler
-        gen_params: Generation parameters including filters
-        
+        sampler (EnhancedFlightTrajectorySampler): Original trained sampler with full dataset
+        gen_params (Dict): Generation filtering parameters containing:
+                          - 'aircraft_filter': Aircraft type selection and constraints
+                          - 'route_filter': Origin-destination pair filtering criteria
+                          - 'temporal_filter': Time-based filtering specifications
+                          - 'operational_filter': Flight phase and performance constraints
+                          - 'quality_filter': Generation quality and validation requirements
+    
     Returns:
-        Filtered sampler or None if no data remains
+        EnhancedFlightTrajectorySampler: Filtered sampler configured for targeted generation
+                                       Contains filtered training data and adjusted models
+                                       Maintains generation capability while focusing on
+                                       specific traffic characteristics
+    
+    Examples:
+        # Apply aircraft type filtering for narrow-body focus
+        filter_params = {'aircraft_filter': {'types': ['A320', 'B737']}}
+        filtered_sampler = _apply_generation_filters(original_sampler, filter_params)
+        
+        # Apply route filtering for transatlantic traffic
+        route_params = {'route_filter': {'regions': ['KJFK-EGLL', 'KORD-EDDF']}}
+        route_filtered_sampler = _apply_generation_filters(sampler, route_params)
+    
+    Note:
+        This function creates a filtered copy of the sampler to preserve the original
+        training state. The filtered sampler maintains full generation capability
+        while focusing on specific traffic characteristics defined by the filtering
+        parameters. Function is optimized for performance with large datasets.
     """
     if sampler.flights_df is None:
         return None
@@ -5100,7 +5778,49 @@ def _apply_generation_filters(sampler: EnhancedFlightTrajectorySampler, gen_para
         return sampler  # Return original on error
 
 def traffixgen_clear_cache():
-    """Clear TraffixGen cache files to free up disk space."""
+    """
+    Clear all TraffixGen cache files to free disk space and reset processing state.
+    
+    This function removes all cached TraffixGen data including parquet files, processed
+    datasets, and temporary processing artifacts. Cache clearing is useful for
+    troubleshooting data issues, freeing disk space, or resetting the processing
+    state when working with different datasets or encountering processing errors.
+    
+    The cache clearing operation removes all performance optimizations and requires
+    full data reprocessing on subsequent operations. This function is typically used
+    for maintenance, debugging, or when switching between different data sources
+    that require fresh processing state.
+    
+    Cache Removal Process:
+    1. Initialize dataset collection if not already available
+    2. Remove all parquet cache files from storage directories
+    3. Clear in-memory cached data and processing artifacts
+    4. Reset processing state to allow fresh data loading
+    5. Free disk space occupied by temporary processing files
+    
+    Effects of Cache Clearing:
+    - Disk Space: Frees all space used by TraffixGen cache files
+    - Performance: Removes optimization benefits, requiring full reprocessing
+    - Processing State: Resets to initial state for fresh data loading
+    - Memory Usage: Clears cached datasets from memory
+    - File Operations: Removes temporary files and processing artifacts
+    
+    Examples:
+        # Clear cache before processing new dataset
+        traffixgen_clear_cache()
+        
+        # Clear cache to free disk space
+        traffixgen_clear_cache()
+        
+        # Clear cache to reset processing state for troubleshooting
+        traffixgen_clear_cache()
+    
+    Note:
+        Cache clearing is irreversible and removes all performance optimizations.
+        Subsequent operations will require full data reprocessing from original
+        source files. Consider using cache information functions to assess
+        cache usage before clearing to understand performance impact.
+    """
     global _dataset_collection
     
     if _dataset_collection is None:
@@ -5109,7 +5829,48 @@ def traffixgen_clear_cache():
     _dataset_collection.clear_cache()
 
 def traffixgen_cache_info():
-    """Show information about TraffixGen cache files."""
+    """
+    Display comprehensive information about TraffixGen cache files and storage usage.
+    
+    This function provides detailed analysis of TraffixGen cache system including
+    file sizes, storage locations, cache effectiveness, and performance metrics.
+    The information helps users understand cache utilization, assess storage
+    requirements, and make informed decisions about cache management operations.
+    
+    The cache information system analyzes all cached data including parquet files,
+    processed datasets, and temporary artifacts to provide complete visibility
+    into TraffixGen storage usage and performance optimization status.
+    
+    Cache Information Includes:
+    - File Inventory: Complete list of cached files with sizes and locations
+    - Storage Usage: Total disk space consumed by TraffixGen cache system
+    - Cache Effectiveness: Performance benefits provided by current cache state
+    - File Age Analysis: Creation and modification times for cache maintenance
+    - Processing State: Current cache validity and processing status
+    - Optimization Metrics: Performance improvements from cached operations
+    
+    Storage Analysis Features:
+    - Individual File Sizes: Detailed breakdown of cache file storage usage
+    - Directory Structure: Organization and location of cache files
+    - Total Storage Usage: Aggregate disk space consumption analysis
+    - Cache Validity: Status of cached data and processing artifacts
+    - Performance Metrics: Processing speed improvements from cache usage
+    
+    Examples:
+        # Display current cache status
+        traffixgen_cache_info()
+        
+        # Check cache usage before clearing
+        traffixgen_cache_info()
+        
+        # Analyze cache effectiveness for performance planning
+        traffixgen_cache_info()
+    
+    Note:
+        Cache information provides valuable insights for performance optimization
+        and storage management. Regular cache analysis helps maintain optimal
+        performance while managing disk space requirements effectively.
+    """
     global _dataset_collection
     
     if _dataset_collection is None:
@@ -5132,7 +5893,61 @@ def traffixgen_cache_info():
     return cache_info
 
 def get_cache_info():
-    """Get cache information for GUI display."""
+    """
+    Retrieve structured cache information for GUI display and management interfaces.
+    
+    This function returns comprehensive cache information in a structured format
+    optimized for GUI components and management interfaces. The returned data
+    provides all necessary information for cache management dialogs, storage
+    analysis displays, and performance monitoring interfaces.
+    
+    The function ensures consistent cache information access across the application
+    and initializes the dataset collection if necessary to provide accurate
+    cache status regardless of current processing state.
+    
+    Cache Information Structure:
+    - File Lists: Complete inventory of cached files with metadata
+    - Storage Statistics: Total and individual file size information  
+    - Performance Metrics: Cache effectiveness and optimization data
+    - Status Information: Cache validity and processing state indicators
+    - Management Data: Information needed for cache cleanup operations
+    
+    GUI Integration Features:
+    - Structured Data Format: Optimized for GUI component consumption
+    - Real-time Information: Current cache status with up-to-date statistics
+    - Management Support: Data needed for cache management operations
+    - Performance Insights: Cache effectiveness metrics for user guidance
+    - Initialization Safety: Automatic dataset collection initialization if needed
+    
+    Returns:
+        Dict: Structured cache information containing:
+              - 'cache_files': List of cached file paths and metadata
+              - 'total_size': Total cache storage usage in bytes
+              - 'file_count': Number of files in cache system
+              - 'last_updated': Cache last modification timestamp
+              - 'cache_valid': Boolean indicating cache validity status
+              - 'performance_metrics': Cache effectiveness statistics
+    
+    Examples:
+        # Get cache info for management dialog
+        cache_data = get_cache_info()
+        total_size_mb = cache_data['total_size'] / (1024 * 1024)
+        
+        # Check cache validity for GUI indicators
+        cache_info = get_cache_info()
+        if cache_info['cache_valid']:
+            display_cache_status("Cache is valid and optimized")
+        
+        # Display cache file inventory in GUI
+        cache_data = get_cache_info()
+        for file_info in cache_data['cache_files']:
+            display_cache_file(file_info['path'], file_info['size'])
+    
+    Note:
+        This function is thread-safe and can be called from GUI threads without
+        blocking operations. The function automatically handles dataset collection
+        initialization to ensure reliable cache information access.
+    """
     global _dataset_collection
     
     if _dataset_collection is None:
@@ -5141,7 +5956,58 @@ def get_cache_info():
     return _dataset_collection.get_cache_info()
 
 def clear_cache():
-    """Clear all cache files."""
+    """
+    Clear all TraffixGen cache files with comprehensive error handling and status reporting.
+    
+    This function provides a safe and comprehensive cache clearing operation with
+    detailed error handling and status reporting for GUI and API integration.
+    The function ensures reliable cache clearing regardless of current system
+    state and provides detailed feedback about the operation success or failure.
+    
+    The cache clearing process handles all potential error conditions including
+    file system issues, permission problems, and dataset collection state
+    inconsistencies. All operations are wrapped in comprehensive error handling
+    to prevent system instability during cache management operations.
+    
+    Cache Clearing Process:
+    1. Initialize dataset collection with safety checks
+    2. Perform comprehensive cache file removal with error handling
+    3. Verify cache clearing completion and system state
+    4. Return detailed status information for calling components
+    5. Handle all potential error conditions with graceful degradation
+    
+    Error Handling Features:
+    - File System Errors: Handle permission and access issues gracefully
+    - State Consistency: Manage dataset collection initialization safely
+    - Operation Validation: Verify cache clearing completion
+    - Exception Management: Comprehensive error capture and reporting
+    - System Stability: Prevent cache operations from affecting system stability
+    
+    Returns:
+        Dict: Operation status containing:
+              - 'success': Boolean indicating operation success/failure
+              - 'error': Error message if operation failed (None if successful)
+              - 'files_removed': Number of cache files successfully removed
+              - 'space_freed': Amount of disk space freed in bytes
+    
+    Examples:
+        # Clear cache with status checking
+        result = clear_cache()
+        if result['success']:
+            print(f"Cache cleared: {result['files_removed']} files removed")
+        else:
+            print(f"Cache clearing failed: {result['error']}")
+        
+        # Clear cache for GUI operations
+        status = clear_cache()
+        update_cache_status_display(status)
+    
+    Note:
+        This function provides comprehensive error handling for all cache clearing
+        operations and is safe to call from any application context including
+        GUI threads and background processes. Operation status provides detailed
+        feedback for user interfaces and automated cache management systems.
+    """
     global _dataset_collection
     
     try:
@@ -5154,7 +6020,66 @@ def clear_cache():
         return {'success': False, 'error': str(e)}
 
 def delete_cache_file(filename):
-    """Delete a specific cache file."""
+    """
+    Delete a specific TraffixGen cache file with comprehensive validation and error handling.
+    
+    This function provides selective cache file deletion with robust validation,
+    comprehensive error handling, and detailed status reporting. The function
+    enables precise cache management by allowing removal of individual cache
+    files while maintaining system stability and providing detailed feedback
+    about the operation success or failure conditions.
+    
+    The selective deletion process includes comprehensive validation of file
+    existence, permission checking, and safe removal operations with detailed
+    error reporting for troubleshooting and user feedback requirements.
+    
+    File Deletion Process:
+    1. Validate cache directory existence and accessibility
+    2. Locate specific cache file using pattern matching
+    3. Verify file permissions and deletion feasibility
+    4. Perform safe file removal with error handling
+    5. Validate deletion completion and provide status feedback
+    
+    Security and Safety Features:
+    - Path Validation: Ensure file operations stay within cache directory
+    - Permission Checking: Verify file access rights before deletion attempts
+    - Existence Validation: Confirm file presence before deletion operations
+    - Error Isolation: Prevent file system errors from affecting system stability
+    - Operation Verification: Confirm successful deletion completion
+    
+    Args:
+        filename (str): Name or pattern of cache file to delete
+                       Supports glob patterns for flexible file matching
+                       Examples: "traffixgen_data.parquet", "*.pkl", "flight_cache_*"
+    
+    Returns:
+        Dict: Deletion operation status containing:
+              - 'success': Boolean indicating operation success/failure
+              - 'error': Error message if operation failed (None if successful)
+              - 'filename': Name of file that was deleted or caused error
+              - 'size_freed': Size in bytes of deleted file (if successful)
+    
+    Examples:
+        # Delete specific cache file
+        result = delete_cache_file("traffixgen_data.parquet")
+        if result['success']:
+            print(f"Deleted {result['filename']}: {result['size_freed']} bytes freed")
+        
+        # Delete cache files matching pattern
+        result = delete_cache_file("flight_*.pkl")
+        if not result['success']:
+            print(f"Deletion failed: {result['error']}")
+        
+        # Selective cache cleanup for GUI operations
+        status = delete_cache_file(selected_filename)
+        update_file_deletion_status(status)
+    
+    Note:
+        This function provides safe selective cache file deletion with comprehensive
+        error handling. Path operations are restricted to the cache directory to
+        prevent accidental deletion of system files. The function is safe for
+        GUI and automated cache management operations.
+    """
     import os
     import glob
     
