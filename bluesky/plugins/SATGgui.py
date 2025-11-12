@@ -7,47 +7,47 @@ caching systems, performance optimizations, and feature parity between
 Historic Sampling and Realistic Replay modes.
 
 Features:
-    * Historic Sampling Tab: ML-based aircraft generation from EUROCONTROL data
-    * Realistic Replay Tab: Scenario-based aircraft generation with conflict simulation
-    * Geometric Conflicts Tab: Conflict detection and resolution algorithms
-    * Random Conflicts Tab: Stochastic conflict generation and analysis
-    * Procedure Management: SID/STAR procedure creation and editing
-    * Configuration Management: Save/load system with backward compatibility
-    * Cache Management: File-based caching with path validation
-    * Filter Systems: Airspace and flight point filtering
+    - Historic Sampling Tab: ML-based aircraft generation from EUROCONTROL data
+    - Realistic Replay Tab: Scenario-based aircraft generation with conflict simulation
+    - Geometric Conflicts Tab: Conflict detection and resolution algorithms
+    - Random Conflicts Tab: Stochastic conflict generation and analysis
+    - Procedure Management: SID/STAR procedure creation and editing
+    - Configuration Management: Save/load system with backward compatibility
+    - Cache Management: File-based caching with path validation
+    - Filter Systems: Airspace and flight point filtering
 
 Architecture:
-    * Lazy window creation to avoid QApplication race conditions
-    * Tab-based interface with consistent styling
-    * Progress dialogs with UI thread updates
-    * Configuration persistence system
-    * File path caching optimizations
+    - Lazy window creation to avoid QApplication race conditions
+    - Tab-based interface with consistent styling
+    - Progress dialogs with UI thread updates
+    - Configuration persistence system
+    - File path caching optimizations
 
 Classes:
-    * SATGWindow: Main window with tab management
-    * HistoricSamplingTab: ML-based aircraft generation interface
-    * RLTab: Realistic Replay scenario generation interface
-    * RCTab: Random conflict generation and analysis
-    * ProcTab: Procedure creation and management
-    * EurocontrolFilterDialog: Filtering with flight point processing
-    * ConfigManagerDialog: Configuration save/load management
-    * CacheManagerDialog: Cache validation and management
+    - SATGWindow: Main window with tab management
+    - HistoricSamplingTab: ML-based aircraft generation interface
+    - RLTab: Realistic Replay scenario generation interface
+    - RCTab: Random conflict generation and analysis
+    - ProcTab: Procedure creation and management
+    - EurocontrolFilterDialog: Filtering with flight point processing
+    - ConfigManagerDialog: Configuration save/load management
+    - CacheManagerDialog: Cache validation and management
 
 Performance:
-    * File path caching for Configure Filters dialog
-    * Cache validation using file modification times
-    * Vectorized flight point filtering with numpy
-    * Bounding box pre-filtering for geometric calculations
-    * Progress dialog updates with threading
+    - File path caching for Configure Filters dialog
+    - Cache validation using file modification times
+    - Vectorized flight point filtering with numpy
+    - Bounding box pre-filtering for geometric calculations
+    - Progress dialog updates with threading
 
 Dependencies:
-    * PyQt6: Qt6 GUI framework
-    * NumPy: Vectorized calculations and data processing
-    * Pandas: Flight data manipulation and analysis
-    * GeoPandas: Geometric airspace calculations
-    * Shapely: Point-in-polygon calculations
-    * BlueSky: ATM simulator integration
-    * TraffixGen: EUROCONTROL data processing backend
+    - PyQt6: Qt6 GUI framework
+    - NumPy: Vectorized calculations and data processing
+    - Pandas: Flight data manipulation and analysis
+    - GeoPandas: Geometric airspace calculations
+    - Shapely: Point-in-polygon calculations
+    - BlueSky: ATM simulator integration
+    - TraffixGen: EUROCONTROL data processing backend
 
 Usage:
     Plugin activated through BlueSky console command 'SATGGUI'.

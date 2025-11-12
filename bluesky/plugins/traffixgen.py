@@ -13,69 +13,69 @@ for traffic pattern analysis. Operations optimized for performance while
 maintaining accuracy in geometric calculations and data integrity.
 
 Architecture:
-    * EUROCONTROL Data Processing: Parsing and validation of flight data
-    * Filter System: Include-based filtering with flight point processing
-    * Machine Learning Pipeline: Model training on filtered trajectory data
-    * Geometric Calculations: Point-in-polygon algorithms for airspace filtering
-    * Performance Optimization: Caching with parquet file persistence
-    * BlueSky Integration: Command interface and scenario generation
+    - EUROCONTROL Data Processing: Parsing and validation of flight data
+    - Filter System: Include-based filtering with flight point processing
+    - Machine Learning Pipeline: Model training on filtered trajectory data
+    - Geometric Calculations: Point-in-polygon algorithms for airspace filtering
+    - Performance Optimization: Caching with parquet file persistence
+    - BlueSky Integration: Command interface and scenario generation
 
 Data Processing:
-    * Multi-format datetime parsing with error handling
-    * Categorical data type optimization for memory efficiency
-    * Flight point filtering using geometric algorithms
-    * Vectorized calculations with numpy for performance
-    * Cache management with automatic invalidation
-    * Progress tracking for long-running operations
+    - Multi-format datetime parsing with error handling
+    - Categorical data type optimization for memory efficiency
+    - Flight point filtering using geometric algorithms
+    - Vectorized calculations with numpy for performance
+    - Cache management with automatic invalidation
+    - Progress tracking for long-running operations
 
 Filter System:
-    * Date Range Filtering: Temporal constraints with automatic bounds detection
-    * Airspace Filtering: Include-based geometric point-in-polygon calculations
-    * Altitude Filtering: Flight level constraints with phase-specific settings
-    * Aircraft Type Filtering: Aircraft classification support
-    * Flight Phase Filtering: Departure, enroute, and arrival phase selection
-    * Real-time Filter Application: Live filtering of flight points for model training
+    - Date Range Filtering: Temporal constraints with automatic bounds detection
+    - Airspace Filtering: Include-based geometric point-in-polygon calculations
+    - Altitude Filtering: Flight level constraints with phase-specific settings
+    - Aircraft Type Filtering: Aircraft classification support
+    - Flight Phase Filtering: Departure, enroute, and arrival phase selection
+    - Real-time Filter Application: Live filtering of flight points for model training
 
 Machine Learning Pipeline:
-    * Trajectory Pattern Analysis: Statistical learning from historic operations
-    * Trajectory Generation: ML-based synthetic flight creation
-    * Feature Engineering: Flight characteristic extraction
-    * Model Persistence: Model storage and retrieval systems
-    * Performance Validation: Accuracy metrics and validation
+    - Trajectory Pattern Analysis: Statistical learning from historic operations
+    - Trajectory Generation: ML-based synthetic flight creation
+    - Feature Engineering: Flight characteristic extraction
+    - Model Persistence: Model storage and retrieval systems
+    - Performance Validation: Accuracy metrics and validation
 
 Performance Optimizations:
-    * Parquet Caching: High-performance columnar data storage
-    * Vectorized Operations: NumPy-based calculations for speed
-    * Bounding Box Pre-filtering: Geometric optimization for airspace calculations
-    * Memory Management: Efficient data structures and garbage collection
-    * Progress Dialogs: User feedback for long-running operations
+    - Parquet Caching: High-performance columnar data storage
+    - Vectorized Operations: NumPy-based calculations for speed
+    - Bounding Box Pre-filtering: Geometric optimization for airspace calculations
+    - Memory Management: Efficient data structures and garbage collection
+    - Progress Dialogs: User feedback for long-running operations
 
 Key Functions:
-    * traffixgen_load_eurocontrol(): Load and validate EUROCONTROL data files
-    * traffixgen_apply_filters(): Apply comprehensive filtering to flight data
-    * get_flight_summary(): Generate data summaries for filter configuration
-    * get_filtered_tracks(): Extract filtered flight tracks for scenario generation
-    * include_airspace(): Geometric airspace filtering with point-in-polygon
-    * _filter_points_vectorized(): High-performance vectorized filtering
-    * _point_in_polygon_fast(): Optimized ray-casting algorithm implementation
+    - traffixgen_load_eurocontrol(): Load and validate EUROCONTROL data files
+    - traffixgen_apply_filters(): Apply comprehensive filtering to flight data
+    - get_flight_summary(): Generate data summaries for filter configuration
+    - get_filtered_tracks(): Extract filtered flight tracks for scenario generation
+    - include_airspace(): Geometric airspace filtering with point-in-polygon
+    - _filter_points_vectorized(): High-performance vectorized filtering
+    - _point_in_polygon_fast(): Optimized ray-casting algorithm implementation
 
 Command Interface:
-    * TRAFFIXGEN LOAD: Load historical EUROCONTROL flight data with validation
-    * TRAFFIXGEN TRAIN: Train ML models on filtered trajectory data
-    * TRAFFIXGEN GENERATE: Create synthetic flight trajectories
-    * TRAFFIXGEN EXPORT: Export scenarios for BlueSky simulation
-    * TRAFFIXGEN STATUS: Display plugin status and data information
-    * TRAFFIXGEN CONFIG: Configure filtering and processing parameters
+    - TRAFFIXGEN LOAD: Load historical EUROCONTROL flight data with validation
+    - TRAFFIXGEN TRAIN: Train ML models on filtered trajectory data
+    - TRAFFIXGEN GENERATE: Create synthetic flight trajectories
+    - TRAFFIXGEN EXPORT: Export scenarios for BlueSky simulation
+    - TRAFFIXGEN STATUS: Display plugin status and data information
+    - TRAFFIXGEN CONFIG: Configure filtering and processing parameters
 
 Dependencies:
-    * NumPy: Vectorized numerical calculations and array operations
-    * Pandas: Flight data manipulation and time series processing
-    * GeoPandas: Geometric operations and spatial data handling
-    * Shapely: Point-in-polygon calculations and geometric algorithms
-    * Scikit-learn: Machine learning model training and validation
-    * XGBoost: Advanced gradient boosting for trajectory modeling
-    * PyArrow: High-performance parquet file operations
-    * BlueSky: Core ATM simulator integration and command processing
+    - NumPy: Vectorized numerical calculations and array operations
+    - Pandas: Flight data manipulation and time series processing
+    - GeoPandas: Geometric operations and spatial data handling
+    - Shapely: Point-in-polygon calculations and geometric algorithms
+    - Scikit-learn: Machine learning model training and validation
+    - XGBoost: Advanced gradient boosting for trajectory modeling
+    - PyArrow: High-performance parquet file operations
+    - BlueSky: Core ATM simulator integration and command processing
 
 Usage Examples:
     # Load EUROCONTROL data with comprehensive validation
