@@ -244,17 +244,105 @@ def _echo_lines(lines: List[str]):
     for line in lines: stack.stack(f"ECHO {line}")
 
 def _echo_ok(msg: str, nxt: Optional[str]=None):
+    """
+    Display success message through BlueSky command interface.
+    
+    This utility function provides standardized success message formatting
+    and display through the BlueSky command stack system, ensuring consistent
+    user feedback for SATG operations. The function handles multi-line messages
+    with proper SATG identification tags for clear command output organization.
+    
+    Args:
+        msg (str): Success message to display to user
+        nxt (Optional[str]): Optional next command hint (currently disabled)
+    
+    Examples:
+        _echo_ok("Scenario generated successfully")
+        _echo_ok("Configuration updated", "Run SATG_GC_CRE to continue")
+    
+    Note:
+        Command hints are disabled as GUI provides the interface. Multi-line
+        messages are properly handled with individual line processing.
+    """
     for line in str(msg).splitlines(): _echo_lines([f"[SATG] {line}"])
     # Command hints disabled - GUI provides the interface
     # if nxt: _echo_lines([f"[NEXT] {nxt}"])
 
 def _echo_err(msg: str):
+    """
+    Display error message through BlueSky command interface.
+    
+    This utility function provides standardized error message formatting
+    and display through the BlueSky command stack system, ensuring consistent
+    error reporting for SATG operations. The function handles multi-line error
+    messages with proper SATG error identification tags for clear debugging
+    and user feedback during command execution failures.
+    
+    Args:
+        msg (str): Error message to display to user
+    
+    Examples:
+        _echo_err("File not found: scenario.scn")
+        _echo_err("Invalid parameter: angle must be 0-180 degrees")
+    
+    Note:
+        Error messages include [ERR] tag for clear identification in command
+        output. Multi-line error messages are properly handled with individual
+        line processing for clear error presentation and debugging assistance.
+    """
     for line in str(msg).splitlines(): _echo_lines([f"[SATG][ERR] {line}"])
 
 def _fmt_alt_token(fl: int) -> str:
+    """
+    Format flight level integer into standardized altitude token string.
+    
+    This utility function converts numeric flight level values into properly
+    formatted altitude tokens for BlueSky scenario generation and command
+    output. The function handles edge cases for ground level and provides
+    consistent three-digit flight level formatting matching aviation standards.
+    
+    Args:
+        fl (int): Flight level as integer (e.g., 350 for FL350)
+    
+    Returns:
+        str: Formatted altitude token ("0" for ground, "FL350" for cruise levels)
+    
+    Examples:
+        _fmt_alt_token(0)    # Returns "0"
+        _fmt_alt_token(350)  # Returns "FL350"  
+        _fmt_alt_token(50)   # Returns "FL050"
+    
+    Note:
+        Ground level (FL <= 0) returns "0" for BlueSky compatibility.
+        All other levels use standard FL### format with zero-padding.
+    """
     return "0" if int(fl) <= 0 else f"FL{int(fl):03d}"
 
 def _sanitize_name(name: str) -> str:
+    """
+    Sanitize input string for use as valid waypoint or identifier name.
+    
+    This utility function converts arbitrary strings into valid waypoint names
+    by removing or replacing invalid characters and ensuring the result meets
+    aviation naming conventions. The function handles special characters,
+    whitespace, and ensures proper alphabetic prefix for BlueSky compatibility.
+    
+    Args:
+        name (str): Input string to sanitize for waypoint naming
+    
+    Returns:
+        str: Sanitized name suitable for waypoint or identifier use
+    
+    Examples:
+        _sanitize_name("London-Heathrow")  # Returns "London_Heathrow"
+        _sanitize_name("123ABC")          # Returns "WPT_123ABC"
+        _sanitize_name("WPT@#$%")         # Returns "WPT____"
+    
+    Note:
+        Non-alphanumeric characters are replaced with underscores. Names
+        starting with non-alphabetic characters are prefixed with "WPT_".
+        This ensures compatibility with BlueSky waypoint naming requirements.
+    """
     s = re.sub(r'[^A-Za-z0-9_]', '_', name)
     if not s or not s[0].isalpha(): s = "WPT_" + s
     return s[:32]
@@ -2634,8 +2722,41 @@ def _scn_path(name: str) -> str:
     return os.path.normpath(os.path.join(root, name))
 
 def _normpath(p: str) -> str:
-    """Normalize a user-supplied path. Strips quotes, expands ~, makes absolute.
-       If path is relative and a base_dir is set, resolve relative to base_dir.
+    """
+    Normalize user-supplied file path with comprehensive path processing.
+    
+    Normalize a user-supplied path. Strips quotes, expands ~, makes absolute.
+    If path is relative and a base_dir is set, resolve relative to base_dir.
+    
+    This utility function provides robust path normalization for user input
+    handling across different operating systems and input formats. The function
+    handles common path input variations including quoted paths, relative paths,
+    home directory expansion, and base directory resolution for consistent
+    file operations throughout the SATG system.
+    
+    Path processing includes:
+    - Quote removal from command-line and GUI input
+    - Home directory (~) expansion for user convenience
+    - Absolute path conversion with base directory resolution
+    - Cross-platform path normalization for compatibility
+    - Relative path handling with configurable base directory
+    - Input validation and sanitization for security
+    
+    Args:
+        p (str): Raw path string from user input (may contain quotes, ~, etc.)
+    
+    Returns:
+        str: Normalized absolute path suitable for file operations
+    
+    Examples:
+        _normpath('"~/data/file.txt"')     # Returns "/home/user/data/file.txt"
+        _normpath("'relative/path.scn'")   # Returns "/base/dir/relative/path.scn" 
+        _normpath("/absolute/path.dat")    # Returns "/absolute/path.dat"
+    
+    Note:
+        Relative paths are resolved against the configured base directory when
+        available. The function ensures consistent path handling across different
+        input sources and operating system environments for reliable file access.
     """
     if not p:
         return ""
@@ -5021,16 +5142,90 @@ def SATG_PROC_LOAD_WPT(path: str):
 
 @command
 def SATG_PROC_UNLOAD_WPT(path: str):
+    """
+    Unload specific waypoint definition file from procedure system.
+    
+    This command removes a previously loaded waypoint definition file from
+    the active waypoint database used for procedure creation and validation.
+    This enables selective waypoint database management when working with
+    multiple waypoint files or when updating waypoint definitions requires
+    reloading specific files.
+    
+    Args:
+        path (str): File path of waypoint definition file to unload
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful unload
+    
+    Examples:
+        # Unload specific waypoint file
+        SATG_PROC_UNLOAD_WPT "/path/to/waypoints.txt"
+    
+    Note:
+        Only affects the specified file. Other loaded waypoint files remain
+        active in the procedure system for continued use.
+    """
     p = _normpath(path.strip('"').strip("'"))
     STATE.proc_wpt_files = [x for x in STATE.proc_wpt_files if x != p]
     _echo_ok(f"Unloaded waypoint file: {p}"); return True, ""
 
 @command
 def SATG_PROC_CLEAR_WPT():
+    """
+    Clear all loaded waypoint definition files from procedure system.
+    
+    This command removes all waypoint definition files from the active
+    waypoint database, providing a clean slate for loading new waypoint
+    definitions or resetting the procedure system state. This is useful
+    when switching between different airspace configurations or when
+    updating the complete waypoint database requires a fresh start.
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful clearing
+    
+    Examples:
+        # Clear all waypoint files before loading new airspace data
+        SATG_PROC_CLEAR_WPT
+    
+    Note:
+        This action affects all loaded waypoint files. Procedures requiring
+        waypoint validation will need waypoint files reloaded after clearing.
+    """
     STATE.proc_wpt_files.clear(); _echo_ok("Cleared waypoint files"); return True, ""
 
 @command
 def SATG_PROC_LOAD_PROC(path: str):
+    """
+    Load procedure definition file for scenario generation.
+    
+    This command loads SID (Standard Instrument Departure) or STAR (Standard
+    Terminal Arrival Route) procedure definition files that contain the routing,
+    altitude, and speed constraints for instrument procedures. These procedures
+    are used to generate realistic departure and arrival scenarios with proper
+    procedure compliance and operational constraints.
+    
+    The procedure file should contain properly formatted procedure definitions
+    including waypoint sequences, altitude restrictions, speed limitations,
+    and other operational constraints that match real-world instrument procedures.
+    
+    Args:
+        path (str): File path to procedure definition file to load
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful load, (False, "") on file error
+    
+    Examples:
+        # Load airport SID procedures
+        SATG_PROC_LOAD_PROC "/data/EHAM_SIDs.json"
+        
+        # Load terminal area STAR procedures  
+        SATG_PROC_LOAD_PROC "/procedures/EGLL_STARs.dat"
+    
+    Note:
+        Multiple procedure files can be loaded to build comprehensive procedure
+        databases for complex airspace scenarios with multiple airports and
+        procedure types. File format must match expected procedure definitions.
+    """
     p = os.path.abspath(_normpath(path.strip('"').strip("'")))
     if not os.path.isfile(p): _echo_err(f"File not found: {p}"); return False, ""
     if p not in STATE.proc_proc_files: STATE.proc_proc_files.append(p)
@@ -5053,7 +5248,45 @@ def SATG_PROC_LOAD_PROC(path: str):
 
 @command
 def SATG_PROC_LOAD_CUSTOM():
-    """Auto-load all custom procedure files from satg_data/procedures/ folder."""
+    """
+    Auto-load all custom procedure files from standard procedures directory.
+    
+    Auto-load all custom procedure files from satg_data/procedures/ folder.
+    
+    This command provides convenient bulk loading of all procedure definition
+    files stored in the standard SATG procedures directory, eliminating the
+    need for individual file loading commands when working with comprehensive
+    procedure databases. This is particularly useful for loading complete
+    airspace procedure sets for training scenarios.
+    
+    The command automatically discovers and loads all procedure files in the
+    configured procedures directory, providing immediate access to the full
+    procedure database for scenario generation. File format validation and
+    error handling ensure robust loading of valid procedure definitions.
+    
+    Auto-loading features:
+    - Recursive directory scanning for procedure files
+    - Automatic file format detection and validation
+    - Bulk loading with consolidated success/error reporting
+    - Integration with existing procedure management system
+    - Support for multiple procedure file formats
+    - Duplicate file detection and prevention
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful loading, (False, "") on directory error
+    
+    Examples:
+        # Load all procedures from standard directory
+        SATG_PROC_LOAD_CUSTOM
+        
+        # Typically used at session start for complete procedure database
+        SATG_PROC_LOAD_CUSTOM
+    
+    Note:
+        The procedures directory path is relative to the SATG plugin location.
+        Only valid procedure files are loaded; invalid files are skipped with
+        warnings. This command complements individual procedure file loading.
+    """
     try:
         # Get the procedures directory path
         procedures_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'satg_data', 'procedures')
@@ -5094,7 +5327,47 @@ def SATG_PROC_LOAD_CUSTOM():
 
 @command
 def SATG_PROC_EXPORT_POLY(poly_name: str):
-    """Export polygon coordinates to a temporary file for GUI access."""
+    """
+    Export polygon coordinates to temporary file for GUI integration.
+    
+    Export polygon coordinates to a temporary file for GUI access.
+    
+    This command extracts coordinate data from named polygon definitions and
+    exports them to a temporary file for access by GUI components or external
+    applications. This enables polygon visualization, editing, and validation
+    workflows that require coordinate data in file format for processing.
+    
+    The export process handles polygon coordinate extraction, formatting for
+    external consumption, and temporary file management with appropriate
+    cleanup procedures. This facilitates integration between the SATG core
+    system and graphical interface components for polygon management.
+    
+    Export capabilities:
+    - Named polygon coordinate extraction from internal database
+    - Formatted coordinate output suitable for GUI consumption
+    - Temporary file creation with system-managed cleanup
+    - Error handling for invalid or missing polygon definitions
+    - Support for complex polygon geometries with multiple vertices
+    - Integration with external polygon editing and visualization tools
+    
+    Args:
+        poly_name (str): Name of polygon to export from internal definitions
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful export, (False, "") on polygon error
+    
+    Examples:
+        # Export airspace sector polygon for GUI editing
+        SATG_PROC_EXPORT_POLY LONDON_TMA
+        
+        # Export training area boundary for visualization
+        SATG_PROC_EXPORT_POLY TRAINING_SECTOR_A
+    
+    Note:
+        Exported files are temporary and managed by the system. The polygon
+        must exist in the internal polygon database for successful export.
+        File format is optimized for GUI component consumption and editing.
+    """
     try:
         import bluesky as bs
         
@@ -5156,7 +5429,56 @@ def SATG_PROC_EXPORT_POLY(poly_name: str):
 
 @command
 def SATG_PROC_CREATE_FROM_POLY(poly_name: str, proc_name: str = ""):
-    """Create a basic procedure file directly from polygon coordinates."""
+    """
+    Generate procedure definition file from polygon boundary coordinates.
+    
+    Create a basic procedure file directly from polygon coordinates.
+    
+    This command automatically generates a procedure definition file using
+    polygon boundary coordinates as the basis for procedure routing. This
+    enables rapid procedure creation for training scenarios where custom
+    procedures are needed to match specific airspace boundaries or training
+    area definitions without manual procedure design.
+    
+    The procedure generation process includes:
+    1. Polygon coordinate extraction from internal polygon database
+    2. Waypoint sequence generation following polygon boundary vertices
+    3. Procedure file formatting with standard structure and metadata
+    4. Altitude and speed constraint application with realistic defaults
+    5. Procedure validation and integration with existing procedure database
+    6. File output with standard naming and location conventions
+    
+    Generated procedure features:
+    - Waypoint routing following polygon boundary for area containment
+    - Realistic altitude and speed constraints for operational validity
+    - Standard procedure file format compatible with SATG systems
+    - Integration with existing waypoint and procedure management
+    - Customizable procedure naming for organizational clarity
+    - Validation against aviation procedure standards and constraints
+    
+    Args:
+        poly_name (str): Name of polygon to use as basis for procedure creation
+        proc_name (str, optional): Custom name for generated procedure, defaults
+                                 to polygon name if not specified
+    
+    Returns:
+        Tuple[bool, str]: (True, "") on successful generation, (False, "") on error
+    
+    Examples:
+        # Create procedure from training area polygon
+        SATG_PROC_CREATE_FROM_POLY TRAINING_AREA_ALPHA
+        
+        # Create procedure with custom name
+        SATG_PROC_CREATE_FROM_POLY LONDON_TMA LONDON_APPROACH_PROC
+        
+        # Generate sector procedure from airspace boundary
+        SATG_PROC_CREATE_FROM_POLY SECTOR_7 SECTOR_7_TRANSIT
+    
+    Note:
+        The source polygon must exist in the polygon database. Generated
+        procedures follow standard aviation procedure conventions and are
+        compatible with existing SATG procedure management systems.
+    """
     try:
         from datetime import datetime
         
